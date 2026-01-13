@@ -1,6 +1,6 @@
 {
-  "name": "Advance Version of VaniLog",
-  "description": "A multilingual conversation recorder that generates verbatim transcripts, summaries, and action items using Gemini 2.5.",
+  "name": "Aligned",
+  "description": "Professional workspace intelligence that synchronizes discussions into actionable directives and structured notes.",
   "requestFramePermissions": [
     "microphone",
     "display-capture"

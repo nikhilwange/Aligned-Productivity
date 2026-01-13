@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { RecordingSession } from '../types';
 
@@ -39,7 +40,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
 
   const handleShare = async () => {
     if (!session.analysis) return;
-    const shareText = `VaniLog insight brief: ${session.title}\nDate: ${new Date(session.date).toLocaleDateString()}\n\n${session.analysis.summary}`;
+    const shareText = `Aligned insight brief: ${session.title}\nDate: ${new Date(session.date).toLocaleDateString()}\n\n${session.analysis.summary}`;
     const currentUrl = window.location.href;
     const isValidUrl = currentUrl.startsWith('http');
     try {
@@ -190,8 +191,8 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
         <div className="absolute inset-0 border-[4px] border-t-amber-500 rounded-full animate-spin"></div>
         <div className="absolute inset-4 bg-amber-50 rounded-full animate-pulse"></div>
       </div>
-      <h3 className="text-xl font-bold text-slate-800 tracking-tight mb-2">Architecting document</h3>
-      <p className="text-sm text-slate-400 font-bold tracking-tight">Synthesizing insights...</p>
+      <h3 className="text-xl font-bold text-slate-800 tracking-tight mb-2">Aligning insights</h3>
+      <p className="text-sm text-slate-400 font-bold tracking-tight">Synthesizing workspace content...</p>
     </div>
   );
 

@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { RecordingSession, User } from '../types';
 
@@ -31,7 +32,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
     e.preventDefault();
     e.stopPropagation();
     
-    const shareText = `VaniLog insight brief: ${rec.title}\nDate: ${new Date(rec.date).toLocaleDateString()}\n\n${rec.analysis?.summary || 'Session recorded.'}`;
+    const shareText = `Aligned insight brief: ${rec.title}\nDate: ${new Date(rec.date).toLocaleDateString()}\n\n${rec.analysis?.summary || 'Session recorded.'}`;
     const currentUrl = window.location.href;
     const isValidUrl = currentUrl.startsWith('http');
     
@@ -58,7 +59,6 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
     e.stopPropagation();
     setDeletingId(id);
     onDelete(id);
-    // Note: We don't clear deletingId here because the item will be removed from DOM
   };
 
   return (
@@ -69,12 +69,12 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
           <div className="relative group">
             <div className="absolute -inset-1.5 bg-gradient-to-br from-amber-500 to-yellow-400 rounded-2xl blur opacity-25 group-hover:opacity-40 transition duration-500"></div>
             <div className="relative w-11 h-11 bg-gradient-to-br from-amber-600 to-yellow-500 rounded-2xl shadow-lg flex items-center justify-center text-white font-bold text-2xl transform transition-transform group-hover:scale-105">
-              V
+              A
             </div>
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight text-slate-800 leading-none">VaniLog</h1>
-            <span className="text-[10px] font-bold text-amber-600 opacity-80 mt-1 block">Voice intelligence</span>
+            <h1 className="text-xl font-bold tracking-tight text-slate-800 leading-none">Aligned</h1>
+            <span className="text-[10px] font-bold text-amber-600 opacity-80 mt-1 block">Workspace Alignment</span>
           </div>
         </div>
 
@@ -162,7 +162,6 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
               </div>
             </div>
             
-            {/* Action Buttons - Visible on hover for desktop, always visible on touch */}
             <div className="absolute top-4 right-3 flex items-center gap-1 opacity-100 md:opacity-0 group-hover/item:opacity-100 transition-all duration-200 z-30">
               <button
                 onClick={(e) => handleShare(e, rec)}

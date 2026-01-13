@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import AudioRecorder from './components/AudioRecorder';
@@ -191,8 +192,8 @@ const App: React.FC = () => {
             <div className="flex items-center space-x-3">
               <button onClick={() => { setActiveRecordingId(null); setIsRecordingMode(false); }} className="md:hidden p-2 -ml-2 text-slate-400 hover:bg-slate-50 rounded-xl transition-colors"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg></button>
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 bg-gradient-to-br from-amber-600 to-yellow-600 rounded-lg shadow-lg flex items-center justify-center text-white font-bold text-sm">V</div>
-                <h1 className="text-xl font-bold tracking-tight text-slate-800">VaniLog</h1>
+                <div className="w-8 h-8 bg-gradient-to-br from-amber-600 to-yellow-600 rounded-lg shadow-lg flex items-center justify-center text-white font-bold text-sm">A</div>
+                <h1 className="text-xl font-bold tracking-tight text-slate-800">Aligned</h1>
               </div>
             </div>
             <div className="px-4 py-1.5 rounded-full bg-slate-100 text-[10px] font-bold text-slate-500 tracking-tight border border-slate-200/50">Gemini 2.5 flash</div>
@@ -204,8 +205,8 @@ const App: React.FC = () => {
           ) : activeSession ? <ResultsView session={activeSession} onUpdateTitle={handleUpdateTitle} /> : (
             <div className="flex h-full flex-col items-center justify-center text-slate-300 p-8">
                <div className="w-24 h-24 md:w-32 md:h-32 bg-slate-50 rounded-full flex items-center justify-center mb-8 text-slate-200 border border-slate-100 shadow-inner"><svg className="w-10 h-10 md:w-12 md:h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg></div>
-               <h2 className="text-xl md:text-2xl font-bold text-slate-700">Voice-to-insight AI</h2>
-               <p className="max-w-xs text-center mt-3 text-sm text-slate-400 font-medium leading-relaxed">Start a new recording or choose from history to see Gemini's analysis.</p>
+               <h2 className="text-xl md:text-2xl font-bold text-slate-700">Workspace Synchronization</h2>
+               <p className="max-w-xs text-center mt-3 text-sm text-slate-400 font-medium leading-relaxed">Ensure everyone is aligned by capturing your next workspace discussion.</p>
                <div className="flex flex-col md:flex-row gap-4 mt-12 w-full max-w-xs md:max-w-none">
                  <button onClick={handleStartNew} className="w-full md:w-auto px-8 py-3.5 bg-slate-900 text-white rounded-2xl text-sm font-bold hover:bg-slate-800 transition-all shadow-xl active:scale-95">Start recording</button>
                  <button onClick={handleStartLive} className="w-full md:w-auto px-8 py-3.5 bg-white text-slate-600 border border-slate-200 hover:border-amber-300 hover:text-amber-700 rounded-2xl text-sm font-bold transition-all active:scale-95">Live assistant</button>

@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { User } from '../types';
 import { supabase } from '../services/supabaseService';
@@ -50,7 +51,6 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
         if (signupError) throw signupError;
 
         if (data.user) {
-          // If auto-login is disabled or email confirmation is needed
           if (data.session) {
             onLogin({
               id: data.user.id,
@@ -79,7 +79,7 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
             </svg>
           </div>
           <h2 className="text-2xl font-bold text-white mb-4">Check your email</h2>
-          <p className="text-slate-400 mb-10 leading-relaxed font-medium">We've sent a confirmation link to <span className="text-amber-400">{email}</span>. Please click the link to activate your account.</p>
+          <p className="text-slate-400 mb-10 leading-relaxed font-medium">Confirmation link sent to <span className="text-amber-400">{email}</span>. Finalize your account to stay aligned.</p>
           <button onClick={() => setIsLogin(true)} className="text-white hover:text-amber-400 text-sm font-bold underline transition-colors">Return to login</button>
         </div>
       </div>
@@ -95,9 +95,9 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
 
       <div className="relative w-full max-w-md p-8 animate-in fade-in zoom-in-95 duration-500">
         <div className="flex flex-col items-center mb-10">
-          <div className="w-16 h-16 bg-gradient-to-br from-amber-500 to-yellow-500 rounded-2xl shadow-2xl flex items-center justify-center text-white font-bold text-3xl mb-4 rotate-3">V</div>
-          <h1 className="text-3xl font-bold tracking-tight text-white mb-2">VaniLog</h1>
-          <p className="text-slate-400 text-sm font-medium tracking-wide">{isLogin ? 'Welcome back to your insights' : 'Join the next generation of transcription'}</p>
+          <div className="w-16 h-16 bg-gradient-to-br from-amber-500 to-yellow-500 rounded-2xl shadow-2xl flex items-center justify-center text-white font-bold text-3xl mb-4 rotate-3">A</div>
+          <h1 className="text-3xl font-bold tracking-tight text-white mb-2">Aligned</h1>
+          <p className="text-slate-400 text-sm font-medium tracking-wide">{isLogin ? 'Synchronize your workspace insights' : 'Join the platform for workspace alignment'}</p>
         </div>
 
         <div className="bg-white/5 backdrop-blur-2xl border border-white/10 rounded-[32px] p-8 shadow-2xl shadow-black/40">
@@ -116,7 +116,7 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
             )}
             <div className="space-y-1.5">
               <label className="text-[10px] font-bold text-slate-400 ml-1">Email address</label>
-              <input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all" placeholder="you@example.com" />
+              <input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all" placeholder="you@workspace.com" />
             </div>
             <div className="space-y-1.5">
               <label className="text-[10px] font-bold text-slate-400 ml-1">Password</label>
@@ -127,7 +127,7 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
             </button>
           </form>
           <div className="mt-8 pt-6 border-t border-white/5 text-center">
-            <button onClick={() => { setIsLogin(!isLogin); setError(null); }} className="text-slate-400 hover:text-white text-sm font-medium transition-colors">{isLogin ? "Don't have an account? Sign up" : "Already have an account? Sign in"}</button>
+            <button onClick={() => { setIsLogin(!isLogin); setError(null); }} className="text-slate-400 hover:text-white text-sm font-medium transition-colors">{isLogin ? "Don't have an account? Join Aligned" : "Already have an account? Sign in"}</button>
           </div>
         </div>
         <p className="mt-8 text-center text-slate-500 text-[10px] font-bold">Powered by Gemini 2.5 flash</p>
