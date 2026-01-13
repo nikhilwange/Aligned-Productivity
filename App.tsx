@@ -17,8 +17,11 @@ const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
 
+  // Load User and Recordings on Mount
   useEffect(() => {
     const savedUser = localStorage.getItem('vanilog_user');
+    const savedRecordings = localStorage.getItem('vanilog_recordings');
+    
     if (savedUser) {
       try {
         setUser(JSON.parse(savedUser));
@@ -26,15 +29,31 @@ const App: React.FC = () => {
         console.error("Failed to parse user session");
       }
     }
+
+    if (savedRecordings) {
+      try {
+        setRecordings(JSON.parse(savedRecordings));
+      } catch (e) {
+        console.error("Failed to parse saved recordings");
+      }
+    }
+    
     setIsInitialLoad(false);
   }, []);
+
+  // Persist Recordings whenever they change
+  useEffect(() => {
+    if (!isInitialLoad) {
+      localStorage.setItem('vanilog_recordings', JSON.stringify(recordings));
+    }
+  }, [recordings, isInitialLoad]);
 
   const handleLogin = (newUser: User) => {
     setUser(newUser);
   };
 
   const handleLogout = () => {
-    if (window.confirm("Are you sure you want to logout?")) {
+    if (window.confirm("Are you sure you want to logout? All local data will remain on this device.")) {
       localStorage.removeItem('vanilog_user');
       setUser(null);
       setActiveRecordingId(null);
@@ -100,10 +119,12 @@ const App: React.FC = () => {
       status: 'processing',
       source: audioData.source
     };
+    
     setRecordings(prev => [newSession, ...prev]);
     setActiveRecordingId(newSession.id);
     setIsRecordingMode(false);
     setAppState(AppState.PROCESSING);
+    
     try {
       const analysis = await analyzeConversation(audioData.blob);
       setRecordings(prev => prev.map(rec => rec.id === newSession.id ? { ...rec, analysis, status: 'completed' } : rec));
@@ -115,6 +136,7 @@ const App: React.FC = () => {
 
   if (isInitialLoad) return null;
   if (!user) return <AuthView onLogin={handleLogin} />;
+  
   const activeSession = recordings.find(r => r.id === activeRecordingId);
   const showMainContent = isRecordingMode || isLiveMode || !!activeRecordingId;
 
@@ -129,7 +151,7 @@ const App: React.FC = () => {
             <div className="flex items-center space-x-3">
               <button onClick={handleBackToList} className="md:hidden p-2 -ml-2 text-slate-400 hover:bg-slate-50 rounded-xl transition-colors"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg></button>
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 bg-gradient-to-br from-teal-600 to-emerald-600 rounded-lg shadow-lg flex items-center justify-center text-white font-bold text-sm">V</div>
+                <div className="w-8 h-8 bg-gradient-to-br from-amber-600 to-yellow-600 rounded-lg shadow-lg flex items-center justify-center text-white font-bold text-sm">V</div>
                 <h1 className="text-xl font-bold tracking-tight text-slate-800">VaniLog</h1>
               </div>
             </div>
@@ -146,7 +168,7 @@ const App: React.FC = () => {
                <p className="max-w-xs text-center mt-3 text-sm text-slate-400 font-medium leading-relaxed">Start a new recording or choose from history to see Gemini's analysis.</p>
                <div className="flex gap-4 mt-12">
                  <button onClick={handleStartNew} className="px-8 py-3 bg-slate-900 text-white rounded-2xl text-sm font-bold hover:bg-slate-800 transition-all shadow-xl active:scale-95">Start recording</button>
-                 <button onClick={handleStartLive} className="px-8 py-3 bg-white text-slate-600 border border-slate-200 hover:border-teal-300 hover:text-teal-700 rounded-2xl text-sm font-bold transition-all active:scale-95">Live companion</button>
+                 <button onClick={handleStartLive} className="px-8 py-3 bg-white text-slate-600 border border-slate-200 hover:border-amber-300 hover:text-amber-700 rounded-2xl text-sm font-bold transition-all active:scale-95">Live companion</button>
                </div>
             </div>
           )}
