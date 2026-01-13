@@ -17,7 +17,6 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     setTitle(session.title);
   }, [session.id, session.title]);
 
-  // Automatically update the title if a meeting type is detected and it's currently using the default name
   useEffect(() => {
     if (session.status === 'completed' && session.analysis?.meetingType && session.title.startsWith('Recording ')) {
       const newTitle = session.analysis.meetingType;
@@ -40,23 +39,24 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
 
   const handleShare = async () => {
     if (!session.analysis) return;
-    
     const shareText = `VaniLog insight brief: ${session.title}\nDate: ${new Date(session.date).toLocaleDateString()}\n\n${session.analysis.summary}`;
-    
+    const currentUrl = window.location.href;
+    const isValidUrl = currentUrl.startsWith('http');
     try {
       if (navigator.share) {
         await navigator.share({
           title: session.title,
           text: shareText,
-          url: window.location.href
+          ...(isValidUrl ? { url: currentUrl } : {})
         });
       } else {
-        await navigator.clipboard.writeText(shareText);
-        setSharing(true);
-        setTimeout(() => setSharing(false), 2000);
+        throw new Error('Web Share API not supported');
       }
     } catch (err) {
-      console.error("Share failed:", err);
+      console.warn("Share failed, falling back to clipboard:", err);
+      await navigator.clipboard.writeText(`${shareText}${isValidUrl ? `\n\nLink: ${currentUrl}` : ''}`);
+      setSharing(true);
+      setTimeout(() => setSharing(false), 2000);
     }
   };
 
@@ -66,18 +66,13 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     setTimeout(() => setCopiedSection(null), 2000);
   };
 
-  // Divide document into sections for individual copy buttons
   const sections = useMemo(() => {
     if (!session.analysis?.summary) return [];
-    
     const lines = session.analysis.summary.split('\n');
     const result: { title: string; content: string; startIndex: number; endIndex: number }[] = [];
-    
     let currentSection: { title: string; content: string[]; startIndex: number } | null = null;
-    
     lines.forEach((line, index) => {
       const isHeader = /^[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌🗣️📎]/.test(line.trim()) || line.trim().startsWith('## ');
-      
       if (isHeader) {
         if (currentSection) {
           result.push({
@@ -96,7 +91,6 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
         currentSection.content.push(line);
       }
     });
-    
     if (currentSection) {
       result.push({
         title: currentSection.title,
@@ -105,7 +99,6 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
         endIndex: lines.length - 1
       });
     }
-    
     return result;
   }, [session.analysis?.summary]);
 
@@ -113,7 +106,6 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     const lines = section.content.split('\n');
     let inTable = false;
     let tableRows: string[][] = [];
-
     return (
       <div key={section.title} className="group/section relative mb-16 animate-in fade-in slide-in-from-bottom-6 duration-700">
         <div className="flex items-center justify-between mb-6 group">
@@ -126,14 +118,9 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
                 : 'bg-white border-slate-200 text-slate-400 hover:text-slate-600 hover:border-slate-300'
             }`}
           >
-            {copiedSection === section.title ? (
-              <><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg> Copied</>
-            ) : (
-              <><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2" /></svg> Copy</>
-            )}
+            {copiedSection === section.title ? "Copied" : "Copy"}
           </button>
         </div>
-
         <div className="space-y-1.5 pl-6 border-l-2 border-slate-50 group-hover/section:border-amber-100 transition-colors duration-500">
           {lines.map((line, i) => {
             const trimmed = line.trim();
@@ -204,125 +191,119 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
         <div className="absolute inset-4 bg-amber-50 rounded-full animate-pulse"></div>
       </div>
       <h3 className="text-xl font-bold text-slate-800 tracking-tight mb-2">Architecting document</h3>
-      <p className="text-sm text-slate-400 font-bold tracking-tight">Synthesizing {Math.floor(session.duration/60)}m of audio</p>
+      <p className="text-sm text-slate-400 font-bold tracking-tight">Synthesizing insights...</p>
     </div>
   );
 
   if (!session.analysis) return null;
 
   return (
-    <div className="flex flex-col h-full bg-white overflow-hidden font-sans selection:bg-amber-100 selection:text-amber-900 animate-slide-up">
-      <div className="h-16 border-b border-slate-100 flex items-center justify-between px-8 shrink-0 bg-white/90 backdrop-blur-md z-30 sticky top-0 shadow-sm">
-        <div className="flex items-center gap-2 overflow-hidden">
-          <button className="p-2.5 hover:bg-slate-50 rounded-xl text-slate-400 transition-all hover:text-slate-600">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 6h16M4 12h16M4 18h16" /></svg>
-          </button>
-          <div className="flex items-center gap-2.5 text-[11px] font-bold text-slate-400 tracking-tight whitespace-nowrap">
-            <span className="hover:text-slate-900 cursor-pointer transition-colors">Workspace</span>
-            <span className="text-slate-200">/</span>
-            <span className="text-slate-900 truncate max-w-[240px] tracking-normal">{session.title}</span>
+    <div className="flex flex-col h-full bg-white overflow-hidden font-sans selection:bg-amber-100 selection:text-amber-900">
+      {/* Header Layout */}
+      <header className="shrink-0 bg-white border-b border-slate-100 sticky top-0 z-40 backdrop-blur-md">
+        {/* Row 1: Breadcrumbs */}
+        <div className="h-12 flex items-center px-8 border-b border-slate-50">
+          <div className="flex items-center gap-3">
+            <button className="p-1.5 hover:bg-slate-50 rounded-lg text-slate-400">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
+            </button>
+            <nav className="flex items-center gap-2 text-[11px] font-bold text-slate-400 tracking-tight">
+              <span className="hover:text-slate-900 cursor-pointer transition-colors">Workspace</span>
+              <span className="text-slate-200">/</span>
+              <span className="text-slate-900 truncate max-w-[200px]">{session.title}</span>
+            </nav>
           </div>
         </div>
-        
-        <div className="flex items-center gap-3">
+
+        {/* Row 2: Action Buttons */}
+        <div className="h-16 flex items-center gap-3 px-8">
           <button 
             onClick={handleShare}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[11px] font-extrabold tracking-tight transition-all border ${
-              sharing ? 'bg-amber-50 border-amber-100 text-amber-600 shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-400 hover:text-slate-900'
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[11px] font-bold tracking-tight border transition-all ${
+              sharing ? 'bg-amber-50 border-amber-200 text-amber-600' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-900'
             }`}
           >
-            {sharing ? (
-              <><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg> Link copied</>
-            ) : (
-              <><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg> Share</>
-            )}
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg>
+            {sharing ? "Link copied" : "Share"}
           </button>
 
           <button 
             onClick={copyToClipboard}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[11px] font-extrabold tracking-tight transition-all border ${
-              globalCopied ? 'bg-amber-50 border-amber-100 text-amber-600 shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-400 hover:text-slate-900'
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[11px] font-bold tracking-tight border transition-all ${
+              globalCopied ? 'bg-amber-50 border-amber-200 text-amber-600' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-900'
             }`}
           >
             {globalCopied ? "Copied" : "Export"}
           </button>
-          
-          <div className="flex bg-slate-100 p-1.5 rounded-2xl ring-1 ring-black/5 shadow-inner ml-2">
+
+          <div className="flex bg-slate-100 p-1 rounded-[1.25rem] border border-slate-200/50 shadow-inner ml-2">
             <button
               onClick={() => setActiveTab('notes')}
-              className={`px-5 py-1.5 rounded-xl text-[11px] font-extrabold tracking-tight transition-all ${
-                activeTab === 'notes' ? 'bg-white text-slate-900 shadow-lg shadow-black/5 ring-1 ring-black/5' : 'text-slate-400 hover:text-slate-600'
+              className={`px-5 py-2 rounded-[1rem] text-[11px] font-bold tracking-tight transition-all ${
+                activeTab === 'notes' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'
               }`}
             >
               Notes
             </button>
             <button
               onClick={() => setActiveTab('transcript')}
-              className={`px-5 py-1.5 rounded-xl text-[11px] font-extrabold tracking-tight transition-all ${
-                activeTab === 'transcript' ? 'bg-white text-slate-900 shadow-lg shadow-black/5 ring-1 ring-black/5' : 'text-slate-400 hover:text-slate-600'
+              className={`px-5 py-2 rounded-[1rem] text-[11px] font-bold tracking-tight transition-all ${
+                activeTab === 'transcript' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'
               }`}
             >
               Script
             </button>
           </div>
         </div>
-      </div>
+      </header>
 
-      <div className="flex-1 overflow-y-auto bg-white pt-24 pb-48 px-6 md:px-0 scrollbar-hide">
+      <div className="flex-1 overflow-y-auto bg-white pt-16 pb-32 px-6 md:px-0">
         <article className="max-w-2xl mx-auto">
-          <div className="mb-20 group">
-            <div className="flex items-center gap-3 mb-6 animate-in fade-in slide-in-from-left-4 duration-500">
-               <span className="px-3 py-1 bg-indigo-50 text-indigo-600 rounded-lg text-[10px] font-extrabold border border-indigo-100/50">Verified analysis</span>
+          <div className="mb-16">
+            <div className="flex items-center gap-3 mb-6">
+               <span className="px-2.5 py-0.5 bg-indigo-50 text-indigo-600 rounded-lg text-[9px] font-extrabold border border-indigo-100/50">Verified analysis</span>
                <span className="text-slate-200">•</span>
-               <span className="text-slate-400 text-[10px] font-extrabold">{new Date(session.date).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</span>
+               <span className="text-slate-400 text-[9px] font-extrabold">{new Date(session.date).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</span>
             </div>
             <input
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               onBlur={handleTitleBlur}
-              className="text-6xl font-extrabold text-slate-900 bg-transparent border-none p-0 focus:ring-0 placeholder-slate-100 w-full tracking-tighter leading-[1.1]"
+              className="text-5xl font-extrabold text-slate-900 bg-transparent border-none p-0 focus:ring-0 placeholder-slate-100 w-full tracking-tighter leading-tight"
             />
-            <div className="flex items-center gap-6 mt-10 text-slate-400 text-[11px] font-extrabold border-t border-slate-50 pt-8">
-               <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100">
-                 <svg className="w-4 h-4 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+            <div className="flex items-center gap-5 mt-10 text-slate-400 text-[10px] font-extrabold border-t border-slate-50 pt-8">
+               <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg">
+                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                  {Math.floor(session.duration/60)}m {session.duration%60}s
                </div>
-               <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100">
-                 <div className="w-2.5 h-2.5 rounded-full bg-amber-500 shadow-sm shadow-amber-200"></div>
+               <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg">
+                 <div className="w-2 h-2 rounded-full bg-amber-500"></div>
                  {session.source.replace('-', ' ')}
                </div>
             </div>
           </div>
+
           <div className="prose prose-slate max-w-none">
             {activeTab === 'notes' ? (
-              <div className="animate-in fade-in duration-1000 slide-in-from-bottom-8">
-                {sections.length > 0 ? sections.map(renderRichSection) : <p className="text-slate-400 font-medium italic">Building components...</p>}
+              <div className="animate-in fade-in duration-700">
+                {sections.length > 0 ? sections.map(renderRichSection) : <p className="text-slate-400">Synthesizing content...</p>}
               </div>
             ) : (
-              <div className="animate-in fade-in duration-700 space-y-12">
-                <div className="flex items-center justify-between mb-12 border-b border-slate-50 pb-6">
-                  <div className="flex items-center gap-3 text-slate-900">
-                    <div className="w-12 h-12 bg-slate-50 rounded-2xl flex items-center justify-center border border-slate-100 shadow-sm"><span className="text-2xl">🗣️</span></div>
-                    <h2 className="text-3xl font-extrabold tracking-tighter">Verbatim transcript</h2>
-                  </div>
-                  <button onClick={() => copySection("Transcript", session.analysis!.transcript)} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[11px] font-extrabold tracking-tight transition-all border ${copiedSection === "Transcript" ? 'bg-amber-50 border-amber-100 text-amber-600 shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-400 hover:text-slate-900'}`}>{copiedSection === "Transcript" ? "Copied" : "Copy all"}</button>
-                </div>
-                <div className="space-y-12 pl-6 border-l-2 border-slate-50">
+              <div className="animate-in fade-in duration-500 space-y-10">
+                <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight pb-6 border-b border-slate-50">Verbatim transcript</h2>
+                <div className="space-y-10 pl-4 border-l-2 border-slate-50">
                   {session.analysis.transcript.split('\n').filter(l => l.trim()).map((line, i) => {
-                    const timestampMatch = line.match(/[\(\[](\d{2}:\d{2})[\)\]]/);
-                    const timestamp = timestampMatch ? timestampMatch[1] : null;
                     const speakerMatch = line.match(/^([^(\[]+)/);
-                    const speaker = speakerMatch ? speakerMatch[1].trim() : "Unknown";
-                    const text = timestamp ? line.split(/[\(\[]\d{2}:\d{2}[\)\]]/)[1]?.trim() : line.replace(/^[^:]+:\s*/, '').trim();
+                    const speaker = speakerMatch ? speakerMatch[1].trim() : "Speaker";
+                    const text = line.replace(/^[^:]+:\s*/, '').trim();
                     return (
-                      <div key={i} className="flex gap-10 group relative -ml-6">
-                        <div className="w-24 shrink-0 pt-1.5 sticky top-24 h-fit">
-                           <div className="text-[10px] font-extrabold text-slate-300 tracking-tight mb-1.5">{timestamp || '--:--'}</div>
-                           <div className="text-[12px] font-extrabold text-slate-900 truncate tracking-tight" title={speaker}>{speaker}</div>
+                      <div key={i} className="group flex gap-8">
+                        <div className="w-20 shrink-0">
+                           <div className="text-[11px] font-extrabold text-slate-900 truncate">{speaker}</div>
                         </div>
-                        <div className="flex-1 bg-white/50 group-hover:bg-slate-50/50 p-4 rounded-2xl transition-all border border-transparent group-hover:border-slate-100">
-                          <p className="text-slate-600 leading-[1.7] text-[17px] font-medium tracking-tight">{text}</p>
+                        <div className="flex-1">
+                          <p className="text-slate-600 leading-relaxed text-[17px] font-medium tracking-tight">{text}</p>
                         </div>
                       </div>
                     );
@@ -333,13 +314,6 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
           </div>
         </article>
       </div>
-
-      {session.analysis.isTruncated && (
-        <div className="fixed bottom-12 right-12 bg-amber-50 border border-amber-100 p-5 rounded-[2rem] shadow-2xl flex items-center gap-5 z-40 max-w-sm animate-in slide-in-from-right-12 duration-700">
-          <div className="w-12 h-12 rounded-2xl bg-white flex items-center justify-center text-amber-600 shrink-0 shadow-sm border border-amber-100"><svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg></div>
-          <div><h4 className="text-sm font-bold text-amber-900 mb-1">Session truncated</h4><p className="text-[11px] text-amber-700/80 font-bold tracking-tight">Limit exceeded. Summarizing peak insights.</p></div>
-        </div>
-      )}
     </div>
   );
 };

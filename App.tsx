@@ -7,6 +7,7 @@ import LiveSession from './components/LiveSession';
 import AuthView from './components/AuthView';
 import { AppState, RecordingSession, AudioRecording, User } from './types';
 import { analyzeConversation } from './services/geminiService';
+import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb } from './services/supabaseService';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -17,49 +18,55 @@ const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
 
-  // Load User and Recordings on Mount
+  // Initialize Auth and Listen for changes
   useEffect(() => {
-    const savedUser = localStorage.getItem('vanilog_user');
-    const savedRecordings = localStorage.getItem('vanilog_recordings');
-    
-    if (savedUser) {
-      try {
-        setUser(JSON.parse(savedUser));
-      } catch (e) {
-        console.error("Failed to parse user session");
+    const initAuth = async () => {
+      // Check for current session
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        setUser({
+          id: session.user.id,
+          email: session.user.email || '',
+          name: session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'User'
+        });
       }
-    }
 
-    if (savedRecordings) {
-      try {
-        setRecordings(JSON.parse(savedRecordings));
-      } catch (e) {
-        console.error("Failed to parse saved recordings");
-      }
-    }
-    
-    setIsInitialLoad(false);
+      // Listen for auth state changes (login, logout, signup confirmation)
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+        if (session?.user) {
+          setUser({
+            id: session.user.id,
+            email: session.user.email || '',
+            name: session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'User'
+          });
+        } else {
+          setUser(null);
+          setRecordings([]);
+          setActiveRecordingId(null);
+        }
+      });
+
+      setIsInitialLoad(false);
+      return () => subscription.unsubscribe();
+    };
+
+    initAuth();
   }, []);
 
-  // Persist Recordings whenever they change
+  // Fetch recordings from Supabase whenever user is set
   useEffect(() => {
-    if (!isInitialLoad) {
-      localStorage.setItem('vanilog_recordings', JSON.stringify(recordings));
+    if (user) {
+      const loadData = async () => {
+        const data = await fetchRecordings(user.id);
+        setRecordings(data);
+      };
+      loadData();
     }
-  }, [recordings, isInitialLoad]);
+  }, [user]);
 
-  const handleLogin = (newUser: User) => {
-    setUser(newUser);
-  };
-
-  const handleLogout = () => {
-    if (window.confirm("Are you sure you want to logout? All local data will remain on this device.")) {
-      localStorage.removeItem('vanilog_user');
-      setUser(null);
-      setActiveRecordingId(null);
-      setIsRecordingMode(false);
-      setIsLiveMode(false);
-      setAppState(AppState.IDLE);
+  const handleLogout = async () => {
+    if (window.confirm("Are you sure you want to logout?")) {
+      await supabase.auth.signOut();
     }
   };
 
@@ -88,28 +95,51 @@ const App: React.FC = () => {
     setActiveRecordingId(id);
   };
 
-  const handleUpdateTitle = (id: string, newTitle: string) => {
-    setRecordings(prev => prev.map(rec => rec.id === id ? { ...rec, title: newTitle } : rec));
+  const handleUpdateTitle = async (id: string, newTitle: string) => {
+    if (!user) return;
+    const sessionToUpdate = recordings.find(r => r.id === id);
+    if (!sessionToUpdate) return;
+
+    const updatedSession = { ...sessionToUpdate, title: newTitle };
+    setRecordings(prev => prev.map(rec => rec.id === id ? updatedSession : rec));
+    
+    try {
+      await saveRecording(updatedSession, user.id);
+    } catch (e) {
+      console.error("Failed to update title in Supabase", e);
+    }
   };
 
-  const handleDeleteRecording = (id: string) => {
+  const handleDeleteRecording = async (id: string) => {
+    if (!user) return;
+    
     if (window.confirm("Are you sure you want to delete this recording? This action cannot be undone.")) {
+      const previousRecordings = [...recordings];
+      
+      // Optimistic update: remove from list immediately
       setRecordings(prev => prev.filter(rec => rec.id !== id));
+      
+      // If the deleted recording was the active one, reset the main view
       if (activeRecordingId === id) {
         setActiveRecordingId(null);
-        if (!isRecordingMode && !isLiveMode) setAppState(AppState.IDLE);
+        setIsRecordingMode(false);
+        setIsLiveMode(false);
+        setAppState(AppState.IDLE);
+      }
+      
+      try {
+        await deleteRecordingFromDb(id, user.id);
+      } catch (err) {
+        // Revert if database call fails
+        setRecordings(previousRecordings);
+        alert("Delete failed. Please check your internet connection and try again.");
       }
     }
   };
 
-  const handleBackToList = () => {
-    setActiveRecordingId(null);
-    setIsRecordingMode(false);
-    setIsLiveMode(false);
-    setAppState(AppState.IDLE);
-  };
-
   const handleRecordingComplete = useCallback(async (audioData: AudioRecording) => {
+    if (!user) return;
+
     const newSession: RecordingSession = {
       id: uuidv4(),
       title: `Recording ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`,
@@ -126,16 +156,26 @@ const App: React.FC = () => {
     setAppState(AppState.PROCESSING);
     
     try {
+      await saveRecording(newSession, user.id);
       const analysis = await analyzeConversation(audioData.blob);
-      setRecordings(prev => prev.map(rec => rec.id === newSession.id ? { ...rec, analysis, status: 'completed' } : rec));
+      const completedSession: RecordingSession = { ...newSession, analysis, status: 'completed' };
+      setRecordings(prev => prev.map(rec => rec.id === newSession.id ? completedSession : rec));
+      await saveRecording(completedSession, user.id);
     } catch (err: any) {
-      console.error(err);
-      setRecordings(prev => prev.map(rec => rec.id === newSession.id ? { ...rec, status: 'error', errorMessage: err.message || "Failed to analyze audio." } : rec));
+      console.error("Recording process failed:", err);
+      const errorSession: RecordingSession = { ...newSession, status: 'error', errorMessage: err.message };
+      setRecordings(prev => prev.map(rec => rec.id === newSession.id ? errorSession : rec));
+      await saveRecording(errorSession, user.id);
     }
-  }, []);
+  }, [user]);
 
-  if (isInitialLoad) return null;
-  if (!user) return <AuthView onLogin={handleLogin} />;
+  if (isInitialLoad) return (
+    <div className="h-screen w-screen flex items-center justify-center bg-slate-50">
+      <div className="w-8 h-8 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
+    </div>
+  );
+
+  if (!user) return <AuthView onLogin={() => {}} />; // Session handled by listener
   
   const activeSession = recordings.find(r => r.id === activeRecordingId);
   const showMainContent = isRecordingMode || isLiveMode || !!activeRecordingId;
@@ -149,7 +189,7 @@ const App: React.FC = () => {
         {!isLiveMode && (
           <header className="h-20 border-b border-slate-50 flex items-center px-4 md:px-10 justify-between bg-white shrink-0">
             <div className="flex items-center space-x-3">
-              <button onClick={handleBackToList} className="md:hidden p-2 -ml-2 text-slate-400 hover:bg-slate-50 rounded-xl transition-colors"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg></button>
+              <button onClick={() => { setActiveRecordingId(null); setIsRecordingMode(false); }} className="md:hidden p-2 -ml-2 text-slate-400 hover:bg-slate-50 rounded-xl transition-colors"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg></button>
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 bg-gradient-to-br from-amber-600 to-yellow-600 rounded-lg shadow-lg flex items-center justify-center text-white font-bold text-sm">V</div>
                 <h1 className="text-xl font-bold tracking-tight text-slate-800">VaniLog</h1>
@@ -162,13 +202,13 @@ const App: React.FC = () => {
           {isLiveMode ? <LiveSession onEndSession={handleEndLive} /> : isRecordingMode ? (
             <div className="h-full flex flex-col items-center justify-center bg-slate-50/20 p-6"><AudioRecorder appState={appState} setAppState={setAppState} onRecordingComplete={handleRecordingComplete} /></div>
           ) : activeSession ? <ResultsView session={activeSession} onUpdateTitle={handleUpdateTitle} /> : (
-            <div className="hidden md:flex h-full flex-col items-center justify-center text-slate-300 p-8">
-               <div className="w-32 h-32 bg-slate-50 rounded-full flex items-center justify-center mb-8 text-slate-200 border border-slate-100 shadow-inner"><svg className="w-12 h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg></div>
-               <h2 className="text-2xl font-bold text-slate-700">Voice-to-insight AI</h2>
+            <div className="flex h-full flex-col items-center justify-center text-slate-300 p-8">
+               <div className="w-24 h-24 md:w-32 md:h-32 bg-slate-50 rounded-full flex items-center justify-center mb-8 text-slate-200 border border-slate-100 shadow-inner"><svg className="w-10 h-10 md:w-12 md:h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg></div>
+               <h2 className="text-xl md:text-2xl font-bold text-slate-700">Voice-to-insight AI</h2>
                <p className="max-w-xs text-center mt-3 text-sm text-slate-400 font-medium leading-relaxed">Start a new recording or choose from history to see Gemini's analysis.</p>
-               <div className="flex gap-4 mt-12">
-                 <button onClick={handleStartNew} className="px-8 py-3 bg-slate-900 text-white rounded-2xl text-sm font-bold hover:bg-slate-800 transition-all shadow-xl active:scale-95">Start recording</button>
-                 <button onClick={handleStartLive} className="px-8 py-3 bg-white text-slate-600 border border-slate-200 hover:border-amber-300 hover:text-amber-700 rounded-2xl text-sm font-bold transition-all active:scale-95">Live companion</button>
+               <div className="flex flex-col md:flex-row gap-4 mt-12 w-full max-w-xs md:max-w-none">
+                 <button onClick={handleStartNew} className="w-full md:w-auto px-8 py-3.5 bg-slate-900 text-white rounded-2xl text-sm font-bold hover:bg-slate-800 transition-all shadow-xl active:scale-95">Start recording</button>
+                 <button onClick={handleStartLive} className="w-full md:w-auto px-8 py-3.5 bg-white text-slate-600 border border-slate-200 hover:border-amber-300 hover:text-amber-700 rounded-2xl text-sm font-bold transition-all active:scale-95">Live assistant</button>
                </div>
             </div>
           )}

@@ -15,6 +15,7 @@ interface SidebarProps {
 
 const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect, onNew, onStartLive, isLiveActive, onDelete, onLogout }) => {
   const [sharingId, setSharingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -31,26 +32,33 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
     e.stopPropagation();
     
     const shareText = `VaniLog insight brief: ${rec.title}\nDate: ${new Date(rec.date).toLocaleDateString()}\n\n${rec.analysis?.summary || 'Session recorded.'}`;
+    const currentUrl = window.location.href;
+    const isValidUrl = currentUrl.startsWith('http');
     
     try {
       if (navigator.share) {
         await navigator.share({
           title: rec.title,
           text: shareText,
-          url: window.location.href
+          ...(isValidUrl ? { url: currentUrl } : {})
         });
       } else {
-        await navigator.clipboard.writeText(shareText);
-        setSharingId(rec.id);
-        setTimeout(() => setSharingId(null), 2000);
+        throw new Error('Web Share API not supported');
       }
     } catch (err) {
-      console.error("Error sharing:", err);
-      // Fallback if both fail or user cancels
-      if (!navigator.share) {
-        alert("Unable to share. Please check your browser permissions.");
-      }
+      console.warn("Share failed, falling back to clipboard:", err);
+      await navigator.clipboard.writeText(`${shareText}${isValidUrl ? `\n\nLink: ${currentUrl}` : ''}`);
+      setSharingId(rec.id);
+      setTimeout(() => setSharingId(null), 2000);
     }
+  };
+
+  const handleDelete = (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDeletingId(id);
+    onDelete(id);
+    // Note: We don't clear deletingId here because the item will be removed from DOM
   };
 
   return (
@@ -115,7 +123,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
         )}
         
         {recordings.map((rec) => (
-          <div key={rec.id} className="relative group/item px-1">
+          <div key={rec.id} className={`relative group/item px-1 transition-opacity duration-300 ${deletingId === rec.id ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
             <div
               className={`w-full p-4 rounded-2xl border transition-all duration-300 relative cursor-pointer ${
                 activeId === rec.id && !isLiveActive
@@ -125,7 +133,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
               onClick={() => onSelect(rec.id)}
             >
               <div className="flex justify-between items-start mb-2.5">
-                <span className={`font-bold text-sm truncate max-w-[140px] tracking-tight ${activeId === rec.id && !isLiveActive ? 'text-slate-900' : 'text-slate-600'}`}>
+                <span className={`font-bold text-sm truncate max-w-[120px] tracking-tight ${activeId === rec.id && !isLiveActive ? 'text-slate-900' : 'text-slate-600'}`}>
                   {rec.title}
                 </span>
                 <div className="flex items-center gap-1.5 shrink-0">
@@ -140,7 +148,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
               </div>
               <div className="flex justify-between items-center text-[10px] font-bold text-slate-400">
                 <div className="flex items-center gap-2">
-                  <span className="">{new Date(rec.date).toLocaleDateString(undefined, {month:'short', day:'numeric'})}</span>
+                  <span>{new Date(rec.date).toLocaleDateString(undefined, {month:'short', day:'numeric'})}</span>
                   <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
                   <span className="font-mono text-[9px]">{formatTime(rec.duration)}</span>
                 </div>
@@ -154,7 +162,8 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
               </div>
             </div>
             
-            <div className="absolute top-4 right-3 flex items-center gap-1 opacity-0 group-hover/item:opacity-100 transition-all duration-200 z-30">
+            {/* Action Buttons - Visible on hover for desktop, always visible on touch */}
+            <div className="absolute top-4 right-3 flex items-center gap-1 opacity-100 md:opacity-0 group-hover/item:opacity-100 transition-all duration-200 z-30">
               <button
                 onClick={(e) => handleShare(e, rec)}
                 className={`p-1.5 rounded-xl transition-all ${
@@ -162,7 +171,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
                     ? 'text-amber-600 bg-amber-50' 
                     : 'text-slate-300 hover:text-amber-500 hover:bg-amber-50'
                 }`}
-                title="Share insight"
+                title="Share"
               >
                 {sharingId === rec.id ? (
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
@@ -171,16 +180,12 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
                 )}
               </button>
               <button
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onDelete(rec.id);
-                }}
+                onClick={(e) => handleDelete(e, rec.id)}
                 className="p-1.5 rounded-xl text-slate-300 hover:text-rose-500 hover:bg-rose-50 transition-all"
-                title="Delete session"
+                title="Delete"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                 </svg>
               </button>
             </div>
