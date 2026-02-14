@@ -16,6 +16,7 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onEndSession }) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error' | 'disconnected'>('connecting');
   const [volume, setVolume] = useState(0);
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
+  const [errorMessage, setErrorMessage] = useState<string>('');
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   const inputContextRef = useRef<AudioContext | null>(null);
@@ -31,27 +32,39 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onEndSession }) => {
     let isMounted = true;
     const init = async () => {
       try {
-        const apiKey = process.env.API_KEY;
+        const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
         const ai = new GoogleGenAI({ apiKey: apiKey! });
         inputContextRef.current = new AudioContext({ sampleRate: 16000 });
         outputContextRef.current = new AudioContext({ sampleRate: 24000 });
         const sessionPromise = ai.live.connect({
-          model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+          model: 'gemini-2.0-flash-exp',
           callbacks: {
             onopen: async () => {
               if (!isMounted) return;
-              setStatus('connected');
-              const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-              const source = inputContextRef.current!.createMediaStreamSource(stream);
-              const processor = inputContextRef.current!.createScriptProcessor(4096, 1, 1);
-              processor.onaudioprocess = (e) => {
-                const data = e.inputBuffer.getChannelData(0);
-                const rms = Math.sqrt(data.reduce((a, b) => a + b*b, 0) / data.length);
-                setVolume(rms * 5);
-                sessionPromise.then(s => s.sendRealtimeInput({ media: { data: encode(new Int16Array(data.map(v => v * 32768)).buffer), mimeType: 'audio/pcm;rate=16000' } }));
-              };
-              source.connect(processor);
-              processor.connect(inputContextRef.current!.destination);
+              try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                setStatus('connected');
+                const source = inputContextRef.current!.createMediaStreamSource(stream);
+                const processor = inputContextRef.current!.createScriptProcessor(4096, 1, 1);
+                processor.onaudioprocess = (e) => {
+                  const data = e.inputBuffer.getChannelData(0);
+                  const rms = Math.sqrt(data.reduce((a, b) => a + b*b, 0) / data.length);
+                  setVolume(rms * 5);
+                  sessionPromise.then(s => s.sendRealtimeInput({ media: { data: encode(new Int16Array(data.map(v => v * 32768)).buffer), mimeType: 'audio/pcm;rate=16000' } }));
+                };
+                source.connect(processor);
+                processor.connect(inputContextRef.current!.destination);
+              } catch (err: any) {
+                console.error('Microphone access error:', err);
+                setStatus('error');
+                if (err.name === 'NotAllowedError') {
+                  setErrorMessage('Microphone access denied. Please enable microphone permissions in your browser settings.');
+                } else if (err.name === 'NotFoundError') {
+                  setErrorMessage('No microphone found. Please connect a microphone and try again.');
+                } else {
+                  setErrorMessage('Failed to access microphone. Please check your device and try again.');
+                }
+              }
             },
             onmessage: async (m: LiveServerMessage) => {
               if (m.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data) {
@@ -70,7 +83,11 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onEndSession }) => {
           config: { responseModalities: [Modality.AUDIO], inputAudioTranscription: {}, outputAudioTranscription: {}, systemInstruction: "Be a friendly voice companion." }
         });
         sessionRef.current = sessionPromise;
-      } catch (e) { setStatus('error'); }
+      } catch (e: any) {
+        console.error('Session initialization error:', e);
+        setStatus('error');
+        setErrorMessage(e.message || 'Failed to initialize live session. Please check your API key and try again.');
+      }
     };
     init();
     return () => { isMounted = false; };
@@ -114,14 +131,34 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onEndSession }) => {
       </div>
 
       <div className="flex-1 flex flex-col items-center justify-center relative">
-        <div className="relative group">
-           <div className="absolute inset-0 bg-amber-500/20 blur-[120px] rounded-full animate-soft-pulse" style={{ transform: `scale(${1 + volume})` }}></div>
-           <div className="relative w-48 h-48 md:w-64 md:h-64 rounded-full border border-white/10 bg-gradient-to-br from-white/10 to-transparent flex items-center justify-center backdrop-blur-md transition-transform duration-75" style={{ transform: `scale(${1 + volume * 0.2})` }}>
-              <div className="w-12 h-12 bg-white rounded-full shadow-[0_0_40px_rgba(255,255,255,0.3)]"></div>
-              <div className="absolute inset-4 border border-amber-500/20 rounded-full animate-[spin_10s_linear_infinite]"></div>
-           </div>
-        </div>
-        <p className="mt-12 text-amber-400/60 font-bold tracking-[0.2em] text-[10px]">Speak naturally</p>
+        {status === 'error' ? (
+          <div className="max-w-md text-center px-6">
+            <div className="w-16 h-16 bg-rose-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+              <svg className="w-8 h-8 text-rose-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <h3 className="text-lg font-bold text-white mb-2">Connection Error</h3>
+            <p className="text-slate-400 text-sm mb-6">{errorMessage || 'Failed to connect. Please try again.'}</p>
+            <button
+              onClick={onEndSession}
+              className="px-6 py-2.5 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white text-sm font-bold transition-all"
+            >
+              Go back
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="relative group">
+              <div className="absolute inset-0 bg-amber-500/20 blur-[120px] rounded-full animate-soft-pulse" style={{ transform: `scale(${1 + volume})` }}></div>
+              <div className="relative w-48 h-48 md:w-64 md:h-64 rounded-full border border-white/10 bg-gradient-to-br from-white/10 to-transparent flex items-center justify-center backdrop-blur-md transition-transform duration-75" style={{ transform: `scale(${1 + volume * 0.2})` }}>
+                <div className="w-12 h-12 bg-white rounded-full shadow-[0_0_40px_rgba(255,255,255,0.3)]"></div>
+                <div className="absolute inset-4 border border-amber-500/20 rounded-full animate-[spin_10s_linear_infinite]"></div>
+              </div>
+            </div>
+            <p className="mt-12 text-amber-400/60 font-bold tracking-[0.2em] text-[10px]">Speak naturally</p>
+          </>
+        )}
       </div>
 
       <div className="h-[250px] bg-slate-900/40 backdrop-blur-2xl border-t border-white/5 p-8 overflow-y-auto scrollbar-hide relative z-20">

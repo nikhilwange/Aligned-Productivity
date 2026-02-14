@@ -71,7 +71,13 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     if (!session.analysis?.summary) return [];
     const lines = session.analysis.summary.split('\n');
     const result: { title: string; content: string; startIndex: number; endIndex: number }[] = [];
-    let currentSection: { title: string; content: string[]; startIndex: number } | null = null;
+    const firstLineIsHeader = lines.length > 0 && (/^[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌🗣️📎]/.test(lines[0].trim()) || lines[0].trim().startsWith('## '));
+
+    let currentSection: { title: string; content: string[]; startIndex: number } | null = firstLineIsHeader ? null : {
+      title: 'Summary',
+      content: [],
+      startIndex: 0
+    };
     lines.forEach((line, index) => {
       const isHeader = /^[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌🗣️📎]/.test(line.trim()) || line.trim().startsWith('## ');
       if (isHeader) {
@@ -92,7 +98,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
         currentSection.content.push(line);
       }
     });
-    if (currentSection) {
+    if (currentSection && currentSection.content.length > 0) {
       result.push({
         title: currentSection.title,
         content: currentSection.content.join('\n').trim(),
@@ -108,21 +114,20 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     let inTable = false;
     let tableRows: string[][] = [];
     return (
-      <div key={section.title} className="group/section relative mb-16 animate-in fade-in slide-in-from-bottom-6 duration-700">
-        <div className="flex items-center justify-between mb-6 group">
+      <div key={section.title} className="group/section relative mb-12 animate-fade-in-up">
+        <div className="flex items-center justify-between mb-4 group">
           <div className="flex-1"></div>
-          <button 
+          <button
             onClick={() => copySection(section.title, section.content)}
-            className={`opacity-0 group-hover/section:opacity-100 transition-all flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-extrabold border shadow-sm ${
-              copiedSection === section.title 
-                ? 'bg-amber-50 border-amber-100 text-amber-600' 
-                : 'bg-white border-slate-200 text-slate-400 hover:text-slate-600 hover:border-slate-300'
-            }`}
+            className={`opacity-0 group-hover/section:opacity-100 transition-all flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold ${copiedSection === section.title
+              ? 'bg-teal-500/20 text-teal-300'
+              : 'glass text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+              }`}
           >
             {copiedSection === section.title ? "Copied" : "Copy"}
           </button>
         </div>
-        <div className="space-y-1.5 pl-6 border-l-2 border-slate-50 group-hover/section:border-amber-100 transition-colors duration-500">
+        <div className="space-y-2 pl-5 border-l-2 border-white/[0.06] group-hover/section:border-purple-500/30 transition-colors duration-500">
           {lines.map((line, i) => {
             const trimmed = line.trim();
             if (trimmed.startsWith('|')) {
@@ -136,20 +141,20 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
                 tableRows = [];
                 inTable = false;
                 return (
-                  <div key={`table-${i}`} className="overflow-x-auto my-8 border border-slate-100 rounded-2xl shadow-sm">
+                  <div key={`table-${i}`} className="overflow-x-auto my-6 glass rounded-xl">
                     <table className="w-full text-left border-collapse">
                       <thead>
-                        <tr className="bg-slate-50/50 border-b border-slate-100">
+                        <tr className="border-b border-white/[0.06]">
                           {currentTable[0].map((cell, idx) => (
-                            <th key={idx} className="px-5 py-3 text-[11px] font-bold text-slate-500 tracking-tight">{cell}</th>
+                            <th key={idx} className="px-5 py-3 text-xs font-bold opacity-50 tracking-wide text-[var(--text-primary)]">{cell}</th>
                           ))}
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-50">
+                      <tbody className="divide-y divide-white/[0.04]">
                         {currentTable.slice(1).map((row, rIdx) => (
-                          <tr key={rIdx} className="hover:bg-slate-50/30 transition-colors">
+                          <tr key={rIdx} className="hover:bg-white/[0.02] transition-colors text-[var(--text-secondary)]">
                             {row.map((cell, cIdx) => (
-                              <td key={cIdx} className="px-5 py-4 text-sm text-slate-600 font-medium">{cell}</td>
+                              <td key={cIdx} className="px-5 py-4 text-sm font-medium">{cell}</td>
                             ))}
                           </tr>
                         ))}
@@ -160,24 +165,37 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
               }
               return null;
             }
-            if (trimmed.startsWith('## ')) return <h2 key={i} className="text-2xl font-bold text-slate-900 mt-2 mb-8 tracking-tight border-b border-slate-50 pb-3">{trimmed.replace('## ', '')}</h2>;
-            if (/^[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌🗣️📎]/.test(trimmed)) return <h2 key={i} className="text-xl font-bold text-slate-900 -ml-6 mt-2 mb-8 flex items-center gap-3 bg-white z-10"><span className="w-10 h-10 rounded-xl bg-slate-50 flex items-center justify-center border border-slate-100 shadow-sm">{trimmed.substring(0, 2)}</span> {trimmed.substring(2)}</h2>;
-            if (trimmed.startsWith('### ')) return <h3 key={i} className="text-lg font-bold text-slate-800 mt-8 mb-5 tracking-tight">{trimmed.replace('### ', '')}</h3>;
+            if (trimmed.startsWith('## ')) return <h2 key={i} className="text-xl font-bold text-[var(--text-primary)] mt-6 mb-6 tracking-tight border-b border-white/[0.06] pb-3">{trimmed.replace('## ', '')}</h2>;
+            if (/^[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌🗣️📎]/.test(trimmed)) return (
+              <h2 key={i} className="text-lg font-bold text-[var(--text-primary)] -ml-5 mt-6 mb-6 flex items-center gap-3 bg-[var(--surface-950)] z-10">
+                <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/20 to-teal-500/20 flex items-center justify-center border border-white/[0.08] shadow-lg">
+                  {trimmed.substring(0, 2)}
+                </span>
+                <span className="opacity-90">{trimmed.substring(2)}</span>
+              </h2>
+            );
+            if (trimmed.startsWith('### ')) return <h3 key={i} className="text-base font-bold opacity-80 mt-6 mb-4 tracking-tight text-[var(--text-primary)]">{trimmed.replace('### ', '')}</h3>;
             if (trimmed.startsWith('- [ ]')) return (
-                <div key={i} className="flex items-start gap-3.5 my-3 group/cb">
-                  <div className="mt-1 w-5 h-5 rounded-md border-2 border-slate-200 group-hover/cb:border-amber-400 transition-all shrink-0 shadow-sm"></div>
-                  <span className="text-slate-700 font-medium leading-relaxed">{trimmed.replace('- [ ]', '').trim()}</span>
-                </div>
+              <div key={i} className="flex items-start gap-3 my-2 group/cb">
+                <div className="mt-1 w-5 h-5 rounded-md border-2 border-white/20 group-hover/cb:border-purple-400 transition-all shrink-0"></div>
+                <span className="text-[var(--text-secondary)] font-medium leading-relaxed">{trimmed.replace('- [ ]', '').trim()}</span>
+              </div>
             );
             if (trimmed.startsWith('- [x]')) return (
-                <div key={i} className="flex items-start gap-3.5 my-3 opacity-60">
-                  <div className="mt-1 w-5 h-5 rounded-md bg-amber-500 border-2 border-amber-500 flex items-center justify-center shrink-0 shadow-sm"><svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" /></svg></div>
-                  <span className="text-slate-400 line-through font-medium leading-relaxed">{trimmed.replace('- [x]', '').trim()}</span>
+              <div key={i} className="flex items-start gap-3 my-2 opacity-50">
+                <div className="mt-1 w-5 h-5 rounded-md bg-teal-500 border-2 border-teal-500 flex items-center justify-center shrink-0">
+                  <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" />
+                  </svg>
                 </div>
+                <span className="text-[var(--text-secondary)] line-through font-medium leading-relaxed">{trimmed.replace('- [x]', '').trim()}</span>
+              </div>
             );
-            if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) return <li key={i} className="ml-5 pl-2 my-2 text-slate-600 list-disc marker:text-amber-500 font-medium">{trimmed.substring(2)}</li>;
-            if (trimmed === '') return <div key={i} className="h-4"></div>;
-            return <p key={i} className="text-[17px] leading-[1.7] text-slate-600 mb-3 font-medium tracking-tight">{trimmed}</p>;
+            if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) return (
+              <li key={i} className="ml-4 pl-2 my-2 text-[var(--text-secondary)] list-disc marker:text-purple-400 font-medium opacity-80">{trimmed.substring(2)}</li>
+            );
+            if (trimmed === '') return <div key={i} className="h-3"></div>;
+            return <p key={i} className="text-base leading-relaxed text-[var(--text-secondary)] mb-2 font-medium opacity-80">{trimmed}</p>;
           })}
         </div>
       </div>
@@ -185,71 +203,80 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
   };
 
   if (session.status === 'processing') return (
-    <div className="flex flex-col items-center justify-center h-full bg-white px-8">
-      <div className="relative w-20 h-20 mb-10">
-        <div className="absolute inset-0 border-[4px] border-slate-100 rounded-full"></div>
-        <div className="absolute inset-0 border-[4px] border-t-amber-500 rounded-full animate-spin"></div>
-        <div className="absolute inset-4 bg-amber-50 rounded-full animate-pulse"></div>
+    <div className="flex flex-col items-center justify-center h-full bg-[var(--surface-950)] px-8">
+      {/* Loading animation */}
+      <div className="relative w-24 h-24 mb-10">
+        <div className="absolute inset-0 rounded-full border-4 border-white/10"></div>
+        <div className="absolute inset-0 rounded-full border-4 border-t-purple-500 border-r-teal-500 border-b-amber-500 border-l-transparent animate-spin"></div>
+        <div className="absolute inset-4 rounded-full bg-gradient-to-br from-purple-500/20 to-teal-500/20 animate-pulse"></div>
       </div>
-      <h3 className="text-xl font-bold text-slate-800 tracking-tight mb-2">Aligning insights</h3>
-      <p className="text-sm text-slate-400 font-bold tracking-tight">Synthesizing workspace content...</p>
+      <h3 className="text-xl font-bold text-[var(--text-primary)] tracking-tight mb-2">Aligning insights</h3>
+      <p className="text-sm opacity-40 font-medium text-[var(--text-primary)]">Synthesizing workspace content...</p>
     </div>
   );
 
   if (!session.analysis) return null;
 
   return (
-    <div className="flex flex-col h-full bg-white overflow-hidden font-sans selection:bg-amber-100 selection:text-amber-900">
-      {/* Header Layout */}
-      <header className="shrink-0 bg-white border-b border-slate-100 sticky top-0 z-40 backdrop-blur-md">
-        {/* Row 1: Breadcrumbs */}
-        <div className="h-12 flex items-center px-8 border-b border-slate-50">
+    <div className="flex flex-col h-full bg-[var(--surface-950)] overflow-hidden text-[var(--text-primary)]">
+      {/* Header */}
+      <header className="shrink-0 bg-[var(--surface-900)]/80 backdrop-blur-xl border-b border-white/[0.06] sticky top-0 z-40">
+        {/* Breadcrumbs */}
+        <div className="h-12 flex items-center px-4 md:px-8 border-b border-white/[0.04]">
           <div className="flex items-center gap-3">
-            <button className="p-1.5 hover:bg-slate-50 rounded-lg text-slate-400">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
+            <button className="p-1.5 hover:bg-white/5 rounded-lg opacity-30 transition-colors">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
             </button>
-            <nav className="flex items-center gap-2 text-[11px] font-bold text-slate-400 tracking-tight">
-              <span className="hover:text-slate-900 cursor-pointer transition-colors">Workspace</span>
-              <span className="text-slate-200">/</span>
-              <span className="text-slate-900 truncate max-w-[200px]">{session.title}</span>
+            <nav className="flex items-center gap-2 text-xs font-semibold opacity-40 text-[var(--text-primary)]">
+              <span className="hover:opacity-100 cursor-pointer transition-colors">Workspace</span>
+              <span className="opacity-50">/</span>
+              <span className="opacity-100">{session.title}</span>
             </nav>
           </div>
         </div>
 
-        {/* Row 2: Action Buttons */}
-        <div className="h-16 flex items-center gap-3 px-8">
-          <button 
+        {/* Actions */}
+        <div className="h-16 flex items-center gap-3 px-4 md:px-8 overflow-x-auto scrollbar-hide">
+          <button
             onClick={handleShare}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[11px] font-bold tracking-tight border transition-all ${
-              sharing ? 'bg-amber-50 border-amber-200 text-amber-600' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-900'
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${sharing 
+              ? 'bg-teal-500/20 text-teal-300' 
+              : 'glass glass-hover opacity-60 hover:opacity-100'
             }`}
           >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg>
-            {sharing ? "Link copied" : "Share"}
+            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+            </svg>
+            <span className="whitespace-nowrap">{sharing ? "Copied" : "Share"}</span>
           </button>
 
-          <button 
+          <button
             onClick={copyToClipboard}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[11px] font-bold tracking-tight border transition-all ${
-              globalCopied ? 'bg-amber-50 border-amber-200 text-amber-600' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-900'
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${globalCopied 
+              ? 'bg-teal-500/20 text-teal-300' 
+              : 'glass glass-hover opacity-60 hover:opacity-100'
             }`}
           >
             {globalCopied ? "Copied" : "Export"}
           </button>
 
-          <div className="flex bg-slate-100 p-1 rounded-[1.25rem] border border-slate-200/50 shadow-inner ml-2">
+          <div className="flex glass p-1 rounded-xl ml-auto">
             <button
               onClick={() => setActiveTab('notes')}
-              className={`px-5 py-2 rounded-[1rem] text-[11px] font-bold tracking-tight transition-all ${
-                activeTab === 'notes' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${activeTab === 'notes' 
+                ? 'bg-purple-500/20 text-purple-300 shadow-lg shadow-purple-500/10' 
+                : 'opacity-40 hover:opacity-60'
               }`}
             >
               Notes
             </button>
             <button
               onClick={() => setActiveTab('transcript')}
-              className={`px-5 py-2 rounded-[1rem] text-[11px] font-bold tracking-tight transition-all ${
-                activeTab === 'transcript' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${activeTab === 'transcript' 
+                ? 'bg-purple-500/20 text-purple-300 shadow-lg shadow-purple-500/10' 
+                : 'opacity-40 hover:opacity-60'
               }`}
             >
               Script
@@ -258,53 +285,100 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto bg-white pt-16 pb-32 px-6 md:px-0">
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto bg-[var(--surface-950)] pt-8 md:pt-12 pb-32 px-4 md:px-6 scrollbar-hide">
         <article className="max-w-2xl mx-auto">
-          <div className="mb-16">
+          {/* Title Section */}
+          <div className="mb-12">
             <div className="flex items-center gap-3 mb-6">
-               <span className="px-2.5 py-0.5 bg-indigo-50 text-indigo-600 rounded-lg text-[9px] font-extrabold border border-indigo-100/50">Verified analysis</span>
-               <span className="text-slate-200">•</span>
-               <span className="text-slate-400 text-[9px] font-extrabold">{new Date(session.date).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</span>
+              <span className="px-2.5 py-1 bg-purple-500/20 text-purple-600 rounded-lg text-[10px] font-bold border border-purple-500/20">
+                Verified analysis
+              </span>
+              <span className="opacity-20 text-[var(--text-primary)]">•</span>
+              <span className="opacity-40 text-xs font-medium text-[var(--text-primary)]">
+                {new Date(session.date).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+              </span>
             </div>
+            
             <input
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               onBlur={handleTitleBlur}
-              className="text-5xl font-extrabold text-slate-900 bg-transparent border-none p-0 focus:ring-0 placeholder-slate-100 w-full tracking-tighter leading-tight"
+              className="text-3xl md:text-4xl font-bold text-[var(--text-primary)] bg-transparent border-none p-0 focus:ring-0 focus:outline-none placeholder-[var(--text-muted)] w-full tracking-tight leading-tight"
             />
-            <div className="flex items-center gap-5 mt-10 text-slate-400 text-[10px] font-extrabold border-t border-slate-50 pt-8">
-               <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg">
-                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                 {Math.floor(session.duration/60)}m {session.duration%60}s
-               </div>
-               <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg">
-                 <div className="w-2 h-2 rounded-full bg-amber-500"></div>
-                 {session.source.replace('-', ' ')}
-               </div>
+            
+            <div className="flex items-center gap-4 mt-8 opacity-40 text-xs font-semibold border-t border-white/[0.06] pt-6">
+              <div className="flex items-center gap-2 glass px-3 py-1.5 rounded-lg">
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span className="font-mono">{Math.floor(session.duration / 60)}m {session.duration % 60}s</span>
+              </div>
+              <div className="flex items-center gap-2 glass px-3 py-1.5 rounded-lg">
+                <div className={`w-2 h-2 rounded-full ${
+                  session.source === 'virtual-meeting' ? 'bg-purple-400' 
+                  : session.source === 'phone-call' ? 'bg-teal-400' 
+                  : session.source === 'dictation' ? 'bg-amber-400'
+                  : 'bg-white/40'
+                }`}></div>
+                <span className="capitalize">{session.source.replace('-', ' ')}</span>
+              </div>
             </div>
           </div>
 
-          <div className="prose prose-slate max-w-none">
+          <div className="prose prose-invert max-w-none">
             {activeTab === 'notes' ? (
-              <div className="animate-in fade-in duration-700">
-                {sections.length > 0 ? sections.map(renderRichSection) : <p className="text-slate-400">Synthesizing content...</p>}
+              <div className="animate-fade-in">
+                {/* Warning for truncated content */}
+                {session.analysis.isTruncated && (
+                  <div className="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center gap-3 text-amber-600 text-sm font-medium">
+                    <svg className="w-5 h-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    The transcript was too long and has been partially truncated.
+                  </div>
+                )}
+
+                {/* Transcript Section - Only show at top for Dictation sessions */}
+                {session.source === 'dictation' && session.analysis.transcript && (
+                  <div className="mb-10 pb-8 border-b border-white/[0.06]">
+                    <h2 className="text-lg font-bold text-[var(--text-primary)] mb-5 flex items-center gap-3">
+                      <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500/20 to-teal-500/20 text-purple-300 flex items-center justify-center border border-white/[0.08] text-sm">🗣️</span>
+                      Transcribed Text
+                    </h2>
+                    <div className="text-base leading-relaxed text-[var(--text-secondary)] font-medium opacity-80">
+                      {session.analysis.transcript.split('\n').map((line, i) => (
+                        <p key={i} className="mb-3">{line}</p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {sections.length > 0 ? sections.map(renderRichSection) : <p className="opacity-30">Synthesizing content...</p>}
               </div>
             ) : (
-              <div className="animate-in fade-in duration-500 space-y-10">
-                <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight pb-6 border-b border-slate-50">Verbatim transcript</h2>
-                <div className="space-y-10 pl-4 border-l-2 border-slate-50">
+              <div className="animate-fade-in space-y-8">
+                <h2 className="text-2xl font-bold text-[var(--text-primary)] tracking-tight pb-5 border-b border-white/[0.06]">Verbatim transcript</h2>
+                <div className="space-y-6 pl-4 border-l-2 border-white/[0.06]">
                   {session.analysis.transcript.split('\n').filter(l => l.trim()).map((line, i) => {
-                    const speakerMatch = line.match(/^([^(\[]+)/);
-                    const speaker = speakerMatch ? speakerMatch[1].trim() : "Speaker";
-                    const text = line.replace(/^[^:]+:\s*/, '').trim();
+                    const hasSpeakerLabel = line.includes(':');
+                    let speaker = "Dictation";
+                    let text = line.trim();
+
+                    if (hasSpeakerLabel) {
+                      const parts = line.split(':');
+                      speaker = parts[0].trim();
+                      text = parts.slice(1).join(':').trim();
+                    }
+
                     return (
-                      <div key={i} className="group flex gap-8">
+                      <div key={i} className="group flex gap-6">
                         <div className="w-20 shrink-0">
-                           <div className="text-[11px] font-extrabold text-slate-900 truncate">{speaker}</div>
+                          <div className={`text-xs font-bold text-purple-300 truncate ${!hasSpeakerLabel && 'opacity-0'}`}>{speaker}</div>
                         </div>
                         <div className="flex-1">
-                          <p className="text-slate-600 leading-relaxed text-[17px] font-medium tracking-tight">{text}</p>
+                          <p className="text-[var(--text-secondary)] leading-relaxed text-base font-medium opacity-80">{text}</p>
                         </div>
                       </div>
                     );

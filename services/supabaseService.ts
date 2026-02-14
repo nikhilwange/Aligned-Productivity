@@ -1,8 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { RecordingSession } from '../types';
 
-const supabaseUrl = 'https://qbcgxssicbojetmocswf.supabase.co';
-const supabaseAnonKey = 'sb_publishable_Huxzd1Xu2WtqaFO8CH_o7A_euhehh_C';
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 

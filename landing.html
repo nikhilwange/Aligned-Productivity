@@ -1,0 +1,139 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aligned | Workspace Intelligence</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --brand-gold: #f59e0b;
+            --brand-purple: #a855f7;
+            --brand-teal: #14b8a6;
+            --surface: #0a0a0f;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--surface);
+            color: white;
+            overflow-x: hidden;
+        }
+        .glass {
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .hero-glow {
+            background: radial-gradient(circle at 50% 50%, rgba(168, 85, 247, 0.15) 0%, transparent 70%);
+        }
+        .gradient-text {
+            background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 50%, #d97706 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        @keyframes float {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-20px); }
+        }
+        .float { animation: float 6s ease-in-out infinite; }
+    </style>
+</head>
+<body>
+    <!-- Nav -->
+    <nav class="fixed top-0 w-full z-50 px-6 py-8">
+        <div class="max-w-7xl mx-auto flex justify-between items-center glass rounded-2xl px-6 py-4">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-gradient-to-br from-amber-500 to-orange-600 rounded-xl flex items-center justify-center font-bold text-xl shadow-lg">A</div>
+                <span class="text-xl font-bold tracking-tight">Aligned</span>
+            </div>
+            <div class="hidden md:flex items-center gap-8 text-sm font-semibold text-white/60">
+                <a href="#features" class="hover:text-white transition-colors">Features</a>
+                <a href="#vision" class="hover:text-white transition-colors">Vision</a>
+                <div class="h-4 w-px bg-white/10 mx-2"></div>
+                <a href="/login" class="hover:text-white transition-colors">Sign In</a>
+                <a href="/signup" class="px-5 py-2.5 bg-white text-black rounded-xl hover:bg-amber-500 hover:text-white transition-all shadow-lg shadow-white/5">Get Started</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <section class="relative pt-48 pb-32 px-6 hero-glow">
+        <div class="max-w-5xl mx-auto text-center">
+            <div class="inline-flex items-center gap-2 px-4 py-2 rounded-full glass text-xs font-bold text-amber-500 mb-8 animate-bounce">
+                🚀 NOW SUPPORTING 10+ INDIAN LANGUAGES
+            </div>
+            <h1 class="text-6xl md:text-8xl font-black tracking-tighter mb-8 leading-[0.9]">
+                Capture the Chaos. <br> Deliver the <span class="gradient-text">Strategy.</span>
+            </h1>
+            <p class="text-xl md:text-2xl text-white/40 font-medium max-w-2xl mx-auto mb-12 leading-relaxed">
+                The ultimate workspace intelligence platform. Capture meetings, dictate thoughts, and let Gemini 2.5 turn noise into actionable insights.
+            </p>
+            <div class="flex flex-col md:flex-row items-center justify-center gap-6">
+                <button class="w-full md:w-auto px-8 py-4 bg-gradient-to-r from-amber-500 to-orange-600 rounded-2xl font-bold text-lg shadow-2xl shadow-orange-500/20 hover:scale-105 transition-all">
+                    Get Aligned for Mac
+                </button>
+                <button class="w-full md:w-auto px-8 py-4 glass rounded-2xl font-bold text-lg flex items-center justify-center gap-3 hover:bg-white/5 transition-all">
+                    <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M17.05 20.28c-.96.95-2.04 1.87-3.23 1.87-1.15 0-1.57-.73-2.95-.73-1.4 0-1.85.71-2.93.71-1.13 0-2.31-.95-3.32-1.95-2.06-2.05-3.64-5.79-3.64-8.88 0-3.09 1.58-4.73 3.09-4.73 1.15 0 2.24.8 2.95.8.71 0 2.05-.98 3.48-.98 1.4 0 2.65.6 3.42 1.5-3.15 1.7-2.65 6.08.53 7.37-.88 2.1-1.83 4.2-3.4 5.99zM12.03 7.25c-.22-2.22 1.62-4.14 3.32-4.75.22 2.22-1.62 4.14-3.32 4.75z"/></svg>
+                    Coming to iOS
+                </button>
+            </div>
+        </div>
+
+        <!-- Floating UI Mockup -->
+        <div class="mt-24 max-w-4xl mx-auto float">
+            <div class="glass rounded-[2rem] p-4 shadow-2xl border-white/10">
+                <div class="bg-black/40 rounded-[1.5rem] overflow-hidden aspect-video flex items-center justify-center relative">
+                    <div class="absolute inset-0 bg-gradient-to-br from-purple-500/10 to-teal-500/10"></div>
+                    <div class="relative text-center">
+                        <div class="w-24 h-24 rounded-3xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center mx-auto mb-6">
+                            <div class="w-4 h-4 bg-red-500 rounded-full animate-ping"></div>
+                        </div>
+                        <div class="text-3xl font-bold tracking-tight mb-2">Capturing Intelligence...</div>
+                        <div class="text-white/40 font-mono">00:42:15 remaining</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section id="features" class="py-32 px-6">
+        <div class="max-w-7xl mx-auto grid md:grid-cols-3 gap-8">
+            <div class="p-10 rounded-[2.5rem] glass hover:border-amber-500/30 transition-all group">
+                <div class="w-14 h-14 rounded-2xl bg-amber-500/10 flex items-center justify-center text-amber-500 mb-8 group-hover:scale-110 transition-transform">
+                    <svg class="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+                </div>
+                <h3 class="text-2xl font-bold mb-4">Workspace Intelligence</h3>
+                <p class="text-white/40 leading-relaxed">Turn meetings, calls, and corridor chats into beautifully structured, actionable documentation automatically.</p>
+            </div>
+            <div class="p-10 rounded-[2.5rem] glass hover:border-purple-500/30 transition-all group">
+                <div class="w-14 h-14 rounded-2xl bg-purple-500/10 flex items-center justify-center text-purple-500 mb-8 group-hover:scale-110 transition-transform">
+                    <svg class="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" strokeWidth="2" d="M3 5h12M9 3v2m1.048 9.5a18.022 18.022 0 01-3.827-5.802M13 15.538l-1.89-1.341a18.152 18.152 0 01-5.11-6.197M13 21l-3-3m0 0l-3 3m3-3V15.538M19 3v2m0 0H7" /></svg>
+                </div>
+                <h3 class="text-2xl font-bold mb-4">10+ Indian Languages</h3>
+                <p class="text-white/40 leading-relaxed">Full support for Hindi, Marathi, Gujarati, Tamil, and more. Transcribed in native scripts with auto-English translation.</p>
+            </div>
+            <div class="p-10 rounded-[2.5rem] glass hover:border-teal-500/30 transition-all group">
+                <div class="w-14 h-14 rounded-2xl bg-teal-500/10 flex items-center justify-center text-teal-500 mb-8 group-hover:scale-110 transition-transform">
+                    <svg class="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                </div>
+                <h3 class="text-2xl font-bold mb-4">Dictation Flow</h3>
+                <p class="text-white/40 leading-relaxed">A dedicated, chronological log for your daily thoughts. Real-time refinement that polishes raw speech into professional text.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="py-20 border-t border-white/5 text-center">
+        <div class="max-w-7xl mx-auto px-6">
+            <div class="w-12 h-12 bg-gradient-to-br from-amber-500 to-orange-600 rounded-xl flex items-center justify-center font-bold text-xl mx-auto mb-8">A</div>
+            <p class="text-white/20 text-sm font-semibold tracking-widest uppercase mb-4">Powered by Gemini 2.5 & Google Cloud</p>
+            <p class="text-white/40 text-xs">© 2026 Aligned Workspace Intelligence. All rights reserved.</p>
+        </div>
+    </footer>
+</body>
+</html>

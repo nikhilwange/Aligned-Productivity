@@ -1,4 +1,4 @@
-export type RecordingSource = 'in-person' | 'virtual-meeting' | 'phone-call';
+export type RecordingSource = 'in-person' | 'virtual-meeting' | 'phone-call' | 'dictation';
 
 export interface User {
   id: string;

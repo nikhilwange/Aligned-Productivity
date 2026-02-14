@@ -18,17 +18,17 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 };
 
 const parseMarkdownResponse = (text: string): MeetingAnalysis => {
-  // Extract Transcript specifically for the transcript tab
-  const transcriptMatch = text.match(/🗣️\s*Full Transcript\s*([\s\S]*?)(?=📎\s*Additional Notes|$)/i);
+  // Use all possible section markers as lookahead for the transcript
+  const transcriptMatch = text.match(/🗣️\s*Full Transcript\s*([\s\S]*?)(?=[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌📎]|$)/i);
   const transcript = transcriptMatch ? transcriptMatch[1].trim() : "";
 
   // Extract Action Items specifically for checkboxes
-  const actionItemsMatch = text.match(/✅\s*Action Items\s*([\s\S]*?)(?=🎲\s*Decisions Made|🗣️\s*Full Transcript|$)/i);
-  const actionPoints = actionItemsMatch 
+  const actionItemsMatch = text.match(/✅\s*Action Items\s*([\s\S]*?)(?=[📋🎯📝💬🎲❓📊📅🔗💡🚧📌🗣️📎]|$)/i);
+  const actionPoints = actionItemsMatch
     ? actionItemsMatch[1]
-        .split('\n')
-        .filter(l => l.trim().startsWith('- [ ]') || l.trim().startsWith('- [x]'))
-        .map(l => l.replace(/^- \[[ x]\]\s*/, '').trim())
+      .split('\n')
+      .filter(l => l.trim().startsWith('- [ ]') || l.trim().startsWith('- [x]'))
+      .map(l => l.replace(/^- \[[ x]\]\s*/, '').trim())
     : [];
 
   // Extract Meeting Type specifically to update session title
@@ -36,12 +36,13 @@ const parseMarkdownResponse = (text: string): MeetingAnalysis => {
   const meetingType = meetingTypeMatch ? meetingTypeMatch[1].trim() : undefined;
 
   // The rest of the content (excluding transcript for brevity in the summary field)
+  // We use the first occurrence of Transcript as the split point
   const notesDocument = text.split(/🗣️\s*Full Transcript/i)[0].trim();
 
   // Extract detected languages if mentioned
   const languagesMatch = text.match(/Detected Languages\s*:\s*([\s\S]*?)(?=\n|$)/i);
-  const detectedLanguages = languagesMatch 
-    ? languagesMatch[1].split(',').map(l => l.trim()) 
+  const detectedLanguages = languagesMatch
+    ? languagesMatch[1].split(',').map(l => l.trim())
     : undefined;
 
   return {
@@ -66,14 +67,14 @@ async function retryOperation<T>(operation: () => Promise<T>, retries = 3, delay
 }
 
 export const analyzeConversation = async (audioBlob: Blob): Promise<MeetingAnalysis> => {
-  const apiKey = process.env.API_KEY;
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   if (!apiKey) throw new Error("API Key is missing.");
 
   const ai = new GoogleGenAI({ apiKey });
   const base64Audio = await blobToBase64(audioBlob);
   const mimeType = audioBlob.type || 'audio/webm';
 
-  const systemPrompt = `You are an expert meeting assistant that creates comprehensive, well-structured meeting notes in the style of Notion AI. Analyze this multilingual audio recording (which may contain English, Hindi, and Marathi) and provide detailed notes in the following format:
+  const systemPrompt = `You are an expert meeting assistant that creates comprehensive, well-structured meeting notes in a professional documentation format. Analyze this multilingual audio recording (which may contain English and major Indian languages like Hindi, Marathi, Gujarati, Tamil, Telugu, Kannada, Bengali, Malayalam, and Punjabi) and provide detailed notes in the following format (ensure the output ALWAYS starts with the Meeting Overview):
 
 📋 Meeting Overview
 Date: [Extract or use today's date]
@@ -121,6 +122,7 @@ Summarize what should happen next in priority order.
 
 🗣️ Full Transcript
 Format: [Speaker Name/Role] (MM:SS): [What they said]
+IMPORTANT: Provide a complete, verbatim transcript of the entire meeting. Do not summarize or skip any parts. This section is critical.
 
 📎 Additional Notes
 Any other relevant information.
@@ -129,27 +131,27 @@ FORMATTING INSTRUCTIONS:
 - Use clear headers and sections with emoji for visual scanning.
 - DO NOT use double asterisks (**) for bolding. Use plain text instead.
 - Use bullet points and checkboxes.
-- Preserve multilingual content. If something is said in Hindi or Marathi, transcribe it accurately and provide English translation in [brackets].
-- Transcribe Hindi and Marathi in Devanagari script.
+- Preserve multilingual content. If something is said in an Indian regional language, transcribe it accurately in its native script and provide English translation in [brackets].
 - Professional tone throughout.`;
 
   try {
     const response: GenerateContentResponse = await retryOperation(() => ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-2.0-flash-exp',
       contents: {
         parts: [
           { inlineData: { mimeType: mimeType, data: base64Audio } },
           { text: systemPrompt }
         ]
       },
-      config: {
-        thinkingConfig: { thinkingBudget: 0 }
+      generationConfig: {
+        maxOutputTokens: 8192,
+        temperature: 0.1, // Low temperature for high fidelity transcription
       }
     }));
 
     const responseText = response.text;
     if (!responseText) throw new Error("Empty response from Gemini.");
-    
+
     const analysis = parseMarkdownResponse(responseText);
     const candidate = response.candidates?.[0];
     const isTruncated = candidate?.finishReason === 'MAX_TOKENS';
@@ -158,5 +160,70 @@ FORMATTING INSTRUCTIONS:
   } catch (error) {
     console.error("Gemini API Error:", error);
     throw error;
+  }
+};
+
+export const enhanceDictationText = async (text: string): Promise<MeetingAnalysis> => {
+  const apiKey = process.env.API_KEY || (import.meta.env.VITE_GEMINI_API_KEY as string);
+  if (!apiKey) throw new Error("API Key is missing.");
+
+  const ai = new GoogleGenAI({ apiKey });
+
+  const systemPrompt = `You are an expert professional editor. Your task is to rewrite the following raw dictation (which may contain English or major Indian languages) into a polished, professional document.
+  
+  Rules:
+  1. Remove filler words (um, uh, you know).
+  2. Fix grammar and punctuation.
+  3. Improve flow and clarity while maintaining the original meaning.
+  4. Format the output as a clean document.
+  5. Detect the primary language(s) used.
+  6. If Indian regional languages are used, preserve the original meaning but rewrite in a professional manner (you may provide the polished version in English or the original script depending on the context).
+
+  Output Format:
+  Return the result in the following structure:
+  
+  📝 Summary
+  [The professionally rewritten text goes here. Do not use bullet points unless the user explicitly dictated a list. Write it as a cohesive paragraph or document.]
+
+  🗣️ Full Transcript
+  [The dictation text with auto-punctuation and fillers removed. Format it as a clean text block.]
+
+  ✅ Action Items
+  [If any clear tasks were dictated, list them here. Otherwise, leave empty.]
+  
+  detectedLanguages: [Language]
+  meetingType: Dictation
+
+  Input Text:
+  ${text}
+  `;
+
+  try {
+    const response = await retryOperation(() => ai.models.generateContent({
+      model: 'gemini-2.0-flash-exp',
+      contents: {
+        parts: [{ text: systemPrompt }]
+      }
+    }));
+
+    const responseText = response.text;
+    if (!responseText) throw new Error("Empty response from Gemini.");
+
+    // Reuse existing parser or fallback
+    const analysis = parseMarkdownResponse(responseText);
+
+    // Ensure the transcribed text we passed is preserved if the model didn't return it exactly
+    if (!analysis.transcript) analysis.transcript = text;
+
+    return analysis;
+  } catch (error) {
+    console.error("Gemini Dictation Error:", error);
+    // Fallback if enhancement fails
+    return {
+      transcript: text,
+      summary: text, // Fallback to original
+      actionPoints: [],
+      meetingType: 'Dictation'
+    };
   }
 };

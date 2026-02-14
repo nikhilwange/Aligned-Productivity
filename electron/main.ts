@@ -1,0 +1,215 @@
+import { app, BrowserWindow, globalShortcut, ipcMain, screen, clipboard } from 'electron';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { exec } from 'child_process';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+process.env.DIST = path.join(__dirname, '../dist');
+process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(__dirname, '../public');
+
+let win: BrowserWindow | null;
+let hudWin: BrowserWindow | null;
+let previousApp: string | null = null; // Track the previously focused app
+
+function createMainWindow() {
+    win = new BrowserWindow({
+        width: 1200,
+        height: 800,
+        webPreferences: {
+            preload: path.join(__dirname, 'preload.js'),
+            nodeIntegration: false,
+            contextIsolation: true,
+            webSecurity: true,
+        },
+        titleBarStyle: 'hiddenInset',
+        show: false,
+    });
+
+    if (process.env.VITE_DEV_SERVER_URL) {
+        win.loadURL(process.env.VITE_DEV_SERVER_URL);
+    } else {
+        win.loadFile(path.join(process.env.DIST, 'index.html'));
+    }
+
+    win.once('ready-to-show', () => {
+        win?.show();
+    });
+
+    win.on('close', (event) => {
+        if (!(app as any).isQuiting) {
+            event.preventDefault();
+            win?.hide();
+        }
+        return false;
+    });
+}
+
+function createHudWindow() {
+    hudWin = new BrowserWindow({
+        title: 'HUD',
+        width: 600,
+        height: 120,
+        webPreferences: {
+            preload: path.join(__dirname, 'preload.js'),
+            nodeIntegration: false,
+            contextIsolation: true,
+            webSecurity: true,
+        },
+        frame: false,
+        transparent: true,
+        backgroundColor: '#00000000',
+        hasShadow: false,
+        alwaysOnTop: true,
+        show: false,
+        skipTaskbar: true,
+        focusable: true, // Ensure window can receive focus
+        acceptFirstMouse: true, // Accept mouse events immediately
+    });
+
+    const hudUrl = process.env.VITE_DEV_SERVER_URL
+        ? `${process.env.VITE_DEV_SERVER_URL}?mode=hud`
+        : `file://${path.join(process.env.DIST, 'index.html')}?mode=hud`;
+
+    hudWin.loadURL(hudUrl);
+
+    // Position at bottom center of screen
+    const primaryDisplay = screen.getPrimaryDisplay();
+    const { width: screenW, height: screenH } = primaryDisplay.workAreaSize;
+    hudWin.setPosition(Math.round((screenW - 600) / 2), Math.round(screenH - 150));
+    
+    // Handle HUD window destruction
+    hudWin.on('closed', () => {
+        hudWin = null;
+    });
+}
+
+// Helper to hide HUD immediately
+function hideHudNow() {
+    console.log('[Main] 🟢 hideHudNow called');
+    if (hudWin && !hudWin.isDestroyed()) {
+        console.log('[Main] 🟢 Hiding HUD window');
+        hudWin.hide();
+    }
+    // DON'T hide the entire app - just the HUD window
+    // The main window should stay in background
+    console.log('[Main] 🟢 HUD hidden successfully');
+}
+
+function createWindows() {
+    createMainWindow();
+    createHudWindow();
+
+    console.log("Registering global shortcuts...");
+    
+    try {
+        // Option+Space
+        const ret1 = globalShortcut.register('Option+Space', () => {
+            console.log("Global shortcut Option+Space triggered");
+            toggleHud();
+        });
+        console.log("Option+Space registered:", ret1);
+
+        // Command+Shift+0 as backup
+        const ret2 = globalShortcut.register('Command+Shift+0', () => {
+            console.log("Global shortcut Command+Shift+0 triggered");
+            toggleHud();
+        });
+        console.log("Command+Shift+0 registered:", ret2);
+
+    } catch (err) {
+        console.error("Failed to register shortcut", err);
+    }
+
+    function toggleHud() {
+        // Ensure HUD window exists
+        if (!hudWin || hudWin.isDestroyed()) {
+            const allWindows = BrowserWindow.getAllWindows();
+            const existing = allWindows.find(w => w.getTitle() === 'HUD');
+            if (existing) {
+                hudWin = existing;
+            } else {
+                console.log("HUD window not found, recreating...");
+                createHudWindow();
+                // Wait for window to be ready
+                setTimeout(() => toggleHud(), 100);
+                return;
+            }
+        }
+
+        if (!hudWin.isVisible()) {
+            console.log("Showing HUD...");
+
+            // Reposition
+            const primaryDisplay = screen.getPrimaryDisplay();
+            const { width: screenW, height: screenH } = primaryDisplay.workAreaSize;
+            hudWin.setPosition(Math.round((screenW - 600) / 2), Math.round(screenH - 150));
+
+            hudWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+            hudWin.show();
+            hudWin.focus();
+            hudWin.webContents.focus(); // Also focus the webContents
+
+            // Send start signal
+            hudWin.webContents.send('toggle-dictation', 'start');
+
+        } else {
+            console.log("Hiding HUD (Toggle Off via shortcut)...");
+            // Send stop signal - HUD will handle cleanup and call paste-text or hide-hud
+            hudWin.webContents.send('toggle-dictation', 'stop');
+        }
+    }
+
+    // IPC: Paste Text - IMMEDIATE hide, then paste
+    ipcMain.on('paste-text', (event, text) => {
+        console.log("🟢 [Main] paste-text IPC RECEIVED (Option A: Clipboard Only)");
+        console.log("🟢 [Main] Text length:", text?.length || 0);
+
+        // 1. IMMEDIATELY hide HUD
+        hideHudNow();
+
+        // 2. Write to clipboard
+        if (text && text.length > 0) {
+            console.log("🟢 [Main] Writing to clipboard...");
+            clipboard.writeText(text);
+            console.log("🟢 [Main] ✅ Text written to clipboard. Skipping AppleScript paste.");
+        }
+    });
+
+    // IPC: Hide HUD (Cancel) - IMMEDIATE hide
+    ipcMain.on('hide-hud', () => {
+        console.log("[Main] hide-hud received");
+        hideHudNow();
+    });
+
+    // IPC: Resize Window (Legacy - no-op)
+    ipcMain.on('resize-window', (event, { width, height, mode }) => {
+        console.log("Resize request ignored");
+    });
+}
+
+// Quit behavior
+app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+        app.quit();
+        win = null;
+    }
+});
+
+(app as any).isQuiting = false;
+
+app.on('before-quit', () => {
+    (app as any).isQuiting = true;
+    globalShortcut.unregisterAll();
+});
+
+app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+        createWindows();
+    }
+});
+
+// Disable GPU to prevent crashes
+app.disableHardwareAcceleration();
+
+app.whenReady().then(createWindows);

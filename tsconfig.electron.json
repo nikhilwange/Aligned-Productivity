@@ -1,0 +1,19 @@
+{
+    "compilerOptions": {
+        "module": "ESNext",
+        "moduleResolution": "Node",
+        "resolveJsonModule": true,
+        "useDefineForClassFields": true,
+        "strict": true,
+        "noImplicitAny": false,
+        "target": "ESNext",
+        "outDir": "dist-electron",
+        "lib": [
+            "ESNext"
+        ],
+        "skipLibCheck": true
+    },
+    "include": [
+        "electron"
+    ]
+}
