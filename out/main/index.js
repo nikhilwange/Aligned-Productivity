@@ -1,17 +1,17 @@
-import { app, globalShortcut, BrowserWindow, screen, ipcMain, clipboard } from "electron";
-import path from "path";
-import { fileURLToPath } from "url";
-const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
-process.env.DIST = path.join(__dirname$1, "../dist");
-process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(__dirname$1, "../public");
-let win;
-let hudWin;
+"use strict";
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, clipboard } = require("electron");
+const path = require("path");
+const __dirname$1 = path.resolve();
+process.env.DIST = path.join(__dirname$1, "dist");
+process.env.VITE_PUBLIC = path.join(__dirname$1, "public");
+let win = null;
+let hudWin = null;
 function createMainWindow() {
   win = new BrowserWindow({
     width: 1200,
     height: 800,
     webPreferences: {
-      preload: path.join(__dirname$1, "preload.js"),
+      preload: path.join(__dirname$1, "dist-electron", "preload.js"),
       nodeIntegration: false,
       contextIsolation: true,
       webSecurity: true
@@ -25,12 +25,12 @@ function createMainWindow() {
     win.loadFile(path.join(process.env.DIST, "index.html"));
   }
   win.once("ready-to-show", () => {
-    win == null ? void 0 : win.show();
+    if (win) win.show();
   });
   win.on("close", (event) => {
     if (!app.isQuiting) {
       event.preventDefault();
-      win == null ? void 0 : win.hide();
+      if (win) win.hide();
     }
     return false;
   });
@@ -41,7 +41,7 @@ function createHudWindow() {
     width: 600,
     height: 120,
     webPreferences: {
-      preload: path.join(__dirname$1, "preload.js"),
+      preload: path.join(__dirname$1, "dist-electron", "preload.js"),
       nodeIntegration: false,
       contextIsolation: true,
       webSecurity: true
@@ -54,9 +54,7 @@ function createHudWindow() {
     show: false,
     skipTaskbar: true,
     focusable: true,
-    // Ensure window can receive focus
     acceptFirstMouse: true
-    // Accept mouse events immediately
   });
   const hudUrl = process.env.VITE_DEV_SERVER_URL ? `${process.env.VITE_DEV_SERVER_URL}?mode=hud` : `file://${path.join(process.env.DIST, "index.html")}?mode=hud`;
   hudWin.loadURL(hudUrl);
@@ -123,7 +121,7 @@ function createWindows() {
   }
   ipcMain.on("paste-text", (event, text) => {
     console.log("🟢 [Main] paste-text IPC RECEIVED (Option A: Clipboard Only)");
-    console.log("🟢 [Main] Text length:", (text == null ? void 0 : text.length) || 0);
+    console.log("🟢 [Main] Text length:", text?.length || 0);
     hideHudNow();
     if (text && text.length > 0) {
       console.log("🟢 [Main] Writing to clipboard...");
