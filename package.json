@@ -4,10 +4,12 @@
   "version": "0.0.0",
   "main": "out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "vite",
+    "dev:electron": "electron-vite dev",
     "web": "vite",
-    "build": "electron-vite build",
-    "preview": "electron-vite preview"
+    "build": "vite build",
+    "build:electron": "electron-vite build",
+    "preview": "vite preview"
   },
   "dependencies": {
     "@google/genai": "^1.31.0",

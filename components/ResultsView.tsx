@@ -1,6 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { RecordingSession } from '../types';
+import { RecordingSession, StrategicAnalysis } from '../types';
+import { generateStrategicAnalysis } from '../services/strategyService';
 
 interface ResultsViewProps {
   session: RecordingSession;
@@ -8,11 +9,14 @@ interface ResultsViewProps {
 }
 
 const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => {
-  const [activeTab, setActiveTab] = useState<'notes' | 'transcript'>('notes');
+  const [activeTab, setActiveTab] = useState<'notes' | 'transcript' | 'strategist'>('notes');
   const [title, setTitle] = useState(session.title);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
   const [globalCopied, setGlobalCopied] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [sessionAnalysis, setSessionAnalysis] = useState<StrategicAnalysis | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   useEffect(() => {
     setTitle(session.title);
@@ -65,6 +69,33 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     navigator.clipboard.writeText(content);
     setCopiedSection(sectionName);
     setTimeout(() => setCopiedSection(null), 2000);
+  };
+
+  const shareStratSection = async (title: string, text: string) => {
+    try {
+      if (navigator.share) {
+        await navigator.share({ title, text });
+      } else {
+        throw new Error('Web Share API not supported');
+      }
+    } catch {
+      await navigator.clipboard.writeText(text);
+      setCopiedSection(title);
+      setTimeout(() => setCopiedSection(null), 2000);
+    }
+  };
+
+  const handleSessionAnalysis = async () => {
+    setIsAnalyzing(true);
+    setAnalysisError(null);
+    try {
+      const result = await generateStrategicAnalysis([session]);
+      setSessionAnalysis(result);
+    } catch (err: any) {
+      setAnalysisError(err.message || 'Analysis failed');
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const sections = useMemo(() => {
@@ -274,12 +305,21 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
             </button>
             <button
               onClick={() => setActiveTab('transcript')}
-              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${activeTab === 'transcript' 
-                ? 'bg-purple-500/20 text-purple-300 shadow-lg shadow-purple-500/10' 
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${activeTab === 'transcript'
+                ? 'bg-purple-500/20 text-purple-300 shadow-lg shadow-purple-500/10'
                 : 'opacity-40 hover:opacity-60'
               }`}
             >
               Script
+            </button>
+            <button
+              onClick={() => setActiveTab('strategist')}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${activeTab === 'strategist'
+                ? 'bg-purple-500/20 text-purple-300 shadow-lg shadow-purple-500/10'
+                : 'opacity-40 hover:opacity-60'
+              }`}
+            >
+              Strategist
             </button>
           </div>
         </div>
@@ -357,7 +397,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
 
                 {sections.length > 0 ? sections.map(renderRichSection) : <p className="opacity-30">Synthesizing content...</p>}
               </div>
-            ) : (
+            ) : activeTab === 'transcript' ? (
               <div className="animate-fade-in space-y-8">
                 <h2 className="text-2xl font-bold text-[var(--text-primary)] tracking-tight pb-5 border-b border-white/[0.06]">Verbatim transcript</h2>
                 <div className="space-y-6 pl-4 border-l-2 border-white/[0.06]">
@@ -384,6 +424,288 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
                     );
                   })}
                 </div>
+              </div>
+            ) : (
+              /* Strategist Tab */
+              <div className="animate-fade-in">
+                {!sessionAnalysis && !isAnalyzing && !analysisError && (
+                  <div className="flex flex-col items-center justify-center py-20 text-center">
+                    <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500/20 to-teal-500/20 flex items-center justify-center border border-white/[0.08] mb-6">
+                      <svg className="w-8 h-8 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                      </svg>
+                    </div>
+                    <h3 className="text-lg font-bold text-[var(--text-primary)] mb-2">Strategic Analysis</h3>
+                    <p className="text-sm text-[var(--text-muted)] max-w-sm mb-8">
+                      Generate strategic insights, process gaps, and actionable recommendations from this session.
+                    </p>
+                    <button
+                      onClick={handleSessionAnalysis}
+                      className="px-6 py-3 rounded-xl bg-gradient-to-r from-purple-600 to-teal-600 text-white text-sm font-bold shadow-lg shadow-purple-500/25 hover:shadow-purple-500/40 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                    >
+                      Generate Analysis
+                    </button>
+                  </div>
+                )}
+
+                {isAnalyzing && (
+                  <div className="flex flex-col items-center justify-center py-20">
+                    <div className="relative w-16 h-16 mb-8">
+                      <div className="absolute inset-0 rounded-full border-4 border-white/10"></div>
+                      <div className="absolute inset-0 rounded-full border-4 border-t-purple-500 border-r-teal-500 border-b-transparent border-l-transparent animate-spin"></div>
+                    </div>
+                    <p className="text-sm font-semibold text-[var(--text-primary)] mb-1">Analyzing session...</p>
+                    <p className="text-xs text-[var(--text-muted)]">Extracting strategic insights</p>
+                  </div>
+                )}
+
+                {analysisError && (
+                  <div className="flex flex-col items-center justify-center py-20 text-center">
+                    <div className="w-12 h-12 rounded-xl bg-red-500/20 flex items-center justify-center mb-4">
+                      <svg className="w-6 h-6 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                    </div>
+                    <p className="text-sm text-red-400 font-medium mb-4">{analysisError}</p>
+                    <button
+                      onClick={handleSessionAnalysis}
+                      className="px-5 py-2.5 rounded-xl glass glass-hover text-xs font-bold"
+                    >
+                      Retry Analysis
+                    </button>
+                  </div>
+                )}
+
+                {sessionAnalysis && (
+                  <div className="space-y-8">
+                    {/* Executive Summary */}
+                    {sessionAnalysis.summary && (
+                      <div className="group glass-card rounded-2xl p-6 border border-white/[0.06]">
+                        <div className="flex items-center justify-between mb-4">
+                          <h3 className="text-base font-bold text-[var(--text-primary)] flex items-center gap-2">
+                            <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500/20 to-teal-500/20 flex items-center justify-center text-sm">📊</span>
+                            Executive Summary
+                          </h3>
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                            <button
+                              onClick={() => copySection('strat-summary', `Executive Summary\n\n${sessionAnalysis.summary}`)}
+                              className={`p-1.5 rounded-lg text-[10px] font-bold ${copiedSection === 'strat-summary' ? 'bg-teal-500/20 text-teal-300' : 'glass text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`}
+                            >
+                              {copiedSection === 'strat-summary' ? 'Copied' : 'Copy'}
+                            </button>
+                            <button
+                              onClick={() => shareStratSection('Executive Summary', sessionAnalysis.summary)}
+                              className="p-1.5 rounded-lg glass text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                        <p className="text-sm text-[var(--text-secondary)] leading-relaxed">{sessionAnalysis.summary}</p>
+                      </div>
+                    )}
+
+                    {/* Strategic Actions */}
+                    {sessionAnalysis.strategicActions.length > 0 && (
+                      <div>
+                        <h3 className="text-base font-bold text-[var(--text-primary)] mb-4 flex items-center gap-2">
+                          <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-teal-500/20 to-purple-500/20 flex items-center justify-center text-sm">🎯</span>
+                          Strategic Actions
+                        </h3>
+                        <div className="space-y-3">
+                          {sessionAnalysis.strategicActions.map((action, i) => {
+                            const key = `strat-action-${i}`;
+                            const copyText = `${action.title}\nPriority: ${action.priority}\n\n${action.description}\n\nRationale: ${action.rationale}`;
+                            return (
+                              <div key={i} className="group glass-card rounded-xl p-5 border border-white/[0.06]">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <h4 className="text-sm font-bold text-[var(--text-primary)]">{action.title}</h4>
+                                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                        action.priority === 'urgent' ? 'bg-red-500/20 text-red-300' :
+                                        action.priority === 'high' ? 'bg-amber-500/20 text-amber-300' :
+                                        action.priority === 'medium' ? 'bg-blue-500/20 text-blue-300' :
+                                        'bg-white/10 text-[var(--text-muted)]'
+                                      }`}>{action.priority}</span>
+                                    </div>
+                                    <p className="text-xs text-[var(--text-secondary)] leading-relaxed mb-2">{action.description}</p>
+                                    {action.rationale && (
+                                      <p className="text-xs text-[var(--text-muted)] italic">Rationale: {action.rationale}</p>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all shrink-0">
+                                    <button
+                                      onClick={() => copySection(key, copyText)}
+                                      className={`p-1.5 rounded-lg text-[10px] font-bold ${copiedSection === key ? 'bg-teal-500/20 text-teal-300' : 'glass text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`}
+                                    >
+                                      {copiedSection === key ? 'Copied' : 'Copy'}
+                                    </button>
+                                    <button
+                                      onClick={() => shareStratSection(action.title, copyText)}
+                                      className="p-1.5 rounded-lg glass text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                                    >
+                                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                                      </svg>
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Process Gaps */}
+                    {sessionAnalysis.processGaps.length > 0 && (
+                      <div>
+                        <h3 className="text-base font-bold text-[var(--text-primary)] mb-4 flex items-center gap-2">
+                          <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500/20 to-red-500/20 flex items-center justify-center text-sm">🔍</span>
+                          Process Gaps
+                        </h3>
+                        <div className="space-y-3">
+                          {sessionAnalysis.processGaps.map((gap, i) => {
+                            const key = `strat-gap-${i}`;
+                            const copyText = `${gap.title}\nImpact: ${gap.impact} | Frequency: ${gap.frequency}x\n\n${gap.description}`;
+                            return (
+                              <div key={i} className="group glass-card rounded-xl p-5 border border-white/[0.06]">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <h4 className="text-sm font-bold text-[var(--text-primary)]">{gap.title}</h4>
+                                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                        gap.impact === 'high' ? 'bg-red-500/20 text-red-300' :
+                                        gap.impact === 'medium' ? 'bg-amber-500/20 text-amber-300' :
+                                        'bg-white/10 text-[var(--text-muted)]'
+                                      }`}>{gap.impact}</span>
+                                    </div>
+                                    <p className="text-xs text-[var(--text-secondary)] leading-relaxed">{gap.description}</p>
+                                  </div>
+                                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all shrink-0">
+                                    <button
+                                      onClick={() => copySection(key, copyText)}
+                                      className={`p-1.5 rounded-lg text-[10px] font-bold ${copiedSection === key ? 'bg-teal-500/20 text-teal-300' : 'glass text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`}
+                                    >
+                                      {copiedSection === key ? 'Copied' : 'Copy'}
+                                    </button>
+                                    <button
+                                      onClick={() => shareStratSection(gap.title, copyText)}
+                                      className="p-1.5 rounded-lg glass text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                                    >
+                                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                                      </svg>
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Issue Patterns */}
+                    {sessionAnalysis.issuePatterns.length > 0 && (
+                      <div>
+                        <h3 className="text-base font-bold text-[var(--text-primary)] mb-4 flex items-center gap-2">
+                          <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-red-500/20 to-amber-500/20 flex items-center justify-center text-sm">⚠️</span>
+                          Issue Patterns
+                        </h3>
+                        <div className="space-y-3">
+                          {sessionAnalysis.issuePatterns.map((issue, i) => {
+                            const key = `strat-issue-${i}`;
+                            const copyText = `${issue.issue}\nOccurrences: ${issue.occurrences} | Status: ${issue.status}`;
+                            return (
+                              <div key={i} className="group glass-card rounded-xl p-5 border border-white/[0.06]">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <h4 className="text-sm font-bold text-[var(--text-primary)]">{issue.issue}</h4>
+                                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                        issue.status === 'escalating' ? 'bg-red-500/20 text-red-300' :
+                                        issue.status === 'recurring' ? 'bg-amber-500/20 text-amber-300' :
+                                        'bg-teal-500/20 text-teal-300'
+                                      }`}>{issue.status}</span>
+                                    </div>
+                                    {issue.context && (
+                                      <p className="text-xs text-[var(--text-muted)]">{issue.context}</p>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all shrink-0">
+                                    <button
+                                      onClick={() => copySection(key, copyText)}
+                                      className={`p-1.5 rounded-lg text-[10px] font-bold ${copiedSection === key ? 'bg-teal-500/20 text-teal-300' : 'glass text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`}
+                                    >
+                                      {copiedSection === key ? 'Copied' : 'Copy'}
+                                    </button>
+                                    <button
+                                      onClick={() => shareStratSection(issue.issue, copyText)}
+                                      className="p-1.5 rounded-lg glass text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                                    >
+                                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                                      </svg>
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Key Themes */}
+                    {sessionAnalysis.keyThemes.length > 0 && (
+                      <div className="group glass-card rounded-2xl p-6 border border-white/[0.06]">
+                        <div className="flex items-center justify-between mb-4">
+                          <h3 className="text-base font-bold text-[var(--text-primary)] flex items-center gap-2">
+                            <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500/20 to-purple-500/20 flex items-center justify-center text-sm">💡</span>
+                            Key Themes
+                          </h3>
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                            <button
+                              onClick={() => copySection('strat-themes', `Key Themes\n\n${sessionAnalysis.keyThemes.map(t => `- ${t}`).join('\n')}`)}
+                              className={`p-1.5 rounded-lg text-[10px] font-bold ${copiedSection === 'strat-themes' ? 'bg-teal-500/20 text-teal-300' : 'glass text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`}
+                            >
+                              {copiedSection === 'strat-themes' ? 'Copied' : 'Copy'}
+                            </button>
+                            <button
+                              onClick={() => shareStratSection('Key Themes', sessionAnalysis.keyThemes.map(t => `- ${t}`).join('\n'))}
+                              className="p-1.5 rounded-lg glass text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {sessionAnalysis.keyThemes.map((theme, i) => (
+                            <span key={i} className="px-3 py-1.5 rounded-lg glass text-xs font-medium text-[var(--text-secondary)]">
+                              {theme}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Regenerate button */}
+                    <div className="flex justify-center pt-4">
+                      <button
+                        onClick={handleSessionAnalysis}
+                        className="px-4 py-2 rounded-xl glass glass-hover text-xs font-bold text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                      >
+                        Regenerate Analysis
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

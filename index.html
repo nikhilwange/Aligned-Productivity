@@ -238,6 +238,24 @@
         box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15);
         outline: none;
       }
+
+      /* Date picker calendar icon styling */
+      .glass-input[type="date"]::-webkit-calendar-picker-indicator {
+        filter: invert(0.6);
+        cursor: pointer;
+        opacity: 0.6;
+        transition: opacity 0.2s;
+      }
+      .glass-input[type="date"]::-webkit-calendar-picker-indicator:hover {
+        opacity: 1;
+      }
+      [data-theme="light"] .glass-input[type="date"]::-webkit-calendar-picker-indicator {
+        filter: none;
+        opacity: 0.5;
+      }
+      [data-theme="light"] .glass-input[type="date"]::-webkit-calendar-picker-indicator:hover {
+        opacity: 0.8;
+      }
       
       /* ═══════════════════════════════════════════════════════════════════
          GRADIENT UTILITIES

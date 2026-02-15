@@ -8,6 +8,7 @@ import DictationView from './components/DictationView';
 import DictationLogView from './components/DictationLogView';
 import StrategistView from './components/StrategistView';
 // import FloatingHUD from './components/FloatingHUD'; // Electron feature disabled
+import SessionsLogView from './components/SessionsLogView';
 import AuthView from './components/AuthView';
 import LandingPage from './components/LandingPage';
 import { AppState, RecordingSession, AudioRecording, User } from './types';
@@ -376,6 +377,12 @@ const App: React.FC = () => {
           ) : activeRecordingId === 'dictations' ? (
             <DictationLogView
               sessions={recordings}
+              onDelete={handleDeleteRecording}
+            />
+          ) : activeRecordingId === 'sessions' ? (
+            <SessionsLogView
+              sessions={recordings}
+              onSelect={handleSelectRecording}
               onDelete={handleDeleteRecording}
             />
           ) : activeRecordingId === 'strategist' ? (

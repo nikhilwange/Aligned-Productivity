@@ -203,30 +203,42 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
             New Session
           </button>
 
-          <button
-            onClick={onStartLive}
-            className={`w-full py-3.5 px-4 rounded-xl font-semibold transition-all duration-300 flex items-center justify-center gap-2.5 text-sm relative overflow-hidden group ${isLiveActive
-              ? 'bg-gradient-to-r from-teal-500 to-teal-600 text-white shadow-lg shadow-teal-500/25'
-              : 'glass glass-hover text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-              }`}
-          >
-            {isLiveActive && (
-              <div className="absolute inset-0 bg-gradient-to-r from-teal-400/20 to-transparent animate-shimmer"></div>
-            )}
-            <div className={`relative w-2 h-2 rounded-full ${isLiveActive ? 'bg-white animate-pulse' : 'bg-teal-400'}`}></div>
-            <span className="relative">Dictation Flow</span>
-          </button>
+          {/* Compact tab row for Dictation / Dictations / Sessions */}
+          <div className="flex gap-1.5 p-1 glass rounded-xl">
+            <button
+              onClick={onStartLive}
+              className={`flex-1 py-2.5 px-2 rounded-lg font-semibold transition-all duration-300 flex items-center justify-center gap-1.5 text-xs relative overflow-hidden ${isLiveActive
+                ? 'bg-gradient-to-r from-teal-500 to-teal-600 text-white shadow-md shadow-teal-500/25'
+                : 'hover:bg-white/[0.06] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                }`}
+            >
+              {isLiveActive && (
+                <div className="absolute inset-0 bg-gradient-to-r from-teal-400/20 to-transparent animate-shimmer"></div>
+              )}
+              <div className={`relative w-1.5 h-1.5 rounded-full shrink-0 ${isLiveActive ? 'bg-white animate-pulse' : 'bg-teal-400'}`}></div>
+              <span className="relative truncate">Dictate</span>
+            </button>
 
-          <button
-            onClick={() => onSelect('dictations')}
-            className={`w-full py-3.5 px-4 rounded-xl font-semibold transition-all duration-300 flex items-center justify-center gap-2.5 text-sm relative overflow-hidden group ${activeId === 'dictations' && !isLiveActive
-              ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-lg shadow-amber-500/25'
-              : 'glass glass-hover text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-              }`}
-          >
-            <div className={`w-2 h-2 rounded-full ${activeId === 'dictations' ? 'bg-white' : 'bg-amber-400'}`}></div>
-            <span>My Dictations</span>
-          </button>
+            <button
+              onClick={() => onSelect('dictations')}
+              className={`flex-1 py-2.5 px-2 rounded-lg font-semibold transition-all duration-300 flex items-center justify-center gap-1.5 text-xs ${activeId === 'dictations' && !isLiveActive
+                ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-md shadow-amber-500/25'
+                : 'hover:bg-white/[0.06] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                }`}
+            >
+              <span className="truncate">Dictations</span>
+            </button>
+
+            <button
+              onClick={() => onSelect('sessions')}
+              className={`flex-1 py-2.5 px-2 rounded-lg font-semibold transition-all duration-300 flex items-center justify-center gap-1.5 text-xs ${activeId === 'sessions' && !isLiveActive
+                ? 'bg-gradient-to-r from-teal-500 to-cyan-600 text-white shadow-md shadow-teal-500/25'
+                : 'hover:bg-white/[0.06] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                }`}
+            >
+              <span className="truncate">Sessions</span>
+            </button>
+          </div>
 
           <button
             onClick={() => onSelect('strategist')}
