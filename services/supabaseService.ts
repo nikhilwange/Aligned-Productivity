@@ -4,12 +4,22 @@ import { RecordingSession } from '../types';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Configure Supabase without session persistence to avoid lock issues
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    storageKey: 'aligned-auth',
+    autoRefreshToken: true,
+    persistSession: false, // Disable persistence to avoid lock manager
+    detectSessionInUrl: true
+  }
+});
 
 /**
  * Fetches all recordings for a specific user from Supabase.
  */
 export const fetchRecordings = async (userId: string): Promise<RecordingSession[]> => {
+  console.log('[Supabase] Fetching recordings for user_id:', userId);
+
   const { data, error } = await supabase
     .from('recordings')
     .select('*')
@@ -17,10 +27,17 @@ export const fetchRecordings = async (userId: string): Promise<RecordingSession[
     .order('date', { ascending: false });
 
   if (error) {
-    console.error('Error fetching recordings:', error);
+    console.error('[Supabase] Error fetching recordings:', error);
+    console.error('[Supabase] Error details:', {
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+      code: error.code
+    });
     return [];
   }
 
+  console.log('[Supabase] Successfully fetched recordings:', data?.length || 0);
   return data as RecordingSession[];
 };
 

@@ -19,6 +19,13 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect, onNew, onStartLive, isLiveActive, onDelete, onLogout, theme, onToggleTheme }) => {
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Array<{
+    session: RecordingSession;
+    snippet: string;
+    matchedIn: 'title' | 'summary' | 'transcript';
+  }>>([]);
+  const [isSearchActive, setIsSearchActive] = useState(false);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -61,6 +68,88 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
     e.stopPropagation();
     setDeletingId(id);
     onDelete(id);
+  };
+
+  const handleSearch = (query: string) => {
+    setSearchQuery(query);
+
+    if (!query.trim()) {
+      setSearchResults([]);
+      setIsSearchActive(false);
+      return;
+    }
+
+    setIsSearchActive(true);
+    const lowerQuery = query.toLowerCase();
+    const results: Array<{
+      session: RecordingSession;
+      snippet: string;
+      matchedIn: 'title' | 'summary' | 'transcript';
+    }> = [];
+
+    recordings.forEach(rec => {
+      // Search in title
+      if (rec.title.toLowerCase().includes(lowerQuery)) {
+        results.push({
+          session: rec,
+          snippet: rec.title,
+          matchedIn: 'title'
+        });
+        return;
+      }
+
+      // Search in summary
+      if (rec.analysis?.summary && rec.analysis.summary.toLowerCase().includes(lowerQuery)) {
+        const index = rec.analysis.summary.toLowerCase().indexOf(lowerQuery);
+        const start = Math.max(0, index - 50);
+        const end = Math.min(rec.analysis.summary.length, index + query.length + 50);
+        const snippet = (start > 0 ? '...' : '') +
+          rec.analysis.summary.substring(start, end) +
+          (end < rec.analysis.summary.length ? '...' : '');
+        results.push({
+          session: rec,
+          snippet,
+          matchedIn: 'summary'
+        });
+        return;
+      }
+
+      // Search in transcript
+      if (rec.analysis?.transcript && rec.analysis.transcript.toLowerCase().includes(lowerQuery)) {
+        const index = rec.analysis.transcript.toLowerCase().indexOf(lowerQuery);
+        const start = Math.max(0, index - 50);
+        const end = Math.min(rec.analysis.transcript.length, index + query.length + 50);
+        const snippet = (start > 0 ? '...' : '') +
+          rec.analysis.transcript.substring(start, end) +
+          (end < rec.analysis.transcript.length ? '...' : '');
+        results.push({
+          session: rec,
+          snippet,
+          matchedIn: 'transcript'
+        });
+      }
+    });
+
+    setSearchResults(results);
+  };
+
+  const highlightMatch = (text: string, query: string): JSX.Element => {
+    if (!query.trim()) return <>{text}</>;
+
+    const parts = text.split(new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'));
+    return (
+      <>
+        {parts.map((part, i) =>
+          part.toLowerCase() === query.toLowerCase() ? (
+            <mark key={i} className="bg-yellow-400/30 text-yellow-200 px-0.5 rounded">
+              {part}
+            </mark>
+          ) : (
+            <span key={i}>{part}</span>
+          )
+        )}
+      </>
+    );
   };
 
   return (
@@ -138,108 +227,216 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
             <div className={`w-2 h-2 rounded-full ${activeId === 'dictations' ? 'bg-white' : 'bg-amber-400'}`}></div>
             <span>My Dictations</span>
           </button>
+
+          <button
+            onClick={() => onSelect('strategist')}
+            className={`w-full py-3.5 px-4 rounded-xl font-semibold transition-all duration-300 flex items-center justify-center gap-2.5 text-sm relative overflow-hidden group ${activeId === 'strategist' && !isLiveActive
+              ? 'bg-gradient-to-r from-purple-500 to-indigo-600 text-white shadow-lg shadow-purple-500/25'
+              : 'glass glass-hover text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+            <span>Strategist</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Search Bar */}
+      <div className="px-5 mb-4">
+        <div className="relative">
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => handleSearch(e.target.value)}
+            placeholder="Search recordings..."
+            className="w-full py-2.5 px-4 pl-10 bg-white/5 border border-white/10 rounded-xl text-sm text-[var(--text-primary)] placeholder-[var(--text-primary)]/30 focus:outline-none focus:border-purple-500/50 focus:bg-white/[0.07] transition-all"
+          />
+          <svg
+            className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 opacity-30"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          {searchQuery && (
+            <button
+              onClick={() => handleSearch('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 opacity-30 hover:opacity-100 transition-opacity"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 
       {/* History List */}
       <div className="flex-1 overflow-y-auto px-3 pb-6 scrollbar-hide">
-        <div className="px-2 pb-3 pt-4 sticky top-0 bg-[var(--surface-900)]/80 backdrop-blur-md z-10">
-          <h3 className="text-[10px] font-bold opacity-30 uppercase tracking-[0.15em] text-[var(--text-primary)]">Recent Meetings</h3>
-        </div>
-
-        {recordings.filter(r => r.source !== 'dictation').length === 0 && (
-          <div className="text-center py-16 px-6">
-            <div className="w-16 h-16 glass rounded-2xl flex items-center justify-center mx-auto mb-5">
-              <svg className="w-7 h-7 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
+        {isSearchActive ? (
+          /* Search Results */
+          <>
+            <div className="px-2 pb-3 pt-4 sticky top-0 bg-[var(--surface-900)]/80 backdrop-blur-md z-10">
+              <h3 className="text-[10px] font-bold opacity-30 uppercase tracking-[0.15em] text-[var(--text-primary)]">
+                Search Results ({searchResults.length})
+              </h3>
             </div>
-            <p className="opacity-30 text-sm font-medium">Ready for your first session</p>
-            <p className="opacity-15 text-xs mt-1">Start recording to begin</p>
-          </div>
-        )}
 
-        {recordings.filter(r => r.source !== 'dictation').map((rec, index) => (
-          <div 
-            key={rec.id} 
-            className={`relative group/item px-1 transition-all duration-300 ${deletingId === rec.id ? 'opacity-50 pointer-events-none scale-95' : 'opacity-100'}`}
-            style={{ animationDelay: `${index * 50}ms` }}
-          >
-            <div
-              className={`w-full p-4 rounded-xl border transition-all duration-300 cursor-pointer mb-1 ${activeId === rec.id && !isLiveActive
-                ? 'bg-gradient-to-r from-purple-500/10 to-purple-600/5 border-purple-500/30 shadow-lg shadow-purple-500/5'
-                : 'bg-transparent border-transparent hover:bg-white/[0.03] hover:border-white/[0.06]'
-                }`}
-              onClick={() => onSelect(rec.id)}
-            >
-              <div className="flex justify-between items-start mb-2.5">
-                <span className={`font-semibold text-sm leading-tight pr-2 ${activeId === rec.id && !isLiveActive ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
-                  {rec.title}
-                </span>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {rec.status === 'processing' && (
-                    <div className="flex gap-1">
-                      <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                      <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                      <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+            {searchResults.length === 0 ? (
+              <div className="text-center py-16 px-6">
+                <div className="w-16 h-16 glass rounded-2xl flex items-center justify-center mx-auto mb-5">
+                  <svg className="w-7 h-7 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </div>
+                <p className="opacity-30 text-sm font-medium">No results found for "{searchQuery}"</p>
+              </div>
+            ) : (
+              searchResults.map((result, index) => (
+                <div
+                  key={result.session.id}
+                  className="relative group/item px-1 mb-2 transition-all duration-300 animate-fade-in"
+                  style={{ animationDelay: `${index * 30}ms` }}
+                >
+                  <div
+                    className="w-full p-4 rounded-xl border border-white/10 hover:bg-white/[0.03] hover:border-purple-500/30 transition-all cursor-pointer bg-white/[0.02]"
+                    onClick={() => {
+                      onSelect(result.session.id);
+                      setSearchQuery('');
+                      setIsSearchActive(false);
+                    }}
+                  >
+                    <div className="mb-2">
+                      <span className="font-semibold text-sm leading-tight text-[var(--text-primary)]">
+                        {highlightMatch(result.session.title, searchQuery)}
+                      </span>
+                      <div className="flex items-center gap-2 mt-1.5">
+                        <span className="text-[10px] opacity-40 text-[var(--text-primary)]">
+                          {new Date(result.session.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                        </span>
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                          result.matchedIn === 'title' ? 'bg-purple-500/20 text-purple-300' :
+                          result.matchedIn === 'summary' ? 'bg-teal-500/20 text-teal-300' :
+                          'bg-amber-500/20 text-amber-300'
+                        }`}>
+                          {result.matchedIn}
+                        </span>
+                      </div>
                     </div>
-                  )}
-                </div>
-              </div>
-              
-              <div className="flex justify-between items-center text-[10px] font-semibold opacity-40 text-[var(--text-primary)]">
-                <div className="flex items-center gap-2">
-                  <span>{new Date(rec.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
-                  <span className="w-1 h-1 bg-current opacity-20 rounded-full"></span>
-                  <span className="font-mono text-[9px] opacity-70">{formatTime(rec.duration)}</span>
-                </div>
 
-                <div className={`px-2 py-0.5 rounded-md text-[9px] font-bold tracking-tight ${
-                  rec.source === 'virtual-meeting' 
-                    ? 'bg-purple-500/20 text-purple-300 border border-purple-500/20' 
-                    : rec.source === 'phone-call' 
-                      ? 'bg-teal-500/20 text-teal-300 border border-teal-500/20' 
-                      : rec.source === 'dictation'
-                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/20'
-                        : 'bg-white/5 opacity-40 border border-white/10'
-                  }`}>
-                  {rec.source === 'virtual-meeting' ? 'Meeting' : rec.source === 'phone-call' ? 'Call' : rec.source === 'dictation' ? 'Dictation' : 'In person'}
+                    <p className="text-xs leading-relaxed opacity-60 text-[var(--text-primary)] line-clamp-2">
+                      {highlightMatch(result.snippet, searchQuery)}
+                    </p>
+                  </div>
                 </div>
-              </div>
+              ))
+            )}
+          </>
+        ) : (
+          /* Normal Recordings List */
+          <>
+            <div className="px-2 pb-3 pt-4 sticky top-0 bg-[var(--surface-900)]/80 backdrop-blur-md z-10">
+              <h3 className="text-[10px] font-bold opacity-30 uppercase tracking-[0.15em] text-[var(--text-primary)]">Recent Meetings</h3>
             </div>
 
-            {/* Action buttons */}
-            <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover/item:opacity-100 transition-all duration-200 z-30">
-              <button
-                onClick={(e) => handleShare(e, rec)}
-                className={`p-1.5 rounded-lg transition-all ${sharingId === rec.id
-                  ? 'text-teal-400 bg-teal-500/20'
-                  : 'opacity-30 hover:opacity-70 hover:bg-white/10'
-                  }`}
-                title="Share"
-              >
-                {sharingId === rec.id ? (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+            {recordings.filter(r => r.source !== 'dictation').length === 0 && (
+              <div className="text-center py-16 px-6">
+                <div className="w-16 h-16 glass rounded-2xl flex items-center justify-center mx-auto mb-5">
+                  <svg className="w-7 h-7 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
-                ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-                  </svg>
-                )}
-              </button>
-              <button
-                onClick={(e) => handleDelete(e, rec.id)}
-                className="p-1.5 rounded-lg opacity-30 hover:text-red-400 hover:bg-red-500/10 hover:opacity-100 transition-all"
-                title="Delete"
+                </div>
+                <p className="opacity-30 text-sm font-medium">Ready for your first session</p>
+                <p className="opacity-15 text-xs mt-1">Start recording to begin</p>
+              </div>
+            )}
+
+            {recordings.filter(r => r.source !== 'dictation').map((rec, index) => (
+              <div
+                key={rec.id}
+                className={`relative group/item px-1 transition-all duration-300 ${deletingId === rec.id ? 'opacity-50 pointer-events-none scale-95' : 'opacity-100'}`}
+                style={{ animationDelay: `${index * 50}ms` }}
               >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              </button>
-            </div>
-          </div>
-        ))}
+                <div
+                  className={`w-full p-4 rounded-xl border transition-all duration-300 cursor-pointer mb-1 ${activeId === rec.id && !isLiveActive
+                    ? 'bg-gradient-to-r from-purple-500/10 to-purple-600/5 border-purple-500/30 shadow-lg shadow-purple-500/5'
+                    : 'bg-transparent border-transparent hover:bg-white/[0.03] hover:border-white/[0.06]'
+                    }`}
+                  onClick={() => onSelect(rec.id)}
+                >
+                  <div className="flex justify-between items-start mb-2.5">
+                    <span className={`font-semibold text-sm leading-tight pr-2 ${activeId === rec.id && !isLiveActive ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
+                      {rec.title}
+                    </span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {rec.status === 'processing' && (
+                        <div className="flex gap-1">
+                          <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                          <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                          <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between items-center text-[10px] font-semibold opacity-40 text-[var(--text-primary)]">
+                    <div className="flex items-center gap-2">
+                      <span>{new Date(rec.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+                      <span className="w-1 h-1 bg-current opacity-20 rounded-full"></span>
+                      <span className="font-mono text-[9px] opacity-70">{formatTime(rec.duration)}</span>
+                    </div>
+
+                    <div className={`px-2 py-0.5 rounded-md text-[9px] font-bold tracking-tight ${
+                      rec.source === 'virtual-meeting'
+                        ? 'bg-purple-500/20 text-purple-300 border border-purple-500/20'
+                        : rec.source === 'phone-call'
+                          ? 'bg-teal-500/20 text-teal-300 border border-teal-500/20'
+                          : rec.source === 'dictation'
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/20'
+                            : 'bg-white/5 opacity-40 border border-white/10'
+                      }`}>
+                      {rec.source === 'virtual-meeting' ? 'Meeting' : rec.source === 'phone-call' ? 'Call' : rec.source === 'dictation' ? 'Dictation' : 'In person'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover/item:opacity-100 transition-all duration-200 z-30">
+                  <button
+                    onClick={(e) => handleShare(e, rec)}
+                    className={`p-1.5 rounded-lg transition-all ${sharingId === rec.id
+                      ? 'text-teal-400 bg-teal-500/20'
+                      : 'opacity-30 hover:opacity-70 hover:bg-white/10'
+                      }`}
+                    title="Share"
+                  >
+                    {sharingId === rec.id ? (
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                      </svg>
+                    )}
+                  </button>
+                  <button
+                    onClick={(e) => handleDelete(e, rec.id)}
+                    className="p-1.5 rounded-lg opacity-30 hover:text-red-400 hover:bg-red-500/10 hover:opacity-100 transition-all"
+                    title="Delete"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
       </div>
 
       {/* User Footer */}

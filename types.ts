@@ -40,3 +40,40 @@ export interface AudioRecording {
   duration: number;
   source: RecordingSource;
 }
+
+export interface ProcessGap {
+  title: string;
+  description: string;
+  frequency: number;
+  impact: 'high' | 'medium' | 'low';
+  relatedMeetings: string[];
+}
+
+export interface StrategicAction {
+  title: string;
+  description: string;
+  rationale: string;
+  priority: 'urgent' | 'high' | 'medium' | 'low';
+  estimatedImpact: string;
+  suggestedOwner?: string;
+}
+
+export interface IssuePattern {
+  issue: string;
+  occurrences: number;
+  firstMentioned: number;
+  lastMentioned: number;
+  status: 'recurring' | 'escalating' | 'resolved';
+  context: string;
+}
+
+export interface StrategicAnalysis {
+  summary: string;
+  processGaps: ProcessGap[];
+  strategicActions: StrategicAction[];
+  issuePatterns: IssuePattern[];
+  keyThemes: string[];
+  analyzedMeetingsCount: number;
+  dateRange: { start: number; end: number };
+  generatedAt: number;
+}

@@ -6,21 +6,23 @@ import ResultsView from './components/ResultsView';
 import Sidebar from './components/Sidebar';
 import DictationView from './components/DictationView';
 import DictationLogView from './components/DictationLogView';
-import FloatingHUD from './components/FloatingHUD';
+import StrategistView from './components/StrategistView';
+// import FloatingHUD from './components/FloatingHUD'; // Electron feature disabled
 import AuthView from './components/AuthView';
 import LandingPage from './components/LandingPage';
 import { AppState, RecordingSession, AudioRecording, User } from './types';
 import { analyzeConversation, enhanceDictationText } from './services/geminiService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb } from './services/supabaseService';
 
-declare global {
-  interface Window {
-    ipcRenderer: {
-      on: (channel: string, func: (...args: any[]) => void) => (() => void) | undefined;
-      send: (channel: string, data?: any) => void;
-    };
-  }
-}
+// Electron features disabled - running as web app only
+// declare global {
+//   interface Window {
+//     ipcRenderer?: {
+//       on: (channel: string, func: (...args: any[]) => void) => (() => void) | undefined;
+//       send: (channel: string, data?: any) => void;
+//     };
+//   }
+// }
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -42,45 +44,53 @@ const App: React.FC = () => {
 
   const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
 
-  const [viewMode, setViewMode] = useState<'dashboard' | 'hud'>(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get('mode') === 'hud' ? 'hud' : 'dashboard';
-  });
+  // Electron HUD mode disabled - web app only
+  // const [viewMode, setViewMode] = useState<'dashboard' | 'hud'>(() => {
+  //   const params = new URLSearchParams(window.location.search);
+  //   return params.get('mode') === 'hud' ? 'hud' : 'dashboard';
+  // });
 
-  useEffect(() => {
-    if (window.ipcRenderer) {
-      window.ipcRenderer.on('switch-to-hud', () => setViewMode('hud'));
-    }
-  }, []);
+  // useEffect(() => {
+  //   if (window.ipcRenderer) {
+  //     window.ipcRenderer.on('switch-to-hud', () => setViewMode('hud'));
+  //   }
+  // }, []);
 
   useEffect(() => {
     const initAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        setUser({
-          id: session.user.id,
-          email: session.user.email || '',
-          name: session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'User'
-        });
-      }
-
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        if (session?.user) {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error) {
+          console.error('Error getting session:', error);
+        } else if (data?.session?.user) {
           setUser({
-            id: session.user.id,
-            email: session.user.email || '',
-            name: session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'User'
+            id: data.session.user.id,
+            email: data.session.user.email || '',
+            name: data.session.user.user_metadata?.name || data.session.user.email?.split('@')[0] || 'User'
           });
-        } else {
-          setUser(null);
-          setRecordings([]);
-          setActiveRecordingId(null);
-          setIsRecordingMode(true);
         }
-      });
 
-      setIsInitialLoad(false);
-      return () => subscription.unsubscribe();
+        const { data: authData } = supabase.auth.onAuthStateChange((_event, session) => {
+          if (session?.user) {
+            setUser({
+              id: session.user.id,
+              email: session.user.email || '',
+              name: session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'User'
+            });
+          } else {
+            setUser(null);
+            setRecordings([]);
+            setActiveRecordingId(null);
+            setIsRecordingMode(true);
+          }
+        });
+
+        setIsInitialLoad(false);
+        return () => authData?.subscription?.unsubscribe();
+      } catch (err) {
+        console.error('Auth initialization error:', err);
+        setIsInitialLoad(false);
+      }
     };
 
     initAuth();
@@ -89,7 +99,9 @@ const App: React.FC = () => {
   useEffect(() => {
     if (user) {
       const loadData = async () => {
+        console.log('[App] Loading recordings for user:', user.id);
         const data = await fetchRecordings(user.id);
+        console.log('[App] Fetched recordings:', data.length, 'recordings');
         setRecordings(data);
       };
       loadData();
@@ -199,43 +211,44 @@ const App: React.FC = () => {
     }
   }, [user]);
 
-  const handleHudComplete = async (text: string) => {
-    console.log("[App] 🔵 handleHudComplete called with text length:", text.length);
-    const cleaned = text.trim();
+  // Electron HUD features disabled - web app only
+  // const handleHudComplete = async (text: string) => {
+  //   console.log("[App] 🔵 handleHudComplete called with text length:", text.length);
+  //   const cleaned = text.trim();
 
-    if (window.ipcRenderer) {
-      console.log("[App] 🔵 Sending paste-text via IPC");
-      window.ipcRenderer.send('paste-text', cleaned);
-      console.log("[App] 🔵 IPC sent - window will hide via main process");
-      // DON'T change viewMode - let the window just hide
-    } else {
-      console.error("[App] ❌ window.ipcRenderer not available!");
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(cleaned).catch(console.error);
-      }
-    }
-  };
+  //   if (window.ipcRenderer) {
+  //     console.log("[App] 🔵 Sending paste-text via IPC");
+  //     window.ipcRenderer.send('paste-text', cleaned);
+  //     console.log("[App] 🔵 IPC sent - window will hide via main process");
+  //     // DON'T change viewMode - let the window just hide
+  //   } else {
+  //     console.error("[App] ❌ window.ipcRenderer not available!");
+  //     if (navigator.clipboard) {
+  //       navigator.clipboard.writeText(cleaned).catch(console.error);
+  //     }
+  //   }
+  // };
 
-  const handleHudCancel = () => {
-    console.log("[App] 🔵 handleHudCancel called");
-    if (window.ipcRenderer) {
-      console.log("[App] 🔵 Sending hide-hud via IPC");
-      window.ipcRenderer.send('hide-hud');
-      console.log("[App] 🔵 IPC sent - window will hide via main process");
-      // DON'T change viewMode - let the window just hide
-    } else {
-      console.error("[App] ❌ window.ipcRenderer not available!");
-    }
-  };
+  // const handleHudCancel = () => {
+  //   console.log("[App] 🔵 handleHudCancel called");
+  //   if (window.ipcRenderer) {
+  //     console.log("[App] 🔵 Sending hide-hud via IPC");
+  //     window.ipcRenderer.send('hide-hud');
+  //     console.log("[App] 🔵 IPC sent - window will hide via main process");
+  //     // DON'T change viewMode - let the window just hide
+  //   } else {
+  //     console.error("[App] ❌ window.ipcRenderer not available!");
+  //   }
+  // };
 
-  // HUD View
-  if (viewMode === 'hud') {
-    return (
-      <div className="h-screen w-screen flex items-center justify-center bg-transparent">
-        <FloatingHUD onComplete={handleHudComplete} onCancel={handleHudCancel} />
-      </div>
-    );
-  }
+  // HUD View disabled - Electron feature
+  // if (viewMode === 'hud') {
+  //   return (
+  //     <div className="h-screen w-screen flex items-center justify-center bg-transparent">
+  //       <FloatingHUD onComplete={handleHudComplete} onCancel={handleHudCancel} />
+  //     </div>
+  //   );
+  // }
 
   // Loading State
   if (isInitialLoad) return (
@@ -361,9 +374,14 @@ const App: React.FC = () => {
               }}
             />
           ) : activeRecordingId === 'dictations' ? (
-            <DictationLogView 
-              sessions={recordings} 
-              onDelete={handleDeleteRecording} 
+            <DictationLogView
+              sessions={recordings}
+              onDelete={handleDeleteRecording}
+            />
+          ) : activeRecordingId === 'strategist' ? (
+            <StrategistView
+              recordings={recordings}
+              userId={user?.id || ''}
             />
           ) : activeSession ? (
             <ResultsView session={activeSession} onUpdateTitle={handleUpdateTitle} />

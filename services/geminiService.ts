@@ -54,7 +54,7 @@ const parseMarkdownResponse = (text: string): MeetingAnalysis => {
   };
 };
 
-async function retryOperation<T>(
+export async function retryOperation<T>(
   operation: () => Promise<T>,
   retries = 3,
   delay = 1000,
