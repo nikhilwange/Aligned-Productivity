@@ -37,7 +37,7 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onEndSession }) => {
         inputContextRef.current = new AudioContext({ sampleRate: 16000 });
         outputContextRef.current = new AudioContext({ sampleRate: 24000 });
         const sessionPromise = ai.live.connect({
-          model: 'gemini-2.0-flash-exp',
+          model: 'gemini-2.5-flash',
           callbacks: {
             onopen: async () => {
               if (!isMounted) return;

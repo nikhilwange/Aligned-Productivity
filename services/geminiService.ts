@@ -54,19 +54,196 @@ const parseMarkdownResponse = (text: string): MeetingAnalysis => {
   };
 };
 
-async function retryOperation<T>(operation: () => Promise<T>, retries = 3, delay = 1000): Promise<T> {
+async function retryOperation<T>(
+  operation: () => Promise<T>,
+  retries = 3,
+  delay = 1000,
+  operationName = 'API call'
+): Promise<T> {
   try {
     return await operation();
   } catch (error: any) {
-    if (retries > 0 && (error.status === 500 || error.status === 503 || error.message?.includes('xhr error') || error.message?.includes('fetch failed') || error.message?.includes('code: 6'))) {
+    const isRetryable = error.status === 500 ||
+                       error.status === 503 ||
+                       error.status === 429 || // Add rate limit handling
+                       error.message?.includes('xhr error') ||
+                       error.message?.includes('fetch failed') ||
+                       error.message?.includes('code: 6');
+
+    if (retries > 0 && isRetryable) {
+      console.warn(`[Retry] ${operationName} failed, retrying in ${delay}ms... (${retries} attempts left)`);
       await new Promise(resolve => setTimeout(resolve, delay));
-      return retryOperation(operation, retries - 1, delay * 2);
+      return retryOperation(operation, retries - 1, delay * 2, operationName);
     }
     throw error;
   }
 }
 
-export const analyzeConversation = async (audioBlob: Blob): Promise<MeetingAnalysis> => {
+// Pass 1: Extract verbatim transcript from audio
+export const extractTranscript = async (audioBlob: Blob): Promise<string> => {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) throw new Error("API Key is missing.");
+
+  const ai = new GoogleGenAI({ apiKey });
+  const base64Audio = await blobToBase64(audioBlob);
+  const mimeType = audioBlob.type || 'audio/webm';
+
+  const transcriptPrompt = `You are a professional transcription service.
+
+Your task is to provide a complete, verbatim transcript of this audio recording.
+
+REQUIREMENTS:
+1. Transcribe EVERY word spoken - do not summarize or skip any content
+2. Format: [Speaker Name/Role] (MM:SS): [Exact words spoken]
+3. Identify speakers by voice (Speaker 1, Speaker 2, etc.)
+4. Preserve multilingual content (English and Indian languages)
+5. If spoken in a regional language, transcribe in native script with [English translation]
+6. Mark unclear segments as [inaudible] rather than guessing
+7. Include timestamps every 30-60 seconds
+8. Do not add commentary or analysis - ONLY verbatim transcript
+
+Output ONLY the transcript.`;
+
+  try {
+    const response = await retryOperation(() =>
+      ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: {
+          parts: [
+            { inlineData: { mimeType, data: base64Audio } },
+            { text: transcriptPrompt }
+          ]
+        },
+        generationConfig: {
+          maxOutputTokens: 65536, // Gemini 2.5 Flash supports up to 65k tokens!
+          temperature: 0.1,
+        }
+      }),
+      3,
+      1000,
+      'Pass 1: Transcript extraction'
+    );
+
+    const transcriptText = response.text;
+    if (!transcriptText) throw new Error("Empty transcript from Gemini.");
+
+    const wasTruncated = response.candidates?.[0]?.finishReason === 'MAX_TOKENS';
+    if (wasTruncated) {
+      console.warn('⚠️ Transcript was truncated. Consider upgrading to Gemini 2.5 Flash.');
+    }
+
+    return transcriptText.trim();
+
+  } catch (error) {
+    console.error("Transcript extraction failed:", error);
+    throw error;
+  }
+};
+
+// Pass 2: Generate structured analysis from transcript text
+export const analyzeTranscript = async (transcript: string): Promise<Omit<MeetingAnalysis, 'transcript'>> => {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) throw new Error("API Key is missing.");
+
+  const ai = new GoogleGenAI({ apiKey });
+
+  // Reuse the existing system prompt structure but adapted for text input
+  const analysisPrompt = `You are an expert meeting assistant that creates comprehensive, well-structured meeting notes.
+
+Analyze this meeting transcript and provide detailed notes in the following format:
+
+📋 Meeting Overview
+Date: [Extract or use today's date]
+Duration: [Estimate from transcript length/timestamps]
+Attendees: [List all speakers mentioned]
+Meeting Type: [Infer: standup, planning, brainstorm, review, etc.]
+
+🎯 Key Takeaways
+Provide 3-5 concise bullet points highlighting the most important outcomes.
+
+📝 Summary
+Write a comprehensive 2-3 paragraph narrative summary.
+
+💬 Discussion Points
+Organize by themes with Context, Key Points, and Participants' Views.
+
+✅ Action Items
+List all tasks with checkboxes:
+- [ ] [Clear, actionable task description]
+
+🎲 Decisions Made
+| Decision Title | What was decided | Why | Impact |
+
+❓ Open Questions
+Capture unresolved questions or items needing discussion.
+
+📊 Data & Metrics Mentioned
+| Metric | Value | Context |
+
+📅 Important Dates & Deadlines
+Extract all dates mentioned.
+
+🔗 References & Resources
+List documents, links, tools, or resources mentioned.
+
+💡 Ideas & Suggestions
+Capture brainstormed ideas or proposals.
+
+🚧 Blockers & Risks
+Identify obstacles, concerns, or risks discussed.
+
+📌 Next Steps
+Summarize what should happen next in priority order.
+
+📎 Additional Notes
+Any other relevant information.
+
+FORMATTING:
+- Use emoji headers for visual scanning
+- DO NOT use double asterisks (**) for bolding
+- Use bullet points and checkboxes
+- Preserve multilingual content
+- DO NOT include the full transcript in output - I have it separately
+
+TRANSCRIPT TO ANALYZE:
+${transcript}`;
+
+  try {
+    const response = await retryOperation(() =>
+      ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: {
+          parts: [{ text: analysisPrompt }]
+        },
+        generationConfig: {
+          maxOutputTokens: 65536, // Gemini 2.5 Flash supports up to 65k tokens!
+          temperature: 0.1,
+        }
+      }),
+      3,
+      1000,
+      'Pass 2: Analysis generation'
+    );
+
+    const responseText = response.text;
+    if (!responseText) throw new Error("Empty analysis response from Gemini.");
+
+    const analysis = parseMarkdownResponse(responseText);
+    const isTruncated = response.candidates?.[0]?.finishReason === 'MAX_TOKENS';
+
+    return {
+      ...analysis,
+      isTruncated,
+    };
+
+  } catch (error) {
+    console.error("Transcript analysis failed:", error);
+    throw error;
+  }
+};
+
+// Legacy single-pass implementation (kept as fallback)
+const legacyAnalyzeConversation = async (audioBlob: Blob): Promise<MeetingAnalysis> => {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   if (!apiKey) throw new Error("API Key is missing.");
 
@@ -136,7 +313,7 @@ FORMATTING INSTRUCTIONS:
 
   try {
     const response: GenerateContentResponse = await retryOperation(() => ai.models.generateContent({
-      model: 'gemini-2.0-flash-exp',
+      model: 'gemini-2.5-flash',
       contents: {
         parts: [
           { inlineData: { mimeType: mimeType, data: base64Audio } },
@@ -147,7 +324,7 @@ FORMATTING INSTRUCTIONS:
         maxOutputTokens: 8192,
         temperature: 0.1, // Low temperature for high fidelity transcription
       }
-    }));
+    }), 3, 1000, 'Legacy single-pass analysis');
 
     const responseText = response.text;
     if (!responseText) throw new Error("Empty response from Gemini.");
@@ -163,8 +340,58 @@ FORMATTING INSTRUCTIONS:
   }
 };
 
+// New two-pass orchestrator
+export const analyzeConversation = async (audioBlob: Blob): Promise<MeetingAnalysis> => {
+  let transcript: string | null = null;
+
+  try {
+    // PASS 1: Extract complete transcript from audio
+    console.log('[Pass 1/2] Extracting transcript from audio...');
+    transcript = await extractTranscript(audioBlob);
+    console.log(`[Pass 1/2] ✓ Transcript extracted (${transcript.length} characters)`);
+
+  } catch (pass1Error) {
+    console.error('[Pass 1/2] ✗ Transcript extraction failed:', pass1Error);
+
+    // FALLBACK: Try legacy single-pass method
+    console.log('[Fallback] Attempting legacy single-pass analysis...');
+    try {
+      return await legacyAnalyzeConversation(audioBlob);
+    } catch (fallbackError) {
+      console.error('[Fallback] ✗ Legacy method also failed');
+      throw pass1Error;
+    }
+  }
+
+  try {
+    // PASS 2: Generate structured analysis from transcript
+    console.log('[Pass 2/2] Generating structured analysis...');
+    const analysis = await analyzeTranscript(transcript);
+    console.log('[Pass 2/2] ✓ Analysis complete');
+
+    // Combine results
+    return {
+      ...analysis,
+      transcript, // Add transcript from Pass 1
+    };
+
+  } catch (pass2Error) {
+    console.error('[Pass 2/2] ✗ Analysis generation failed:', pass2Error);
+
+    // PARTIAL SUCCESS: Return transcript even if analysis failed
+    console.log('[Recovery] Returning transcript-only result');
+    return {
+      transcript: transcript,
+      summary: `Analysis generation failed. Raw transcript is available.\n\nError: ${pass2Error.message}`,
+      actionPoints: [],
+      isTruncated: false,
+      meetingType: 'Unknown'
+    };
+  }
+};
+
 export const enhanceDictationText = async (text: string): Promise<MeetingAnalysis> => {
-  const apiKey = process.env.API_KEY || (import.meta.env.VITE_GEMINI_API_KEY as string);
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   if (!apiKey) throw new Error("API Key is missing.");
 
   const ai = new GoogleGenAI({ apiKey });
@@ -200,7 +427,7 @@ export const enhanceDictationText = async (text: string): Promise<MeetingAnalysi
 
   try {
     const response = await retryOperation(() => ai.models.generateContent({
-      model: 'gemini-2.0-flash-exp',
+      model: 'gemini-2.5-flash',
       contents: {
         parts: [{ text: systemPrompt }]
       }

@@ -71,13 +71,13 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
 
   if (isSignupSuccess) {
     return (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center gradient-mesh overflow-hidden px-6">
+      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[var(--surface-950)] overflow-hidden px-6">
         {/* Ambient orbs */}
         <div className="absolute inset-0 overflow-hidden pointer-events-none">
           <div className="absolute top-1/4 left-1/4 w-[500px] h-[500px] rounded-full bg-purple-600/20 blur-[120px] animate-pulse-glow"></div>
           <div className="absolute bottom-1/4 right-1/4 w-[400px] h-[400px] rounded-full bg-teal-500/15 blur-[100px] animate-pulse-glow" style={{ animationDelay: '1s' }}></div>
         </div>
-        
+
         <div className="relative max-w-md w-full glass-card rounded-3xl p-10 text-center animate-scale-in">
           {/* Success Icon */}
           <div className="relative w-20 h-20 mx-auto mb-8">
@@ -88,16 +88,16 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
               </svg>
             </div>
           </div>
-          
-          <h2 className="text-2xl font-bold text-white mb-3">Check your email</h2>
-          <p className="text-white/60 mb-8 leading-relaxed">
+
+          <h2 className="text-2xl font-bold text-[var(--text-primary)] mb-3">Check your email</h2>
+          <p className="text-[var(--text-secondary)] mb-8 leading-relaxed">
             We've sent a confirmation link to<br />
             <span className="text-teal-400 font-semibold">{email}</span>
           </p>
-          
-          <button 
-            onClick={() => setIsLogin(true)} 
-            className="text-white/50 hover:text-white text-sm font-medium transition-colors duration-200 flex items-center gap-2 mx-auto"
+
+          <button
+            onClick={() => setIsLogin(true)}
+            className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] text-sm font-medium transition-colors duration-200 flex items-center gap-2 mx-auto"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
@@ -110,17 +110,17 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center gradient-mesh overflow-hidden px-6">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[var(--surface-950)] overflow-hidden px-6">
       {/* Animated ambient background */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full bg-purple-600/20 blur-[150px] animate-soft-pulse"></div>
         <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-teal-500/15 blur-[120px] animate-soft-pulse" style={{ animationDelay: '2s' }}></div>
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] rounded-full bg-amber-500/5 blur-[200px] animate-pulse-glow"></div>
       </div>
-      
+
       {/* Decorative grid */}
       <div className="absolute inset-0 opacity-[0.02]" style={{
-        backgroundImage: 'linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)',
+        backgroundImage: 'linear-gradient(var(--glass-border) 1px, transparent 1px), linear-gradient(90deg, var(--glass-border) 1px, transparent 1px)',
         backgroundSize: '60px 60px'
       }}></div>
 
@@ -134,31 +134,31 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
               <span className="text-white font-bold text-3xl tracking-tight">A</span>
             </div>
           </div>
-          
-          <h1 className="text-3xl font-bold tracking-tight text-white mb-2">Aligned</h1>
-          <p className="text-white/40 text-sm font-medium tracking-wide">Workspace Intelligence</p>
+
+          <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)] mb-2">Aligned</h1>
+          <p className="text-[var(--text-muted)] text-sm font-medium tracking-wide">Workspace Intelligence</p>
         </div>
 
         {/* Auth Card */}
         <div className="glass-card rounded-3xl p-8 shadow-2xl">
           {/* Tab indicator */}
           <div className="flex items-center justify-center gap-2 mb-8">
-            <button 
+            <button
               onClick={() => { setIsLogin(true); setError(null); }}
               className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-200 ${
-                isLogin 
-                  ? 'bg-white/10 text-white' 
-                  : 'text-white/40 hover:text-white/60'
+                isLogin
+                  ? 'bg-[var(--glass-bg-hover)] text-[var(--text-primary)]'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
               }`}
             >
               Sign in
             </button>
-            <button 
+            <button
               onClick={() => { setIsLogin(false); setError(null); }}
               className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-200 ${
-                !isLogin 
-                  ? 'bg-white/10 text-white' 
-                  : 'text-white/40 hover:text-white/60'
+                !isLogin
+                  ? 'bg-[var(--glass-bg-hover)] text-[var(--text-primary)]'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
               }`}
             >
               Create account
@@ -181,39 +181,39 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
           <form onSubmit={handleSubmit} className="space-y-5">
             {!isLogin && (
               <div className="space-y-2 animate-fade-in-down">
-                <label className="block text-xs font-semibold text-white/40 uppercase tracking-wider ml-1">Full name</label>
-                <input 
-                  required 
-                  type="text" 
-                  value={name} 
-                  onChange={(e) => setName(e.target.value)} 
-                  className="w-full glass-input rounded-xl px-4 py-3.5 text-white placeholder-white/30 text-sm font-medium" 
-                  placeholder="John Doe" 
+                <label className="block text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider ml-1">Full name</label>
+                <input
+                  required
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="w-full glass-input rounded-xl px-4 py-3.5 text-[var(--text-primary)] placeholder:text-[var(--text-muted)] text-sm font-medium"
+                  placeholder="John Doe"
                 />
               </div>
             )}
-            
+
             <div className="space-y-2">
-              <label className="block text-xs font-semibold text-white/40 uppercase tracking-wider ml-1">Email address</label>
-              <input 
-                required 
-                type="email" 
-                value={email} 
-                onChange={(e) => setEmail(e.target.value)} 
-                className="w-full glass-input rounded-xl px-4 py-3.5 text-white placeholder-white/30 text-sm font-medium" 
-                placeholder="you@workspace.com" 
+              <label className="block text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider ml-1">Email address</label>
+              <input
+                required
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full glass-input rounded-xl px-4 py-3.5 text-[var(--text-primary)] placeholder:text-[var(--text-muted)] text-sm font-medium"
+                placeholder="you@workspace.com"
               />
             </div>
-            
+
             <div className="space-y-2">
-              <label className="block text-xs font-semibold text-white/40 uppercase tracking-wider ml-1">Password</label>
-              <input 
-                required 
-                type="password" 
-                value={password} 
-                onChange={(e) => setPassword(e.target.value)} 
-                className="w-full glass-input rounded-xl px-4 py-3.5 text-white placeholder-white/30 text-sm font-medium" 
-                placeholder="••••••••" 
+              <label className="block text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider ml-1">Password</label>
+              <input
+                required
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full glass-input rounded-xl px-4 py-3.5 text-[var(--text-primary)] placeholder:text-[var(--text-muted)] text-sm font-medium"
+                placeholder="••••••••"
               />
             </div>
             
@@ -234,21 +234,21 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
               )}
             </button>
           </form>
-          
-          <div className="mt-8 pt-6 border-t border-white/5 text-center">
-            <button 
-              onClick={() => { setIsLogin(!isLogin); setError(null); }} 
-              className="text-white/40 hover:text-white text-sm font-medium transition-colors duration-200"
+
+          <div className="mt-8 pt-6 border-t border-[var(--glass-border)] text-center">
+            <button
+              onClick={() => { setIsLogin(!isLogin); setError(null); }}
+              className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-sm font-medium transition-colors duration-200"
             >
               {isLogin ? "Don't have an account? " : "Already have an account? "}
               <span className="text-amber-400 hover:text-amber-300">{isLogin ? 'Create one' : 'Sign in'}</span>
             </button>
           </div>
         </div>
-        
+
         {/* Footer */}
         <div className="mt-8 text-center">
-          <p className="text-white/20 text-xs font-medium flex items-center justify-center gap-2">
+          <p className="text-[var(--text-muted)] opacity-60 text-xs font-medium flex items-center justify-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-teal-500"></span>
             Powered by Gemini 2.5
           </p>

@@ -187,7 +187,7 @@ const FloatingHUD: React.FC<FloatingHUDProps> = ({ onComplete, onCancel }) => {
                 console.log('[HUD] Connecting to Gemini...');
 
                 const session = await ai.live.connect({
-                    model: 'gemini-2.0-flash-exp',
+                    model: 'gemini-2.5-flash',
                     callbacks: {
                         onopen: async () => {
                             if (!mountedRef.current || isClosingRef.current) return;

@@ -8,6 +8,7 @@ import DictationView from './components/DictationView';
 import DictationLogView from './components/DictationLogView';
 import FloatingHUD from './components/FloatingHUD';
 import AuthView from './components/AuthView';
+import LandingPage from './components/LandingPage';
 import { AppState, RecordingSession, AudioRecording, User } from './types';
 import { analyzeConversation, enhanceDictationText } from './services/geminiService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb } from './services/supabaseService';
@@ -29,6 +30,7 @@ const App: React.FC = () => {
   const [isLiveMode, setIsLiveMode] = useState<boolean>(false);
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const [showAuthView, setShowAuthView] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     return (localStorage.getItem('aligned-theme') as 'light' | 'dark') || 'dark';
   });
@@ -245,7 +247,13 @@ const App: React.FC = () => {
     </div>
   );
 
-  if (!user) return <AuthView onLogin={() => { }} />;
+  // Show Landing Page or Auth View if not logged in
+  if (!user) {
+    if (!showAuthView) {
+      return <LandingPage onGetStarted={() => setShowAuthView(true)} />;
+    }
+    return <AuthView onLogin={() => { }} />;
+  }
 
   const activeSession = recordings.find(r => r.id === activeRecordingId);
   const showMainContent = isRecordingMode || isLiveMode || !!activeRecordingId;
@@ -333,14 +341,22 @@ const App: React.FC = () => {
                     finalTranscript = fallbackAnalysis.transcript;
                   }
 
+                  // Validate transcript before processing
+                  if (!finalTranscript || finalTranscript.trim().length === 0) {
+                    throw new Error("No transcript available from dictation or audio fallback");
+                  }
+
                   const analysis = await enhanceDictationText(finalTranscript);
                   const completedSession: RecordingSession = { ...newSession, analysis, status: 'completed' };
                   setRecordings(prev => prev.map(rec => rec.id === newSession.id ? completedSession : rec));
                   await saveRecording(completedSession, user.id);
+                  setAppState(AppState.IDLE);
                 } catch (err: any) {
                   console.error("Dictation processing failed", err);
                   const errorSession: RecordingSession = { ...newSession, status: 'error', errorMessage: err.message };
                   setRecordings(prev => prev.map(rec => rec.id === newSession.id ? errorSession : rec));
+                  await saveRecording(errorSession, user.id); // ✅ FIX: Save error state to DB
+                  setAppState(AppState.IDLE);
                 }
               }}
             />

@@ -42,7 +42,7 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
 
                 // Connect to Gemini Live
                 const sessionPromise = ai.live.connect({
-                    model: 'gemini-2.0-flash-exp',
+                    model: 'gemini-2.5-flash',
                     callbacks: {
                         onopen: async () => {
                             if (!isMounted) return;
