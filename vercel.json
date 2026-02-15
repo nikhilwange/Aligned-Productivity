@@ -1,5 +1,5 @@
 {
-  "buildCommand": "vite build",
+  "buildCommand": "echo \"ENV CHECK: VITE_SUPABASE_URL=${VITE_SUPABASE_URL:+SET}${VITE_SUPABASE_URL:-MISSING}\" && echo \"ENV CHECK: VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY:+SET}${VITE_SUPABASE_ANON_KEY:-MISSING}\" && echo \"ENV CHECK: VITE_GEMINI_API_KEY=${VITE_GEMINI_API_KEY:+SET}${VITE_GEMINI_API_KEY:-MISSING}\" && vite build",
   "outputDirectory": "dist",
   "framework": "vite"
 }
