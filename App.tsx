@@ -37,6 +37,7 @@ const App: React.FC = () => {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     return (localStorage.getItem('aligned-theme') as 'light' | 'dark') || 'dark';
   });
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     document.body.className = theme === 'light' ? 'light antialiased' : 'antialiased';
@@ -270,60 +271,97 @@ const App: React.FC = () => {
   }
 
   const activeSession = recordings.find(r => r.id === activeRecordingId);
-  const showMainContent = isRecordingMode || isLiveMode || !!activeRecordingId;
 
   return (
     <div className="h-screen bg-[var(--surface-950)] flex overflow-hidden animate-fade-in">
-      {/* Sidebar */}
-      <div className={`${showMainContent ? 'hidden' : 'flex'} md:flex flex-col w-full md:w-80 h-full shrink-0 z-20`}>
-        <Sidebar 
-          user={user} 
-          recordings={recordings} 
-          activeId={activeRecordingId} 
-          onSelect={handleSelectRecording} 
-          onNew={handleStartNew} 
-          onStartLive={handleStartLive} 
-          isLiveActive={isLiveMode} 
-          onDelete={handleDeleteRecording} 
+      {/* Desktop Sidebar - always visible on md+ */}
+      <div className="hidden md:flex flex-col w-80 h-full shrink-0 z-20">
+        <Sidebar
+          user={user}
+          recordings={recordings}
+          activeId={activeRecordingId}
+          onSelect={handleSelectRecording}
+          onNew={handleStartNew}
+          onStartLive={handleStartLive}
+          isLiveActive={isLiveMode}
+          onDelete={handleDeleteRecording}
           onLogout={handleLogout}
           theme={theme}
           onToggleTheme={toggleTheme}
         />
       </div>
-      
-      {/* Main Content */}
-      <main className={`${!showMainContent ? 'hidden' : 'flex'} flex-1 flex flex-col h-full overflow-hidden bg-[var(--surface-950)] z-10 w-full md:border-l md:border-white/[0.04]`}>
+
+      {/* Mobile Sidebar Overlay */}
+      <div className={`md:hidden fixed inset-0 z-50 transition-all duration-300 ${sidebarOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}>
+        <div
+          className={`absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300 ${sidebarOpen ? 'opacity-100' : 'opacity-0'}`}
+          onClick={() => setSidebarOpen(false)}
+        />
+        <div className={`absolute left-0 top-0 bottom-0 w-[85vw] max-w-sm transition-transform duration-300 ease-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+          <Sidebar
+            user={user}
+            recordings={recordings}
+            activeId={activeRecordingId}
+            onSelect={(id) => { handleSelectRecording(id); setSidebarOpen(false); }}
+            onNew={() => { handleStartNew(); setSidebarOpen(false); }}
+            onStartLive={() => { handleStartLive(); setSidebarOpen(false); }}
+            isLiveActive={isLiveMode}
+            onDelete={handleDeleteRecording}
+            onLogout={handleLogout}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+            onClose={() => setSidebarOpen(false)}
+          />
+        </div>
+      </div>
+
+      {/* Main Content - always visible */}
+      <main className="flex flex-1 flex-col h-full overflow-hidden bg-[var(--surface-950)] z-10 w-full md:border-l md:border-white/[0.04]">
         {!isLiveMode && (
-          <header className="h-16 border-b border-white/[0.06] flex items-center px-4 md:px-8 justify-between bg-[var(--surface-900)]/50 backdrop-blur-xl shrink-0">
+          <header className="h-14 md:h-16 border-b border-white/[0.06] flex items-center px-4 md:px-8 justify-between bg-[var(--surface-900)]/50 backdrop-blur-xl shrink-0">
             <div className="flex items-center space-x-3">
-              {/* Mobile back button */}
-              <button 
-                onClick={() => { setActiveRecordingId(null); setIsRecordingMode(true); }} 
-                className="md:hidden p-2 -ml-2 text-white/40 hover:bg-white/5 rounded-lg transition-colors"
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                </svg>
-              </button>
-              
+              {/* Mobile back button - only when viewing content */}
+              {!!activeRecordingId && (
+                <button
+                  onClick={() => { setActiveRecordingId(null); setIsRecordingMode(true); }}
+                  className="md:hidden p-2.5 -ml-1 text-[var(--text-muted)] hover:bg-white/5 rounded-xl transition-colors active:scale-95"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+              )}
+
               {/* Logo */}
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 bg-gradient-to-br from-amber-500 via-orange-500 to-yellow-600 rounded-lg shadow-lg flex items-center justify-center text-white font-bold text-sm">
                   A
                 </div>
-                <h1 className="text-lg font-bold tracking-tight text-[var(--text-primary)]">Aligned</h1>
+                <h1 className="text-base md:text-lg font-bold tracking-tight text-[var(--text-primary)]">Aligned</h1>
               </div>
             </div>
-            
-            {/* Badge */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg glass text-xs font-semibold text-[var(--text-tertiary)]">
-              <span className="w-1.5 h-1.5 rounded-full bg-teal-400"></span>
-              Gemini 2.5
+
+            <div className="flex items-center gap-2">
+              {/* Badge */}
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg glass text-xs font-semibold text-[var(--text-tertiary)]">
+                <span className="w-1.5 h-1.5 rounded-full bg-teal-400"></span>
+                <span className="hidden sm:inline">Gemini 2.5</span>
+                <span className="sm:hidden">AI</span>
+              </div>
+              {/* Mobile hamburger menu */}
+              <button
+                onClick={() => setSidebarOpen(prev => !prev)}
+                className="md:hidden p-2.5 rounded-xl glass glass-hover active:scale-95 transition-all"
+              >
+                <svg className="w-5 h-5 text-[var(--text-secondary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
+                </svg>
+              </button>
             </div>
           </header>
         )}
-        
-        <div className="flex-1 overflow-hidden relative">
+
+        <div className="flex-1 overflow-hidden relative pb-16 md:pb-0">
           {isLiveMode ? (
             <DictationView
               onCancel={handleEndLive}
@@ -409,6 +447,78 @@ const App: React.FC = () => {
           )}
         </div>
       </main>
+
+      {/* Mobile Bottom Navigation */}
+      {!isLiveMode && (
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[var(--surface-900)]/95 backdrop-blur-xl border-t border-white/[0.06]" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
+          <div className="flex items-center justify-around h-16 px-1">
+
+            {/* Record */}
+            <button
+              onClick={() => { handleStartNew(); setSidebarOpen(false); }}
+              className={`flex flex-col items-center justify-center gap-0.5 min-w-[56px] h-full rounded-xl transition-all active:scale-90 ${isRecordingMode && !activeRecordingId ? 'text-purple-400' : 'text-[var(--text-muted)]'}`}
+            >
+              <svg className="w-[22px] h-[22px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+              </svg>
+              <span className="text-[10px] font-semibold">Record</span>
+            </button>
+
+            {/* Sessions */}
+            <button
+              onClick={() => { handleSelectRecording('sessions'); setSidebarOpen(false); }}
+              className={`flex flex-col items-center justify-center gap-0.5 min-w-[56px] h-full rounded-xl transition-all active:scale-90 ${activeRecordingId === 'sessions' ? 'text-teal-400' : 'text-[var(--text-muted)]'}`}
+            >
+              <svg className="w-[22px] h-[22px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+              </svg>
+              <span className="text-[10px] font-semibold">Sessions</span>
+            </button>
+
+            {/* Dictate - Center Featured */}
+            <button
+              onClick={() => { handleStartLive(); setSidebarOpen(false); }}
+              className="flex flex-col items-center justify-center -mt-5 active:scale-90 transition-all"
+            >
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-teal-500 to-teal-700 flex items-center justify-center shadow-lg shadow-teal-500/25">
+                <svg className="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>
+              </div>
+              <span className="text-[10px] font-semibold text-[var(--text-muted)] mt-1">Dictate</span>
+            </button>
+
+            {/* Strategist */}
+            <button
+              onClick={() => { handleSelectRecording('strategist'); setSidebarOpen(false); }}
+              className={`flex flex-col items-center justify-center gap-0.5 min-w-[56px] h-full rounded-xl transition-all active:scale-90 ${activeRecordingId === 'strategist' ? 'text-purple-400' : 'text-[var(--text-muted)]'}`}
+            >
+              <svg className="w-[22px] h-[22px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+              </svg>
+              <span className="text-[10px] font-semibold">Strategy</span>
+            </button>
+
+            {/* Menu */}
+            <button
+              onClick={() => setSidebarOpen(prev => !prev)}
+              className={`flex flex-col items-center justify-center gap-0.5 min-w-[56px] h-full rounded-xl transition-all active:scale-90 ${sidebarOpen ? 'text-purple-400' : 'text-[var(--text-muted)]'}`}
+            >
+              {sidebarOpen ? (
+                <svg className="w-[22px] h-[22px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              ) : (
+                <svg className="w-[22px] h-[22px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
+                </svg>
+              )}
+              <span className="text-[10px] font-semibold">Menu</span>
+            </button>
+
+          </div>
+        </nav>
+      )}
     </div>
   );
 };

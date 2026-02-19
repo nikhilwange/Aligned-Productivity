@@ -23,6 +23,12 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             </div>
             <span className="text-xl font-bold tracking-tight text-[var(--text-primary)]">Aligned</span>
           </div>
+          <button
+            onClick={onGetStarted}
+            className="md:hidden px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-600 text-white rounded-xl font-bold text-sm shadow-lg"
+          >
+            Get Started
+          </button>
           <div className="hidden md:flex items-center gap-8 text-sm font-semibold text-[var(--text-tertiary)]">
             <a href="#features" className="hover:text-[var(--text-primary)] transition-colors">Features</a>
             <a href="#vision" className="hover:text-[var(--text-primary)] transition-colors">Vision</a>
@@ -41,7 +47,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
       </nav>
 
       {/* Hero */}
-      <section className="relative pt-48 pb-32 px-6">
+      <section className="relative pt-28 md:pt-48 pb-16 md:pb-32 px-4 md:px-6">
         <div className="absolute inset-0 bg-gradient-radial from-purple-500/10 via-transparent to-transparent opacity-50"></div>
 
         <div className="max-w-5xl mx-auto text-center relative">
@@ -49,7 +55,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             🚀 NOW SUPPORTING 10+ INDIAN LANGUAGES
           </div>
 
-          <h1 className="text-6xl md:text-8xl font-black tracking-tighter mb-8 leading-[0.9] text-[var(--text-primary)]">
+          <h1 className="text-4xl sm:text-6xl md:text-8xl font-black tracking-tighter mb-6 md:mb-8 leading-[1.05] md:leading-[0.9] text-[var(--text-primary)]">
             Capture the Chaos. <br />
             Deliver the{' '}
             <span className="bg-gradient-to-r from-amber-500 via-yellow-400 to-orange-600 bg-clip-text text-transparent">
@@ -57,7 +63,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             </span>
           </h1>
 
-          <p className="text-xl md:text-2xl text-[var(--text-muted)] font-medium max-w-2xl mx-auto mb-12 leading-relaxed">
+          <p className="text-base md:text-2xl text-[var(--text-muted)] font-medium max-w-2xl mx-auto mb-8 md:mb-12 leading-relaxed">
             The ultimate workspace intelligence platform. Capture meetings, dictate thoughts, and let Gemini 2.5 turn noise into actionable insights.
           </p>
 
@@ -78,7 +84,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
         </div>
 
         {/* Floating UI Mockup */}
-        <div className="mt-24 max-w-4xl mx-auto animate-float">
+        <div className="mt-10 md:mt-24 max-w-4xl mx-auto animate-float overflow-hidden">
           <div className="glass rounded-[2rem] p-4 shadow-2xl">
             <div className="bg-[var(--surface-800)] rounded-[1.5rem] overflow-hidden aspect-video flex items-center justify-center relative">
               <div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 to-teal-500/10"></div>
@@ -95,9 +101,9 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
       </section>
 
       {/* Features */}
-      <section id="features" className="py-32 px-6">
-        <div className="max-w-7xl mx-auto grid md:grid-cols-3 gap-8">
-          <div className="p-10 rounded-[2.5rem] glass hover:border-amber-500/30 transition-all group">
+      <section id="features" className="py-16 md:py-32 px-4 md:px-6">
+        <div className="max-w-7xl mx-auto grid md:grid-cols-3 gap-6 md:gap-8">
+          <div className="p-6 md:p-10 rounded-[2rem] md:rounded-[2.5rem] glass hover:border-amber-500/30 transition-all group">
             <div className="w-14 h-14 rounded-2xl bg-amber-500/10 flex items-center justify-center text-amber-500 mb-8 group-hover:scale-110 transition-transform">
               <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
@@ -109,7 +115,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             </p>
           </div>
 
-          <div className="p-10 rounded-[2.5rem] glass hover:border-purple-500/30 transition-all group">
+          <div className="p-6 md:p-10 rounded-[2rem] md:rounded-[2.5rem] glass hover:border-purple-500/30 transition-all group">
             <div className="w-14 h-14 rounded-2xl bg-purple-500/10 flex items-center justify-center text-purple-500 mb-8 group-hover:scale-110 transition-transform">
               <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5h12M9 3v2m1.048 9.5a18.022 18.022 0 01-3.827-5.802M13 15.538l-1.89-1.341a18.152 18.152 0 01-5.11-6.197M13 21l-3-3m0 0l-3 3m3-3V15.538M19 3v2m0 0H7" />
@@ -121,7 +127,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             </p>
           </div>
 
-          <div className="p-10 rounded-[2.5rem] glass hover:border-teal-500/30 transition-all group">
+          <div className="p-6 md:p-10 rounded-[2rem] md:rounded-[2.5rem] glass hover:border-teal-500/30 transition-all group">
             <div className="w-14 h-14 rounded-2xl bg-teal-500/10 flex items-center justify-center text-teal-500 mb-8 group-hover:scale-110 transition-transform">
               <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />

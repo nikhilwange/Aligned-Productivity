@@ -625,6 +625,18 @@
           background: var(--surface-800);
         }
       }
+
+      /* Safe area support for notched devices */
+      .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
+      .pt-safe { padding-top: env(safe-area-inset-top, 0px); }
+
+      /* Prevent tap highlight on mobile */
+      * { -webkit-tap-highlight-color: transparent; }
+
+      /* Smooth scrolling on iOS */
+      .overflow-y-auto, .overflow-y-scroll {
+        -webkit-overflow-scrolling: touch;
+      }
     </style>
 
 </head>

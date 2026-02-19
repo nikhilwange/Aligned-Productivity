@@ -14,9 +14,10 @@ interface SidebarProps {
   onLogout: () => void;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
+  onClose?: () => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect, onNew, onStartLive, isLiveActive, onDelete, onLogout, theme, onToggleTheme }) => {
+const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect, onNew, onStartLive, isLiveActive, onDelete, onLogout, theme, onToggleTheme, onClose }) => {
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -171,8 +172,22 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
             </div>
           </div>
 
+          {/* Right side controls */}
+          <div className="flex items-center gap-2">
+          {/* Mobile close button */}
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="md:hidden w-10 h-10 rounded-xl glass glass-hover flex items-center justify-center opacity-60 hover:opacity-100 transition-all duration-300"
+              title="Close menu"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
           {/* Theme Toggle Switch */}
-          <button 
+          <button
             onClick={onToggleTheme}
             className="w-10 h-10 rounded-xl glass glass-hover flex items-center justify-center opacity-40 hover:opacity-100 transition-all duration-300"
             title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
@@ -187,6 +202,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
               </svg>
             )}
           </button>
+          </div>
         </div>
 
         {/* Action Buttons */}
@@ -415,8 +431,8 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
                   </div>
                 </div>
 
-                {/* Action buttons */}
-                <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover/item:opacity-100 transition-all duration-200 z-30">
+                {/* Action buttons - always visible on mobile, hover-only on desktop */}
+                <div className="absolute top-3 right-3 flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover/item:opacity-100 transition-all duration-200 z-30">
                   <button
                     onClick={(e) => handleShare(e, rec)}
                     className={`p-1.5 rounded-lg transition-all ${sharingId === rec.id
@@ -460,8 +476,8 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
                 {getUserInitials(user.name)}
               </div>
               <div className="flex flex-col">
-                <span className="text-sm font-semibold leading-tight truncate max-w-[100px] text-[var(--text-primary)]">{user.name}</span>
-                <span className="text-[10px] opacity-40 font-medium truncate max-w-[100px] text-[var(--text-primary)]">{user.email}</span>
+                <span className="text-sm font-semibold leading-tight truncate max-w-[150px] text-[var(--text-primary)]">{user.name}</span>
+                <span className="text-[10px] opacity-40 font-medium truncate max-w-[150px] text-[var(--text-primary)]">{user.email}</span>
               </div>
             </div>
             <button
