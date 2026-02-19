@@ -198,11 +198,16 @@ Summarize what should happen next in priority order.
 📎 Additional Notes
 Any other relevant information.
 
-FORMATTING:
-- Use emoji headers for visual scanning
-- DO NOT use double asterisks (**) for bolding
-- Use bullet points and checkboxes
-- Preserve multilingual content
+FORMATTING INSTRUCTIONS:
+- Use emoji headers (📋, 🎯, etc.) for each section — always followed by a space and the section title
+- Use **bold** only for primary labels at the start of a line (e.g., **Date:** value, **Duration:** value, **Owner:** value)
+- Every label MUST be followed by a colon and a space (e.g., **Attendees:** John, Sarah)
+- Use standard Markdown tables with header rows and separator rows (| --- |)
+- Use - for bullet points and - [ ] for action item checkboxes
+- Preserve multilingual content with [English translation] in brackets
+- Use ### for sub-section headers within a section
+- Do NOT use bold for emphasis within sentences — only for labels at the start of lines
+- Professional tone throughout
 - DO NOT include the full transcript in output - I have it separately
 
 TRANSCRIPT TO ANALYZE:
@@ -305,10 +310,14 @@ IMPORTANT: Provide a complete, verbatim transcript of the entire meeting. Do not
 Any other relevant information.
 
 FORMATTING INSTRUCTIONS:
-- Use clear headers and sections with emoji for visual scanning.
-- DO NOT use double asterisks (**) for bolding. Use plain text instead.
-- Use bullet points and checkboxes.
-- Preserve multilingual content. If something is said in an Indian regional language, transcribe it accurately in its native script and provide English translation in [brackets].
+- Use emoji headers (📋, 🎯, etc.) for each section — always followed by a space and the section title
+- Use **bold** only for primary labels at the start of a line (e.g., **Date:** value, **Duration:** value, **Owner:** value)
+- Every label MUST be followed by a colon and a space (e.g., **Attendees:** John, Sarah)
+- Use standard Markdown tables with header rows and separator rows (| --- |)
+- Use - for bullet points and - [ ] for action item checkboxes
+- Preserve multilingual content. If something is said in an Indian regional language, transcribe it accurately in its native script and provide English translation in [brackets]
+- Use ### for sub-section headers within a section
+- Do NOT use bold for emphasis within sentences — only for labels at the start of lines
 - Professional tone throughout.`;
 
   try {

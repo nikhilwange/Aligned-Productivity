@@ -1,5 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { RecordingSession, StrategicAnalysis } from '../types';
 import { generateStrategicAnalysis } from '../services/strategyService';
 
@@ -140,17 +142,114 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     return result;
   }, [session.analysis?.summary]);
 
-  const renderRichSection = (section: typeof sections[0]) => {
+  // Custom react-markdown component overrides for styled rendering
+  const markdownComponents: Record<string, React.FC<any>> = {
+    // Tables: glass card with borders and padding
+    table: ({ children }) => (
+      <div className="overflow-x-auto my-4 glass rounded-xl">
+        <table className="w-full text-left border-collapse">{children}</table>
+      </div>
+    ),
+    thead: ({ children }) => <thead className="border-b border-white/[0.06]">{children}</thead>,
+    th: ({ children }) => <th className="px-5 py-3 text-xs font-bold opacity-50 tracking-wide text-[var(--text-primary)]">{children}</th>,
+    tr: ({ children }) => <tr className="hover:bg-white/[0.02] transition-colors border-b border-white/[0.04]">{children}</tr>,
+    td: ({ children }) => <td className="px-5 py-4 text-sm font-medium text-[var(--text-secondary)]">{children}</td>,
+    // Bold: rendered as bold with primary text color
+    strong: ({ children }) => <strong className="font-bold text-[var(--text-primary)]">{children}</strong>,
+    // Lists: proper indentation
+    ul: ({ children }) => <ul className="ml-4 space-y-1.5 my-3">{children}</ul>,
+    ol: ({ children }) => <ol className="ml-4 space-y-1.5 my-3 list-decimal marker:text-purple-400">{children}</ol>,
+    li: ({ children, node }: any) => {
+      // Check if this list item has a checkbox (remark-gfm task list)
+      const firstChild = node?.children?.[0];
+      if (firstChild?.tagName === 'input' || (firstChild?.type === 'element' && firstChild?.properties?.type === 'checkbox')) {
+        const isChecked = firstChild?.properties?.checked;
+        const textContent = children?.slice?.(1) || children;
+        if (isChecked) {
+          return (
+            <li className="list-none -ml-4 flex items-start gap-3 my-2 opacity-50">
+              <div className="mt-1 w-5 h-5 rounded-md bg-teal-500 border-2 border-teal-500 flex items-center justify-center shrink-0">
+                <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <span className="text-[var(--text-secondary)] line-through font-medium leading-relaxed">{textContent}</span>
+            </li>
+          );
+        }
+        return (
+          <li className="list-none -ml-4 flex items-start gap-3 my-2 group/cb">
+            <div className="mt-1 w-5 h-5 rounded-md border-2 border-white/20 group-hover/cb:border-purple-400 transition-all shrink-0"></div>
+            <span className="text-[var(--text-secondary)] font-medium leading-relaxed">{textContent}</span>
+          </li>
+        );
+      }
+      return <li className="pl-2 text-[var(--text-secondary)] list-disc marker:text-purple-400 font-medium opacity-80">{children}</li>;
+    },
+    // Override default checkbox input (rendered by remark-gfm for task lists)
+    input: () => null,
+    // Sub-headers
+    h2: ({ children }) => <h2 className="text-xl font-bold text-[var(--text-primary)] mt-6 mb-4 tracking-tight border-b border-white/[0.06] pb-3">{children}</h2>,
+    h3: ({ children }) => <h3 className="text-base font-bold opacity-80 mt-6 mb-3 tracking-tight text-[var(--text-primary)]">{children}</h3>,
+    h4: ({ children }) => <h4 className="text-sm font-bold opacity-70 mt-4 mb-2 text-[var(--text-primary)]">{children}</h4>,
+    // Paragraphs
+    p: ({ children }) => <p className="text-base leading-relaxed text-[var(--text-secondary)] mb-3 font-medium opacity-80">{children}</p>,
+    // Horizontal rules: subtle separator
+    hr: () => <hr className="border-white/[0.06] my-6" />,
+    // Code blocks
+    code: ({ children, className }: any) => {
+      const isBlock = className?.includes('language-');
+      if (isBlock) {
+        return <code className="block bg-white/[0.03] rounded-xl p-4 text-sm font-mono text-[var(--text-secondary)] overflow-x-auto my-3">{children}</code>;
+      }
+      return <code className="bg-white/[0.06] px-1.5 py-0.5 rounded-md text-sm font-mono text-purple-300">{children}</code>;
+    },
+    // Blockquotes
+    blockquote: ({ children }) => (
+      <blockquote className="border-l-2 border-purple-500/30 pl-4 my-3 opacity-80">{children}</blockquote>
+    ),
+  };
+
+  const renderRichSection = (section: typeof sections[0], index: number) => {
     const lines = section.content.split('\n');
-    let inTable = false;
-    let tableRows: string[][] = [];
+    const isLast = index === sections.length - 1;
+
+    // Extract the emoji header line and body content separately
+    let headerLine: string | null = null;
+    let bodyLines: string[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (i === 0 && (/^[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌🗣️📎]/.test(trimmed) || trimmed.startsWith('## '))) {
+        headerLine = trimmed;
+      } else {
+        bodyLines.push(lines[i]);
+      }
+    }
+
+    const bodyContent = bodyLines.join('\n').trim();
+
     return (
-      <div key={section.title} className="group/section relative mb-12 animate-fade-in-up">
-        <div className="flex items-center justify-between mb-4 group">
-          <div className="flex-1"></div>
+      <div key={section.title} className={`group/section relative animate-fade-in-up ${!isLast ? 'mb-10 pb-8 border-b border-white/[0.06]' : 'mb-8'}`}>
+        {/* Section header */}
+        <div className="flex items-center justify-between mb-5">
+          {headerLine ? (
+            /^[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌🗣️📎]/.test(headerLine) ? (
+              <h2 className="text-lg font-bold text-[var(--text-primary)] flex items-center gap-3">
+                <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/20 to-teal-500/20 flex items-center justify-center border border-white/[0.08] shadow-lg text-base">
+                  {headerLine.substring(0, 2)}
+                </span>
+                <span className="opacity-90">{headerLine.substring(2).trim()}</span>
+              </h2>
+            ) : (
+              <h2 className="text-xl font-bold text-[var(--text-primary)] tracking-tight">{headerLine.replace(/^##\s*/, '')}</h2>
+            )
+          ) : (
+            <div className="flex-1"></div>
+          )}
           <button
             onClick={() => copySection(section.title, section.content)}
-            className={`opacity-0 group-hover/section:opacity-100 transition-all flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold ${copiedSection === section.title
+            className={`opacity-0 group-hover/section:opacity-100 transition-all flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold shrink-0 ml-4 ${copiedSection === section.title
               ? 'bg-teal-500/20 text-teal-300'
               : 'glass text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
               }`}
@@ -158,77 +257,15 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
             {copiedSection === section.title ? "Copied" : "Copy"}
           </button>
         </div>
-        <div className="space-y-2 pl-5 border-l-2 border-white/[0.06] group-hover/section:border-purple-500/30 transition-colors duration-500">
-          {lines.map((line, i) => {
-            const trimmed = line.trim();
-            if (trimmed.startsWith('|')) {
-              inTable = true;
-              const cells = trimmed.split('|').map(c => c.trim()).filter((c, idx, arr) => idx > 0 && idx < arr.length - 1);
-              if (trimmed.includes('---')) return null;
-              tableRows.push(cells);
-              const nextLine = lines[i + 1]?.trim();
-              if (!nextLine || !nextLine.startsWith('|')) {
-                const currentTable = [...tableRows];
-                tableRows = [];
-                inTable = false;
-                return (
-                  <div key={`table-${i}`} className="overflow-x-auto my-6 glass rounded-xl">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="border-b border-white/[0.06]">
-                          {currentTable[0].map((cell, idx) => (
-                            <th key={idx} className="px-5 py-3 text-xs font-bold opacity-50 tracking-wide text-[var(--text-primary)]">{cell}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-white/[0.04]">
-                        {currentTable.slice(1).map((row, rIdx) => (
-                          <tr key={rIdx} className="hover:bg-white/[0.02] transition-colors text-[var(--text-secondary)]">
-                            {row.map((cell, cIdx) => (
-                              <td key={cIdx} className="px-5 py-4 text-sm font-medium">{cell}</td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                );
-              }
-              return null;
-            }
-            if (trimmed.startsWith('## ')) return <h2 key={i} className="text-xl font-bold text-[var(--text-primary)] mt-6 mb-6 tracking-tight border-b border-white/[0.06] pb-3">{trimmed.replace('## ', '')}</h2>;
-            if (/^[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌🗣️📎]/.test(trimmed)) return (
-              <h2 key={i} className="text-lg font-bold text-[var(--text-primary)] -ml-5 mt-6 mb-6 flex items-center gap-3 bg-[var(--surface-950)] z-10">
-                <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/20 to-teal-500/20 flex items-center justify-center border border-white/[0.08] shadow-lg">
-                  {trimmed.substring(0, 2)}
-                </span>
-                <span className="opacity-90">{trimmed.substring(2)}</span>
-              </h2>
-            );
-            if (trimmed.startsWith('### ')) return <h3 key={i} className="text-base font-bold opacity-80 mt-6 mb-4 tracking-tight text-[var(--text-primary)]">{trimmed.replace('### ', '')}</h3>;
-            if (trimmed.startsWith('- [ ]')) return (
-              <div key={i} className="flex items-start gap-3 my-2 group/cb">
-                <div className="mt-1 w-5 h-5 rounded-md border-2 border-white/20 group-hover/cb:border-purple-400 transition-all shrink-0"></div>
-                <span className="text-[var(--text-secondary)] font-medium leading-relaxed">{trimmed.replace('- [ ]', '').trim()}</span>
-              </div>
-            );
-            if (trimmed.startsWith('- [x]')) return (
-              <div key={i} className="flex items-start gap-3 my-2 opacity-50">
-                <div className="mt-1 w-5 h-5 rounded-md bg-teal-500 border-2 border-teal-500 flex items-center justify-center shrink-0">
-                  <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <span className="text-[var(--text-secondary)] line-through font-medium leading-relaxed">{trimmed.replace('- [x]', '').trim()}</span>
-              </div>
-            );
-            if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) return (
-              <li key={i} className="ml-4 pl-2 my-2 text-[var(--text-secondary)] list-disc marker:text-purple-400 font-medium opacity-80">{trimmed.substring(2)}</li>
-            );
-            if (trimmed === '') return <div key={i} className="h-3"></div>;
-            return <p key={i} className="text-base leading-relaxed text-[var(--text-secondary)] mb-2 font-medium opacity-80">{trimmed}</p>;
-          })}
-        </div>
+
+        {/* Section body rendered via react-markdown */}
+        {bodyContent && (
+          <div className="pl-5 border-l-2 border-white/[0.06] group-hover/section:border-purple-500/30 transition-colors duration-500">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {bodyContent}
+            </ReactMarkdown>
+          </div>
+        )}
       </div>
     );
   };
@@ -395,7 +432,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
                   </div>
                 )}
 
-                {sections.length > 0 ? sections.map(renderRichSection) : <p className="opacity-30">Synthesizing content...</p>}
+                {sections.length > 0 ? sections.map((section, i) => renderRichSection(section, i)) : <p className="opacity-30">Synthesizing content...</p>}
               </div>
             ) : activeTab === 'transcript' ? (
               <div className="animate-fade-in space-y-8">
