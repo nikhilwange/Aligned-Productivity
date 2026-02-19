@@ -179,12 +179,12 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
         }
         return (
           <li className="list-none -ml-4 flex items-start gap-3 my-2 group/cb">
-            <div className="mt-1 w-5 h-5 rounded-md border-2 border-white/20 group-hover/cb:border-purple-400 transition-all shrink-0"></div>
+            <div className="mt-1 w-5 h-5 rounded-md border-2 border-[var(--text-muted)]/40 group-hover/cb:border-purple-400 transition-all shrink-0"></div>
             <span className="text-[var(--text-secondary)] font-medium leading-relaxed">{textContent}</span>
           </li>
         );
       }
-      return <li className="pl-2 text-[var(--text-secondary)] list-disc marker:text-purple-400 font-medium opacity-80">{children}</li>;
+      return <li className="pl-2 text-[var(--text-secondary)] list-disc marker:text-purple-400 font-medium opacity-80 leading-relaxed">{children}</li>;
     },
     // Override default checkbox input (rendered by remark-gfm for task lists)
     input: () => null,

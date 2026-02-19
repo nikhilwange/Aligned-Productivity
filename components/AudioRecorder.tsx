@@ -140,7 +140,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
   const getRemainingColor = () => {
     if (remainingTime < 120) return 'text-red-400';
     if (remainingTime < 600) return 'text-amber-400';
-    return 'text-white/50';
+    return 'text-[var(--text-muted)]';
   };
 
   const inputModes = [
@@ -247,7 +247,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
                     <div className="w-3 h-3 bg-teal-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
                     <div className="w-3 h-3 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
                   </div>
-                  <span className="text-xs font-semibold text-white/50">Processing</span>
+                  <span className="text-xs font-semibold text-[var(--text-muted)]">Processing</span>
                 </div>
               ) : (
                 <>
@@ -265,10 +265,10 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
               {/* Audio visualizer bars */}
               <div className="absolute inset-0 flex items-center justify-center gap-1.5 opacity-40 px-10">
                 {[...Array(16)].map((_, i) => (
-                  <div 
-                    key={i} 
+                  <div
+                    key={i}
                     className="w-1.5 rounded-full transition-all"
-                    style={{ 
+                    style={{
                       height: `${20 + Math.random() * 60}%`,
                       background: `linear-gradient(180deg, #a855f7 0%, #14b8a6 50%, #f59e0b 100%)`,
                       animationDuration: `${0.3 + Math.random() * 0.5}s`,
@@ -278,17 +278,17 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
                   ></div>
                 ))}
               </div>
-              
+
               {/* Timer */}
-              <h2 className="text-5xl font-mono text-white tracking-tighter tabular-nums z-10 mb-1 font-semibold">{formatTime(timer)}</h2>
+              <h2 className="text-5xl font-mono text-[var(--text-primary)] tracking-tighter tabular-nums z-10 mb-1 font-semibold">{formatTime(timer)}</h2>
               <div className={`text-[10px] font-bold z-10 transition-colors duration-500 ${getRemainingColor()}`}>
                 {formatTime(remainingTime)} remaining
               </div>
-              
+
               {/* Stop button */}
-              <button 
-                onClick={stopRecording} 
-                className="absolute bottom-6 px-6 py-2.5 bg-white/10 hover:bg-white hover:text-[var(--surface-900)] text-white backdrop-blur-md rounded-xl text-xs font-bold transition-all z-10 border border-white/10 active:scale-95"
+              <button
+                onClick={stopRecording}
+                className="absolute bottom-6 px-6 py-2.5 bg-purple-600 hover:bg-purple-500 text-white backdrop-blur-md rounded-xl text-xs font-bold transition-all z-10 shadow-lg shadow-purple-500/25 active:scale-95"
               >
                 Finish
               </button>
