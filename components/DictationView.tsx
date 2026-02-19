@@ -7,10 +7,10 @@ interface DictationViewProps {
 }
 
 const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCancel }) => {
-    const [status, setStatus] = useState<'connecting' | 'listening' | 'processing' | 'error'>('connecting');
+    const [status, setStatus] = useState<'idle' | 'connecting' | 'listening' | 'processing' | 'error'>('idle');
     const [transcript, setTranscript] = useState<string>('');
     const [volume, setVolume] = useState(0);
-    const [retryCount, setRetryCount] = useState(0);
+    const [connectCount, setConnectCount] = useState(0);
 
     // Use ref to track status for use inside callbacks (avoids stale closure)
     const statusRef = useRef(status);
@@ -25,7 +25,10 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
 
+    // Connection effect — runs when connectCount changes (triggered by Start or Retry)
     useEffect(() => {
+        if (connectCount === 0) return; // Don't run on mount (idle state)
+
         let isMounted = true;
 
         const init = async () => {
@@ -158,7 +161,7 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
             isMounted = false;
             cleanup();
         };
-    }, [retryCount]);
+    }, [connectCount]);
 
     const cleanup = () => {
         if (sourceRef.current) sourceRef.current.disconnect();
@@ -200,9 +203,14 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
         onRecordingComplete(transcript || accumulatedTranscriptRef.current, finalBlob);
     };
 
+    const handleStart = () => {
+        setStatus('connecting');
+        setConnectCount(prev => prev + 1);
+    };
+
     const handleRetry = () => {
         setStatus('connecting');
-        setRetryCount(prev => prev + 1);
+        setConnectCount(prev => prev + 1);
     };
 
     const encode = (b: any) => btoa(String.fromCharCode(...new Uint8Array(b)));
@@ -223,6 +231,7 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
                     </svg>
                 </button>
 
+                {status !== 'idle' && (
                 <div className={`px-4 py-2 rounded-xl text-xs font-bold tracking-wide uppercase transition-all ${
                     status === 'listening'
                         ? 'bg-red-500/20 text-red-400 border border-red-500/20'
@@ -242,13 +251,36 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
                         {status === 'listening' ? 'Recording' : status === 'processing' ? 'Enhancing' : status === 'error' ? 'Error' : 'Connecting'}
                     </div>
                 </div>
+                )}
 
                 <div className="w-10"></div>
             </div>
 
             {/* Main Content */}
             <div className="flex-1 flex flex-col max-w-3xl mx-auto w-full pt-20 md:pt-24 px-4 md:px-6 pb-40 md:pb-48 overflow-y-auto scrollbar-hide relative z-10">
-                {transcript ? (
+                {status === 'idle' ? (
+                    <div className="flex-1 flex flex-col items-center justify-center">
+                        <div className="relative mb-8">
+                            <div className="absolute -inset-6 rounded-full bg-gradient-to-br from-purple-500/20 to-teal-500/20 blur-2xl animate-pulse-glow"></div>
+                            <div className="relative w-24 h-24 rounded-3xl glass-card flex items-center justify-center">
+                                <svg className="w-12 h-12 text-[var(--text-tertiary)] opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                                </svg>
+                            </div>
+                        </div>
+                        <h2 className="text-2xl font-bold text-[var(--text-primary)] mb-2">Dictation</h2>
+                        <p className="text-sm text-[var(--text-muted)] mb-10 text-center max-w-sm">Speak naturally and AI will transcribe and refine your text instantly</p>
+                        <button
+                            onClick={handleStart}
+                            className="px-8 py-4 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 text-white font-bold rounded-2xl shadow-lg shadow-purple-500/25 transition-all duration-300 active:scale-[0.97] flex items-center gap-3 text-base"
+                        >
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                            </svg>
+                            Start Dictation
+                        </button>
+                    </div>
+                ) : transcript ? (
                     <div className="text-xl md:text-3xl font-medium text-white/90 leading-relaxed">
                         {transcript}
                         {status === 'listening' && (
@@ -295,7 +327,8 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
                 )}
             </div>
 
-            {/* Bottom Control */}
+            {/* Bottom Control - visible when recording is active */}
+            {status !== 'idle' && (
             <div className="absolute bottom-0 left-0 right-0 p-6 md:p-8 pb-10 md:pb-14 flex flex-col items-center bg-gradient-to-t from-[var(--surface-950)] via-[var(--surface-950)]/90 to-transparent z-20">
                 <div className="relative group">
                     {/* Visualizer Ring */}
@@ -346,6 +379,7 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
                     {status === 'listening' ? 'Tap to Stop' : status === 'processing' ? 'Processing...' : status === 'error' ? 'Tap to Retry' : 'Connecting...'}
                 </p>
             </div>
+            )}
         </div>
     );
 };
