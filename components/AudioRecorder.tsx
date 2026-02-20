@@ -5,13 +5,16 @@ interface AudioRecorderProps {
   appState: AppState;
   setAppState: (state: AppState) => void;
   onRecordingComplete: (recording: AudioRecording) => void;
+  transcriptionEngine: 'gemini' | 'sarvam';
+  onEngineChange: (engine: 'gemini' | 'sarvam') => void;
+  hasSarvamKey: boolean;
 }
 
 type InputMode = 'mic' | 'meeting' | 'call';
 
 const MAX_RECORDING_SECONDS = 7200; // 2 Hours limit for API stability
 
-const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, onRecordingComplete }) => {
+const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, onRecordingComplete, transcriptionEngine, onEngineChange, hasSarvamKey }) => {
   const [timer, setTimer] = useState(0);
   const [inputMode, setInputMode] = useState<InputMode>('mic');
   const [isScreenCaptureSupported, setIsScreenCaptureSupported] = useState<boolean>(true);
@@ -164,6 +167,41 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
             </span>
           </div>
         </div>
+      )}
+
+      {/* Engine Selector */}
+      {!isRecording && !isProcessing && hasSarvamKey && (
+        <div className="flex justify-center gap-1.5 glass-card p-1.5 rounded-xl mb-4 md:mb-6">
+          <button
+            onClick={() => onEngineChange('gemini')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all duration-300 ${
+              transcriptionEngine === 'gemini'
+                ? 'bg-teal-500/20 text-teal-600 shadow-lg shadow-teal-500/10'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-black/5'
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-teal-400"></span>
+            Gemini
+          </button>
+          <button
+            onClick={() => onEngineChange('sarvam')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all duration-300 ${
+              transcriptionEngine === 'sarvam'
+                ? 'bg-amber-500/20 text-amber-600 shadow-lg shadow-amber-500/10'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-black/5'
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+            Sarvam
+          </button>
+        </div>
+      )}
+
+      {/* Engine label */}
+      {!isRecording && !isProcessing && transcriptionEngine === 'sarvam' && hasSarvamKey && (
+        <p className="text-[10px] font-semibold text-amber-500/60 uppercase tracking-wider mb-4 md:mb-6">
+          Hindi / Marathi optimized transcription
+        </p>
       )}
 
       {/* Input Mode Selector */}

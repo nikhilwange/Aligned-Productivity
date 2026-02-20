@@ -12,7 +12,8 @@ import SessionsLogView from './components/SessionsLogView';
 import AuthView from './components/AuthView';
 import LandingPage from './components/LandingPage';
 import { AppState, RecordingSession, AudioRecording, User } from './types';
-import { analyzeConversation, enhanceDictationText } from './services/geminiService';
+import { analyzeConversation, analyzeTranscript, enhanceDictationText } from './services/geminiService';
+import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb } from './services/supabaseService';
 
 // Electron features disabled - running as web app only
@@ -38,6 +39,16 @@ const App: React.FC = () => {
     return (localStorage.getItem('aligned-theme') as 'light' | 'dark') || 'dark';
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [transcriptionEngine, setTranscriptionEngine] = useState<'gemini' | 'sarvam'>(() => {
+    return (localStorage.getItem('aligned-engine') as 'gemini' | 'sarvam') || 'gemini';
+  });
+
+  const handleEngineChange = (engine: 'gemini' | 'sarvam') => {
+    setTranscriptionEngine(engine);
+    localStorage.setItem('aligned-engine', engine);
+  };
+
+  const hasSarvamKey = !!import.meta.env.VITE_SARVAM_API_KEY;
 
   useEffect(() => {
     document.body.className = theme === 'light' ? 'light antialiased' : 'antialiased';
@@ -201,7 +212,22 @@ const App: React.FC = () => {
 
     try {
       await saveRecording(newSession, user.id);
-      const analysis = await analyzeConversation(audioData.blob);
+
+      let analysis;
+      if (transcriptionEngine === 'sarvam' && hasSarvamKey) {
+        try {
+          console.log('[App] Using Sarvam STT → Gemini analysis pipeline');
+          const transcript = await transcribeAudioWithSarvam(audioData.blob);
+          const analysisResult = await analyzeTranscript(transcript);
+          analysis = { ...analysisResult, transcript };
+        } catch (sarvamError: any) {
+          console.warn('[App] Sarvam failed, falling back to Gemini:', sarvamError.message);
+          analysis = await analyzeConversation(audioData.blob);
+        }
+      } else {
+        analysis = await analyzeConversation(audioData.blob);
+      }
+
       const completedSession: RecordingSession = { ...newSession, analysis, status: 'completed' };
       setRecordings(prev => prev.map(rec => rec.id === newSession.id ? completedSession : rec));
       await saveRecording(completedSession, user.id);
@@ -211,7 +237,7 @@ const App: React.FC = () => {
       setRecordings(prev => prev.map(rec => rec.id === newSession.id ? errorSession : rec));
       await saveRecording(errorSession, user.id);
     }
-  }, [user]);
+  }, [user, transcriptionEngine, hasSarvamKey]);
 
   // Electron HUD features disabled - web app only
   // const handleHudComplete = async (text: string) => {
@@ -344,9 +370,9 @@ const App: React.FC = () => {
             <div className="flex items-center gap-2">
               {/* Badge */}
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg glass text-xs font-semibold text-[var(--text-tertiary)]">
-                <span className="w-1.5 h-1.5 rounded-full bg-teal-400"></span>
-                <span className="hidden sm:inline">Gemini 2.5</span>
-                <span className="sm:hidden">AI</span>
+                <span className={`w-1.5 h-1.5 rounded-full ${transcriptionEngine === 'sarvam' ? 'bg-amber-400' : 'bg-teal-400'}`}></span>
+                <span className="hidden sm:inline">{transcriptionEngine === 'sarvam' ? 'Sarvam + Gemini' : 'Gemini 2.5'}</span>
+                <span className="sm:hidden">{transcriptionEngine === 'sarvam' ? 'Sarvam' : 'AI'}</span>
               </div>
               {/* Mobile hamburger menu */}
               <button
@@ -365,6 +391,7 @@ const App: React.FC = () => {
           {isLiveMode ? (
             <DictationView
               onCancel={handleEndLive}
+              transcriptionEngine={transcriptionEngine}
               onRecordingComplete={async (transcript, audioBlob) => {
                 if (!user) return;
 
@@ -442,6 +469,9 @@ const App: React.FC = () => {
                 appState={appState}
                 setAppState={setAppState}
                 onRecordingComplete={handleRecordingComplete}
+                transcriptionEngine={transcriptionEngine}
+                onEngineChange={handleEngineChange}
+                hasSarvamKey={hasSarvamKey}
               />
             </div>
           )}

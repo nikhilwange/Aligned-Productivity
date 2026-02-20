@@ -4,9 +4,10 @@ import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 interface DictationViewProps {
     onRecordingComplete: (transcript: string, audioBlob?: Blob) => void;
     onCancel: () => void;
+    transcriptionEngine: 'gemini' | 'sarvam';
 }
 
-const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCancel }) => {
+const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCancel, transcriptionEngine }) => {
     const [status, setStatus] = useState<'idle' | 'connecting' | 'listening' | 'processing' | 'error'>('idle');
     const [transcript, setTranscript] = useState<string>('');
     const [volume, setVolume] = useState(0);
@@ -24,141 +25,252 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
     const accumulatedTranscriptRef = useRef<string>('');
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
+    const sarvamWsRef = useRef<WebSocket | null>(null);
+    const micStreamRef = useRef<MediaStream | null>(null);
+
+    // Helper: base64 encode
+    const encode = (b: any) => btoa(String.fromCharCode(...new Uint8Array(b)));
+
+    // Setup mic and audio processor (shared by both engines)
+    const setupMicrophone = async (audioContext: AudioContext): Promise<MediaStream> => {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                sampleRate: 16000,
+            }
+        });
+
+        micStreamRef.current = stream;
+
+        // Start local recording as fallback
+        const mediaRecorder = new MediaRecorder(stream);
+        mediaRecorderRef.current = mediaRecorder;
+        audioChunksRef.current = [];
+
+        mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+                audioChunksRef.current.push(event.data);
+            }
+        };
+        mediaRecorder.start();
+
+        sourceRef.current = audioContext.createMediaStreamSource(stream);
+        processorRef.current = audioContext.createScriptProcessor(4096, 1, 1);
+
+        sourceRef.current.connect(processorRef.current);
+        // Keep graph alive
+        const gainNode = audioContext.createGain();
+        gainNode.gain.value = 0;
+        processorRef.current.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+
+        return stream;
+    };
+
+    // Gemini Live init
+    const initGemini = async (isMountedRef: { current: boolean }) => {
+        const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string;
+        if (!apiKey) {
+            console.error("Gemini API Key missing");
+            setStatus('error');
+            return;
+        }
+
+        const ai = new GoogleGenAI({ apiKey });
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        inputContextRef.current = new AudioContextClass({ sampleRate: 16000 });
+
+        const sessionPromise = ai.live.connect({
+            model: 'gemini-2.5-flash',
+            callbacks: {
+                onopen: async () => {
+                    if (!isMountedRef.current) return;
+                    try {
+                        await setupMicrophone(inputContextRef.current!);
+
+                        processorRef.current!.onaudioprocess = (e) => {
+                            const data = e.inputBuffer.getChannelData(0);
+                            const rms = Math.sqrt(data.reduce((a, b) => a + b * b, 0) / data.length);
+                            setVolume(rms * 5);
+
+                            if (sessionRef.current && statusRef.current === 'listening') {
+                                sessionRef.current.then((s: any) => {
+                                    try {
+                                        s.sendRealtimeInput({
+                                            media: {
+                                                data: encode(new Int16Array(data.map(v => v * 32768)).buffer),
+                                                mimeType: 'audio/pcm;rate=16000'
+                                            }
+                                        });
+                                    } catch (e) {
+                                        console.warn("Failed to send audio", e);
+                                    }
+                                }).catch(() => { });
+                            }
+                        };
+
+                        setStatus('listening');
+                    } catch (err) {
+                        console.error("Mic access denied or error", err);
+                        setStatus('error');
+                    }
+                },
+                onmessage: (m: LiveServerMessage) => {
+                    if (!isMountedRef.current) return;
+                    if (m.serverContent?.inputTranscription) {
+                        const text = m.serverContent.inputTranscription.text;
+                        if (text) {
+                            setTranscript(prev => prev + text);
+                            accumulatedTranscriptRef.current += text;
+                        }
+                    }
+                },
+                onclose: () => { console.log("Gemini session closed"); },
+                onerror: (err) => {
+                    console.error("Gemini session error", err);
+                    if (isMountedRef.current) setStatus('error');
+                }
+            },
+            config: {
+                responseModalities: [Modality.TEXT],
+                inputAudioTranscription: {}
+            }
+        });
+
+        sessionRef.current = sessionPromise;
+    };
+
+    // Sarvam WebSocket init
+    const initSarvam = async (isMountedRef: { current: boolean }) => {
+        const apiKey = import.meta.env.VITE_SARVAM_API_KEY as string;
+        if (!apiKey) {
+            console.error("Sarvam API Key missing");
+            setStatus('error');
+            return;
+        }
+
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        inputContextRef.current = new AudioContextClass({ sampleRate: 16000 });
+
+        // Build WebSocket URL with query params
+        const params = new URLSearchParams({
+            'language-code': 'unknown',
+            'model': 'saaras:v3',
+            'input_audio_codec': 'pcm_s16le',
+            'sample_rate': '16000',
+            'high_vad_sensitivity': 'true',
+            'vad_signals': 'true',
+        });
+
+        const wsUrl = `wss://api.sarvam.ai/speech-to-text/ws?${params.toString()}`;
+
+        try {
+            const ws = new WebSocket(wsUrl, [`api-subscription-key.${apiKey}`]);
+            sarvamWsRef.current = ws;
+
+            ws.onopen = async () => {
+                if (!isMountedRef.current) return;
+                console.log('[Sarvam WS] Connected');
+
+                try {
+                    await setupMicrophone(inputContextRef.current!);
+
+                    processorRef.current!.onaudioprocess = (e) => {
+                        const data = e.inputBuffer.getChannelData(0);
+                        const rms = Math.sqrt(data.reduce((a, b) => a + b * b, 0) / data.length);
+                        setVolume(rms * 5);
+
+                        if (sarvamWsRef.current?.readyState === WebSocket.OPEN && statusRef.current === 'listening') {
+                            try {
+                                // Convert float32 to int16 PCM
+                                const int16 = new Int16Array(data.length);
+                                for (let i = 0; i < data.length; i++) {
+                                    const clamped = Math.max(-1, Math.min(1, data[i]));
+                                    int16[i] = clamped * 0x7fff;
+                                }
+                                const base64Audio = encode(int16.buffer);
+
+                                // Send in Sarvam's expected format
+                                sarvamWsRef.current.send(JSON.stringify({
+                                    audio: {
+                                        data: base64Audio,
+                                        sample_rate: 16000,
+                                        encoding: 'pcm_s16le',
+                                    }
+                                }));
+                            } catch (e) {
+                                console.warn("Failed to send audio to Sarvam", e);
+                            }
+                        }
+                    };
+
+                    setStatus('listening');
+                } catch (err) {
+                    console.error("Mic access denied or error", err);
+                    setStatus('error');
+                }
+            };
+
+            ws.onmessage = (event) => {
+                if (!isMountedRef.current) return;
+                try {
+                    const data = JSON.parse(event.data);
+                    // Handle transcript messages
+                    if (data.type === 'transcript' && data.text) {
+                        setTranscript(prev => prev + data.text + ' ');
+                        accumulatedTranscriptRef.current += data.text + ' ';
+                    } else if (data.type === 'translation' && data.text) {
+                        // For translate mode (future use)
+                        setTranscript(prev => prev + data.text + ' ');
+                        accumulatedTranscriptRef.current += data.text + ' ';
+                    } else if (data.transcript) {
+                        // Alternative response format
+                        setTranscript(prev => prev + data.transcript + ' ');
+                        accumulatedTranscriptRef.current += data.transcript + ' ';
+                    }
+                } catch (e) {
+                    console.warn('[Sarvam WS] Failed to parse message', e);
+                }
+            };
+
+            ws.onclose = (event) => {
+                console.log('[Sarvam WS] Closed', event.code, event.reason);
+            };
+
+            ws.onerror = (event) => {
+                console.error('[Sarvam WS] Error', event);
+                if (isMountedRef.current) setStatus('error');
+            };
+        } catch (e) {
+            console.error("Sarvam WS Init Error", e);
+            if (isMountedRef.current) setStatus('error');
+        }
+    };
 
     // Connection effect — runs when connectCount changes (triggered by Start or Retry)
     useEffect(() => {
         if (connectCount === 0) return; // Don't run on mount (idle state)
 
-        let isMounted = true;
+        const isMountedRef = { current: true };
 
         const init = async () => {
             try {
-                const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string;
-
-                if (!apiKey) {
-                    console.error("API Key missing");
-                    setStatus('error');
-                    return;
+                if (transcriptionEngine === 'sarvam') {
+                    await initSarvam(isMountedRef);
+                } else {
+                    await initGemini(isMountedRef);
                 }
-
-                const ai = new GoogleGenAI({ apiKey: apiKey! });
-
-                // Setup Audio Context
-                const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-                inputContextRef.current = new AudioContextClass({ sampleRate: 16000 });
-
-                // Connect to Gemini Live
-                const sessionPromise = ai.live.connect({
-                    model: 'gemini-2.5-flash',
-                    callbacks: {
-                        onopen: async () => {
-                            if (!isMounted) return;
-
-                            // Start Microphone
-                            try {
-                                const stream = await navigator.mediaDevices.getUserMedia({
-                                    audio: {
-                                        echoCancellation: true,
-                                        noiseSuppression: true,
-                                        sampleRate: 16000
-                                    }
-                                });
-
-                                // Start local recording as fallback
-                                const mediaRecorder = new MediaRecorder(stream);
-                                mediaRecorderRef.current = mediaRecorder;
-                                audioChunksRef.current = [];
-
-                                mediaRecorder.ondataavailable = (event) => {
-                                    if (event.data.size > 0) {
-                                        audioChunksRef.current.push(event.data);
-                                    }
-                                };
-                                mediaRecorder.start();
-
-                                sourceRef.current = inputContextRef.current!.createMediaStreamSource(stream);
-                                processorRef.current = inputContextRef.current!.createScriptProcessor(4096, 1, 1);
-
-                                processorRef.current.onaudioprocess = (e) => {
-                                    const data = e.inputBuffer.getChannelData(0);
-
-                                    // Calculate volume for UI visualizer
-                                    const rms = Math.sqrt(data.reduce((a, b) => a + b * b, 0) / data.length);
-                                    setVolume(rms * 5);
-
-                                    // Send audio to Gemini - use ref to get current status (not stale closure)
-                                    if (sessionRef.current && statusRef.current === 'listening') {
-                                        sessionRef.current.then((s: any) => {
-                                            try {
-                                                s.sendRealtimeInput({
-                                                    media: {
-                                                        data: encode(new Int16Array(data.map(v => v * 32768)).buffer),
-                                                        mimeType: 'audio/pcm;rate=16000'
-                                                    }
-                                                });
-                                            } catch (e) {
-                                                console.warn("Failed to send audio", e);
-                                            }
-                                        }).catch(() => {
-                                            // Ignore promise rejections from connection
-                                        });
-                                    }
-                                };
-
-                                sourceRef.current.connect(processorRef.current);
-                                // Keep graph alive
-                                const gainNode = inputContextRef.current!.createGain();
-                                gainNode.gain.value = 0;
-                                processorRef.current.connect(gainNode);
-                                gainNode.connect(inputContextRef.current!.destination);
-
-                                setStatus('listening');
-                            } catch (err) {
-                                console.error("Mic access denied or error", err);
-                                setStatus('error');
-                            }
-                        },
-                        onmessage: (m: LiveServerMessage) => {
-                            if (!isMounted) return;
-
-                            if (m.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data) {
-                                // Ignore model audio output
-                            }
-
-                            // Handle User Transcription (what we speak)
-                            if (m.serverContent?.inputTranscription) {
-                                const text = m.serverContent.inputTranscription.text;
-                                if (text) {
-                                    setTranscript(prev => prev + text);
-                                    accumulatedTranscriptRef.current += text;
-                                }
-                            }
-                        },
-                        onclose: () => {
-                            console.log("Session closed");
-                        },
-                        onerror: (err) => {
-                            console.error("Session error", err);
-                            if (isMounted) setStatus('error');
-                        }
-                    },
-                    config: {
-                        responseModalities: [Modality.TEXT],
-                        inputAudioTranscription: {}
-                    }
-                });
-
-                sessionRef.current = sessionPromise;
             } catch (e) {
                 console.error("Dictation Init Error", e);
-                if (isMounted) setStatus('error');
+                if (isMountedRef.current) setStatus('error');
             }
         };
 
         init();
 
         return () => {
-            isMounted = false;
+            isMountedRef.current = false;
             cleanup();
         };
     }, [connectCount]);
@@ -170,10 +282,30 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
             mediaRecorderRef.current.stop();
         }
+        if (sarvamWsRef.current) {
+            sarvamWsRef.current.close();
+            sarvamWsRef.current = null;
+        }
+        if (micStreamRef.current) {
+            micStreamRef.current.getTracks().forEach(t => t.stop());
+            micStreamRef.current = null;
+        }
     };
 
     const handleStop = async () => {
         setStatus('processing');
+
+        // Close Sarvam WebSocket first to flush any pending transcripts
+        if (sarvamWsRef.current && sarvamWsRef.current.readyState === WebSocket.OPEN) {
+            // Send flush signal before closing
+            try {
+                sarvamWsRef.current.send(JSON.stringify({ type: 'flush' }));
+            } catch { }
+            // Give a brief moment for final transcripts
+            await new Promise(resolve => setTimeout(resolve, 500));
+            sarvamWsRef.current.close();
+            sarvamWsRef.current = null;
+        }
 
         let finalBlob: Blob | undefined;
 
@@ -213,14 +345,14 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
         setConnectCount(prev => prev + 1);
     };
 
-    const encode = (b: any) => btoa(String.fromCharCode(...new Uint8Array(b)));
+    const isSarvam = transcriptionEngine === 'sarvam';
 
     return (
         <div className="absolute inset-0 z-50 bg-[var(--surface-950)] flex flex-col h-full animate-fade-in">
             {/* Ambient background */}
             <div className="absolute inset-0 overflow-hidden pointer-events-none">
-                <div className="absolute top-1/4 left-1/4 w-[500px] h-[500px] rounded-full bg-purple-600/10 blur-[150px] animate-pulse-glow"></div>
-                <div className="absolute bottom-1/4 right-1/4 w-[400px] h-[400px] rounded-full bg-teal-500/10 blur-[120px] animate-pulse-glow" style={{ animationDelay: '1s' }}></div>
+                <div className={`absolute top-1/4 left-1/4 w-[500px] h-[500px] rounded-full blur-[150px] animate-pulse-glow ${isSarvam ? 'bg-amber-600/10' : 'bg-purple-600/10'}`}></div>
+                <div className={`absolute bottom-1/4 right-1/4 w-[400px] h-[400px] rounded-full blur-[120px] animate-pulse-glow ${isSarvam ? 'bg-orange-500/10' : 'bg-teal-500/10'}`} style={{ animationDelay: '1s' }}></div>
             </div>
 
             {/* Header */}
@@ -248,7 +380,7 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
                                 <div className="absolute inset-0 w-2 h-2 rounded-full bg-red-500 animate-ping"></div>
                             </div>
                         )}
-                        {status === 'listening' ? 'Recording' : status === 'processing' ? 'Enhancing' : status === 'error' ? 'Error' : 'Connecting'}
+                        {status === 'listening' ? (isSarvam ? 'Sarvam Live' : 'Recording') : status === 'processing' ? 'Enhancing' : status === 'error' ? 'Error' : 'Connecting'}
                     </div>
                 </div>
                 )}
@@ -261,7 +393,7 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
                 {status === 'idle' ? (
                     <div className="flex-1 flex flex-col items-center justify-center">
                         <div className="relative mb-8">
-                            <div className="absolute -inset-6 rounded-full bg-gradient-to-br from-purple-500/20 to-teal-500/20 blur-2xl animate-pulse-glow"></div>
+                            <div className={`absolute -inset-6 rounded-full blur-2xl animate-pulse-glow ${isSarvam ? 'bg-gradient-to-br from-amber-500/20 to-orange-500/20' : 'bg-gradient-to-br from-purple-500/20 to-teal-500/20'}`}></div>
                             <div className="relative w-24 h-24 rounded-3xl glass-card flex items-center justify-center">
                                 <svg className="w-12 h-12 text-[var(--text-tertiary)] opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
@@ -269,10 +401,18 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
                             </div>
                         </div>
                         <h2 className="text-2xl font-bold text-[var(--text-primary)] mb-2">Dictation</h2>
-                        <p className="text-sm text-[var(--text-muted)] mb-10 text-center max-w-sm">Speak naturally and AI will transcribe and refine your text instantly</p>
+                        <p className="text-sm text-[var(--text-muted)] mb-2 text-center max-w-sm">Speak naturally and AI will transcribe and refine your text instantly</p>
+                        {isSarvam && (
+                            <p className="text-[10px] font-semibold text-amber-500/60 uppercase tracking-wider mb-8">Sarvam engine — Hindi / Marathi optimized</p>
+                        )}
+                        {!isSarvam && <div className="mb-10"></div>}
                         <button
                             onClick={handleStart}
-                            className="px-8 py-4 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 text-white font-bold rounded-2xl shadow-lg shadow-purple-500/25 transition-all duration-300 active:scale-[0.97] flex items-center gap-3 text-base"
+                            className={`px-8 py-4 text-white font-bold rounded-2xl shadow-lg transition-all duration-300 active:scale-[0.97] flex items-center gap-3 text-base ${
+                                isSarvam
+                                    ? 'bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 shadow-amber-500/25'
+                                    : 'bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 shadow-purple-500/25'
+                            }`}
                         >
                             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
@@ -284,7 +424,7 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
                     <div className="text-xl md:text-3xl font-medium text-white/90 leading-relaxed">
                         {transcript}
                         {status === 'listening' && (
-                            <span className="inline-block w-0.5 h-7 bg-purple-400 ml-1 animate-pulse align-middle rounded-full"></span>
+                            <span className={`inline-block w-0.5 h-7 ml-1 animate-pulse align-middle rounded-full ${isSarvam ? 'bg-amber-400' : 'bg-purple-400'}`}></span>
                         )}
                     </div>
                 ) : status === 'error' ? (
@@ -307,7 +447,7 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
                     <div className="flex-1 flex flex-col items-center justify-center">
                         <div className="relative mb-6">
                             {status === 'listening' && (
-                                <div className="absolute -inset-4 rounded-full bg-gradient-to-br from-red-500/20 to-purple-500/20 blur-2xl animate-pulse-glow"></div>
+                                <div className={`absolute -inset-4 rounded-full blur-2xl animate-pulse-glow ${isSarvam ? 'bg-gradient-to-br from-amber-500/20 to-orange-500/20' : 'bg-gradient-to-br from-red-500/20 to-purple-500/20'}`}></div>
                             )}
                             <div className={`relative w-20 h-20 rounded-2xl flex items-center justify-center transition-all ${
                                 status === 'listening' ? 'bg-red-500/10 border border-red-500/20' : 'glass-card'
@@ -321,7 +461,10 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
                             {status === 'listening' ? 'Listening...' : 'Connecting...'}
                         </p>
                         <p className="text-sm text-[var(--text-tertiary)] opacity-30">
-                            {status === 'listening' ? 'Speak naturally — AI will transcribe in real time' : 'Setting up microphone and AI connection'}
+                            {status === 'listening'
+                                ? (isSarvam ? 'Sarvam AI is transcribing in real time' : 'Speak naturally — AI will transcribe in real time')
+                                : (isSarvam ? 'Connecting to Sarvam AI...' : 'Setting up microphone and AI connection')
+                            }
                         </p>
                     </div>
                 )}
@@ -335,11 +478,11 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
                     {status === 'listening' && (
                         <>
                             <div
-                                className="absolute inset-0 rounded-full bg-gradient-to-r from-purple-500 to-teal-500 opacity-30 blur-xl transition-transform duration-100"
+                                className={`absolute inset-0 rounded-full opacity-30 blur-xl transition-transform duration-100 ${isSarvam ? 'bg-gradient-to-r from-amber-500 to-orange-500' : 'bg-gradient-to-r from-purple-500 to-teal-500'}`}
                                 style={{ transform: `scale(${1 + volume * 0.3})` }}
                             ></div>
                             <div
-                                className="absolute -inset-4 rounded-full border border-purple-500/20 transition-transform duration-100"
+                                className={`absolute -inset-4 rounded-full border transition-transform duration-100 ${isSarvam ? 'border-amber-500/20' : 'border-purple-500/20'}`}
                                 style={{ transform: `scale(${1 + volume * 0.15})` }}
                             ></div>
                         </>
