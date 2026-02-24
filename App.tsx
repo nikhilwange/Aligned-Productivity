@@ -48,7 +48,8 @@ const App: React.FC = () => {
     localStorage.setItem('aligned-engine', engine);
   };
 
-  const hasSarvamKey = !!import.meta.env.VITE_SARVAM_API_KEY;
+  // Always show the toggle — the key check happens at API call time in sarvamService.ts
+  const hasSarvamKey = true;
 
   useEffect(() => {
     document.body.className = theme === 'light' ? 'light antialiased' : 'antialiased';
