@@ -165,7 +165,14 @@ Provide 3-5 concise bullet points highlighting the most important outcomes.
 Write a comprehensive 2-3 paragraph narrative summary.
 
 💬 Discussion Points
-Organize by themes with Context, Key Points, and Participants' Views.
+Organize by themes. For each theme, use these sub-headers on SEPARATE lines (not inline):
+### [Theme Title]
+**Context:** [description on its own line]
+**Key Points:**
+- bullet point 1
+- bullet point 2
+**Participants' Views:**
+- **[Name]:** their view
 
 ✅ Action Items
 List all tasks with checkboxes:
@@ -202,9 +209,10 @@ FORMATTING INSTRUCTIONS:
 - Use emoji headers (📋, 🎯, etc.) for each section — always followed by a space and the section title
 - Use **bold** only for primary labels at the start of a line (e.g., **Date:** value, **Duration:** value, **Owner:** value)
 - Every label MUST be followed by a colon and a space (e.g., **Attendees:** John, Sarah)
+- CRITICAL: **Context:**, **Key Points:**, and **Participants' Views:** MUST each start on their OWN new line — never place them inline or on the same line as other content
 - Use standard Markdown tables with header rows and separator rows (| --- |)
 - Use - for bullet points and - [ ] for action item checkboxes
-- Preserve multilingual content with [English translation] in brackets
+- Write ALL notes, summaries, and analysis ENTIRELY in English. Do NOT include any Hindi, Marathi, or other non-English words in the notes — translate everything to English. The original language content is preserved separately in the transcript.
 - Use ### for sub-section headers within a section
 - Do NOT use bold for emphasis within sentences — only for labels at the start of lines
 - Professional tone throughout
@@ -271,7 +279,14 @@ Provide 3-5 concise bullet points highlighting the most important outcomes, deci
 Write a comprehensive 2-3 paragraph narrative summary of the meeting.
 
 💬 Discussion Points
-Organize the meeting content into thematic sections with "Context", "Key Points", and "Participants' Views".
+Organize by themes. For each theme, use these sub-headers on SEPARATE lines (not inline):
+### [Theme Title]
+**Context:** [description on its own line]
+**Key Points:**
+- bullet point 1
+- bullet point 2
+**Participants' Views:**
+- **[Name]:** their view
 
 ✅ Action Items
 List all tasks, follow-ups, and commitments made during the meeting. Each action item should include a checkbox:
@@ -313,9 +328,10 @@ FORMATTING INSTRUCTIONS:
 - Use emoji headers (📋, 🎯, etc.) for each section — always followed by a space and the section title
 - Use **bold** only for primary labels at the start of a line (e.g., **Date:** value, **Duration:** value, **Owner:** value)
 - Every label MUST be followed by a colon and a space (e.g., **Attendees:** John, Sarah)
+- CRITICAL: **Context:**, **Key Points:**, and **Participants' Views:** MUST each start on their OWN new line — never place them inline or on the same line as other content
 - Use standard Markdown tables with header rows and separator rows (| --- |)
 - Use - for bullet points and - [ ] for action item checkboxes
-- Preserve multilingual content. If something is said in an Indian regional language, transcribe it accurately in its native script and provide English translation in [brackets]
+- Write ALL notes, summaries, and analysis ENTIRELY in English. Do NOT include any Hindi, Marathi, or other non-English words in the notes — translate everything to English. The original language content is preserved separately in the transcript.
 - Use ### for sub-section headers within a section
 - Do NOT use bold for emphasis within sentences — only for labels at the start of lines
 - Professional tone throughout.`;

@@ -94,7 +94,9 @@ const DictationLogView: React.FC<DictationLogViewProps> = ({ sessions, onDelete 
                           <div className="flex items-center gap-3">
                             <div className="w-5 h-5 border-2 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
                             <div className="opacity-60 text-base font-medium text-[var(--text-primary)]">
-                              Processing dictation...
+                              {session.processingStep === 'transcribing' ? 'Transcribing audio...' :
+                               session.processingStep === 'analyzing' ? 'Generating notes...' :
+                               'Processing dictation...'}
                             </div>
                           </div>
                         ) : session.status === 'error' ? (

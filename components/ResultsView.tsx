@@ -33,6 +33,16 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     }
   }, [session.status, session.analysis?.meetingType, session.id]);
 
+  // Auto-switch tabs during progressive processing
+  useEffect(() => {
+    if (session.status === 'processing' && session.analysis?.transcript && activeTab === 'notes') {
+      setActiveTab('transcript');
+    }
+    if (session.status === 'completed' && session.processingStep === undefined && activeTab === 'transcript') {
+      setActiveTab('notes');
+    }
+  }, [session.status, session.analysis?.transcript, session.processingStep]);
+
   const handleTitleBlur = () => {
     if (title.trim() !== session.title) onUpdateTitle(session.id, title);
   };
@@ -318,18 +328,56 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     );
   };
 
-  if (session.status === 'processing') return (
-    <div className="flex flex-col items-center justify-center h-full bg-[var(--surface-950)] px-8">
-      {/* Loading animation */}
-      <div className="relative w-24 h-24 mb-10">
-        <div className="absolute inset-0 rounded-full border-4 border-white/10"></div>
-        <div className="absolute inset-0 rounded-full border-4 border-t-purple-500 border-r-teal-500 border-b-amber-500 border-l-transparent animate-spin"></div>
-        <div className="absolute inset-4 rounded-full bg-gradient-to-br from-purple-500/20 to-teal-500/20 animate-pulse"></div>
+  const isProcessing = session.status === 'processing';
+  const hasTranscript = isProcessing && !!session.analysis?.transcript;
+
+  // Show step indicator when processing and transcript not yet available
+  if (isProcessing && !hasTranscript) {
+    const step = session.processingStep || 'transcribing';
+    const steps = [
+      { key: 'transcribing', label: 'Transcribing audio' },
+      { key: 'analyzing', label: 'Generating notes' },
+      { key: 'finalizing', label: 'Finalizing' },
+    ];
+    const currentIdx = steps.findIndex(s => s.key === step);
+
+    return (
+      <div className="flex flex-col items-center justify-center h-full bg-[var(--surface-950)] px-8">
+        <div className="relative w-24 h-24 mb-10">
+          <div className="absolute inset-0 rounded-full border-4 border-white/10"></div>
+          <div className="absolute inset-0 rounded-full border-4 border-t-purple-500 border-r-teal-500 border-b-amber-500 border-l-transparent animate-spin"></div>
+          <div className="absolute inset-4 rounded-full bg-gradient-to-br from-purple-500/20 to-teal-500/20 animate-pulse"></div>
+        </div>
+        <h3 className="text-xl font-bold text-[var(--text-primary)] tracking-tight mb-4">Aligning insights</h3>
+        <div className="flex flex-col gap-2.5">
+          {steps.map((s, i) => (
+            <div key={s.key} className="flex items-center gap-3">
+              {i < currentIdx ? (
+                <svg className="w-4 h-4 text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                </svg>
+              ) : i === currentIdx ? (
+                <span className="w-4 h-4 flex items-center justify-center">
+                  <span className="w-2.5 h-2.5 bg-amber-400 rounded-full animate-pulse"></span>
+                </span>
+              ) : (
+                <span className="w-4 h-4 flex items-center justify-center">
+                  <span className="w-2 h-2 bg-white/20 rounded-full"></span>
+                </span>
+              )}
+              <span className={`text-sm font-medium ${
+                i < currentIdx ? 'text-teal-400 opacity-60' :
+                i === currentIdx ? 'text-[var(--text-primary)]' :
+                'text-[var(--text-primary)] opacity-30'
+              }`}>
+                {s.label}{i === currentIdx ? '...' : ''}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
-      <h3 className="text-xl font-bold text-[var(--text-primary)] tracking-tight mb-2">Aligning insights</h3>
-      <p className="text-sm opacity-40 font-medium text-[var(--text-primary)]">Synthesizing workspace content...</p>
-    </div>
-  );
+    );
+  }
 
   if (!session.analysis) return null;
 
@@ -380,13 +428,13 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
 
           <div className="flex glass p-1 rounded-xl ml-auto">
             <button
-              onClick={() => setActiveTab('notes')}
-              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${activeTab === 'notes' 
-                ? 'bg-purple-500/20 text-purple-300 shadow-lg shadow-purple-500/10' 
-                : 'opacity-40 hover:opacity-60'
+              onClick={() => !hasTranscript && setActiveTab('notes')}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${activeTab === 'notes'
+                ? 'bg-purple-500/20 text-purple-300 shadow-lg shadow-purple-500/10'
+                : hasTranscript ? 'opacity-20 cursor-not-allowed' : 'opacity-40 hover:opacity-60'
               }`}
             >
-              Notes
+              Notes{hasTranscript && <span className="ml-1 inline-block w-1.5 h-1.5 bg-amber-400 rounded-full animate-pulse align-middle"></span>}
             </button>
             <button
               onClick={() => setActiveTab('transcript')}
@@ -398,26 +446,34 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
               Script
             </button>
             <button
-              onClick={() => setActiveTab('strategist')}
+              onClick={() => !hasTranscript && setActiveTab('strategist')}
               className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${activeTab === 'strategist'
                 ? 'bg-purple-500/20 text-purple-300 shadow-lg shadow-purple-500/10'
-                : 'opacity-40 hover:opacity-60'
+                : hasTranscript ? 'opacity-20 cursor-not-allowed' : 'opacity-40 hover:opacity-60'
               }`}
             >
-              Strategist
+              Strategist{hasTranscript && <span className="ml-1 inline-block w-1.5 h-1.5 bg-amber-400 rounded-full animate-pulse align-middle"></span>}
             </button>
             <button
-              onClick={() => setActiveTab('chat')}
+              onClick={() => !hasTranscript && setActiveTab('chat')}
               className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${activeTab === 'chat'
                 ? 'bg-teal-500/20 text-teal-300 shadow-lg shadow-teal-500/10'
-                : 'opacity-40 hover:opacity-60'
+                : hasTranscript ? 'opacity-20 cursor-not-allowed' : 'opacity-40 hover:opacity-60'
               }`}
             >
-              Chat
+              Chat{hasTranscript && <span className="ml-1 inline-block w-1.5 h-1.5 bg-amber-400 rounded-full animate-pulse align-middle"></span>}
             </button>
           </div>
         </div>
       </header>
+
+      {/* Analyzing banner */}
+      {hasTranscript && (
+        <div className="shrink-0 flex items-center gap-2 px-4 md:px-8 py-2 bg-amber-500/10 border-b border-amber-500/20">
+          <div className="w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin"></div>
+          <span className="text-xs font-semibold text-amber-300">Generating notes &amp; summary — transcript is ready below</span>
+        </div>
+      )}
 
       {/* Content */}
       {activeTab === 'chat' ? (

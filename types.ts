@@ -1,4 +1,5 @@
 export type RecordingSource = 'in-person' | 'virtual-meeting' | 'phone-call' | 'dictation';
+export type ProcessingStep = 'transcribing' | 'analyzing' | 'finalizing';
 
 export interface User {
   id: string;
@@ -24,6 +25,7 @@ export interface RecordingSession {
   status: 'processing' | 'completed' | 'error';
   errorMessage?: string;
   source: RecordingSource;
+  processingStep?: ProcessingStep;
 }
 
 export enum AppState {

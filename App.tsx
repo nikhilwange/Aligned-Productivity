@@ -13,7 +13,7 @@ import SessionsLogView from './components/SessionsLogView';
 import AuthView from './components/AuthView';
 import LandingPage from './components/LandingPage';
 import { AppState, RecordingSession, AudioRecording, User } from './types';
-import { analyzeConversation, analyzeTranscript, enhanceDictationText } from './services/geminiService';
+import { analyzeConversation, extractTranscript, analyzeTranscript, enhanceDictationText } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb } from './services/supabaseService';
 
@@ -204,7 +204,8 @@ const App: React.FC = () => {
       duration: audioData.duration,
       analysis: null,
       status: 'processing',
-      source: audioData.source
+      source: audioData.source,
+      processingStep: 'transcribing',
     };
 
     setRecordings(prev => [newSession, ...prev]);
@@ -212,31 +213,56 @@ const App: React.FC = () => {
     setIsRecordingMode(false);
     setAppState(AppState.PROCESSING);
 
+    const updateSession = (updates: Partial<RecordingSession>) => {
+      setRecordings(prev => prev.map(rec =>
+        rec.id === newSession.id ? { ...rec, ...updates } : rec
+      ));
+    };
+
     try {
       await saveRecording(newSession, user.id);
 
-      let analysis;
+      // Phase 1: Transcription
+      let transcript: string;
       if (transcriptionEngine === 'sarvam' && hasSarvamKey) {
         try {
           console.log('[App] Using Sarvam STT → Gemini analysis pipeline');
-          const transcript = await transcribeAudioWithSarvam(audioData.blob);
-          const analysisResult = await analyzeTranscript(transcript);
-          analysis = { ...analysisResult, transcript };
+          transcript = await transcribeAudioWithSarvam(audioData.blob);
         } catch (sarvamError: any) {
           console.warn('[App] Sarvam failed, falling back to Gemini:', sarvamError.message);
-          analysis = await analyzeConversation(audioData.blob);
+          transcript = await extractTranscript(audioData.blob);
         }
       } else {
-        analysis = await analyzeConversation(audioData.blob);
+        transcript = await extractTranscript(audioData.blob);
       }
 
-      const completedSession: RecordingSession = { ...newSession, analysis, status: 'completed' };
-      setRecordings(prev => prev.map(rec => rec.id === newSession.id ? completedSession : rec));
+      // Intermediate update: show transcript immediately
+      const partialAnalysis = { transcript, summary: '', actionPoints: [] as string[] };
+      const transcribedSession: RecordingSession = {
+        ...newSession,
+        analysis: partialAnalysis,
+        status: 'processing',
+        processingStep: 'analyzing',
+      };
+      updateSession({ analysis: partialAnalysis, processingStep: 'analyzing' });
+      await saveRecording(transcribedSession, user.id);
+
+      // Phase 2: Analysis
+      const analysisResult = await analyzeTranscript(transcript);
+      const fullAnalysis = { ...analysisResult, transcript };
+
+      const completedSession: RecordingSession = {
+        ...newSession,
+        analysis: fullAnalysis,
+        status: 'completed',
+        processingStep: undefined,
+      };
+      updateSession({ analysis: fullAnalysis, status: 'completed', processingStep: undefined });
       await saveRecording(completedSession, user.id);
     } catch (err: any) {
       console.error("Recording process failed:", err);
-      const errorSession: RecordingSession = { ...newSession, status: 'error', errorMessage: err.message };
-      setRecordings(prev => prev.map(rec => rec.id === newSession.id ? errorSession : rec));
+      const errorSession: RecordingSession = { ...newSession, status: 'error', errorMessage: err.message, processingStep: undefined };
+      updateSession({ status: 'error', errorMessage: err.message, processingStep: undefined });
       await saveRecording(errorSession, user.id);
     }
   }, [user, transcriptionEngine, hasSarvamKey]);
