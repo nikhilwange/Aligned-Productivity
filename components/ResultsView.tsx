@@ -88,6 +88,53 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     }
   };
 
+  const buildFullSessionAnalysisText = (a: StrategicAnalysis): string => {
+    let text = `STRATEGIC ANALYSIS — ${session.title}\n`;
+    text += `Date: ${new Date(session.date).toLocaleDateString()}\n`;
+    text += `Generated: ${new Date(a.generatedAt).toLocaleDateString()}\n\n`;
+    text += `${'═'.repeat(50)}\n\n`;
+
+    if (a.summary) {
+      text += `EXECUTIVE SUMMARY\n\n${a.summary}\n\n`;
+    }
+
+    if (a.strategicActions.length > 0) {
+      text += `${'═'.repeat(50)}\n\n`;
+      text += `STRATEGIC ACTIONS (${a.strategicActions.length})\n\n`;
+      a.strategicActions.forEach((action, i) => {
+        text += `${i + 1}. ${action.title} [${action.priority.toUpperCase()}]\n`;
+        text += `   ${action.description}\n`;
+        if (action.rationale) text += `   Rationale: ${action.rationale}\n`;
+        text += `\n`;
+      });
+    }
+
+    if (a.processGaps.length > 0) {
+      text += `${'═'.repeat(50)}\n\n`;
+      text += `PROCESS GAPS (${a.processGaps.length})\n\n`;
+      a.processGaps.forEach((gap, i) => {
+        text += `${i + 1}. ${gap.title} [${gap.impact.toUpperCase()} impact, ${gap.frequency}x mentioned]\n`;
+        text += `   ${gap.description}\n\n`;
+      });
+    }
+
+    if (a.issuePatterns.length > 0) {
+      text += `${'═'.repeat(50)}\n\n`;
+      text += `ISSUE PATTERNS (${a.issuePatterns.length})\n\n`;
+      a.issuePatterns.forEach((issue, i) => {
+        text += `${i + 1}. ${issue.issue} [${issue.status.toUpperCase()}, ${issue.occurrences} occurrences]\n`;
+        if (issue.context) text += `   ${issue.context}\n`;
+        text += `\n`;
+      });
+    }
+
+    if (a.keyThemes.length > 0) {
+      text += `${'═'.repeat(50)}\n\nKEY THEMES: ${a.keyThemes.join(', ')}\n`;
+    }
+
+    return text;
+  };
+
   const handleSessionAnalysis = async () => {
     setIsAnalyzing(true);
     setAnalysisError(null);
@@ -530,6 +577,34 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
 
                 {sessionAnalysis && (
                   <div className="space-y-8">
+                    {/* Copy All button */}
+                    <div className="flex justify-end">
+                      <button
+                        onClick={() => copySection('full-session-analysis', buildFullSessionAnalysisText(sessionAnalysis))}
+                        className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+                          copiedSection === 'full-session-analysis'
+                            ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
+                            : 'glass glass-hover border border-white/[0.06] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                        }`}
+                      >
+                        {copiedSection === 'full-session-analysis' ? (
+                          <>
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                            </svg>
+                            Copied All
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                            Copy All
+                          </>
+                        )}
+                      </button>
+                    </div>
+
                     {/* Executive Summary */}
                     {sessionAnalysis.summary && (
                       <div className="group glass-card rounded-2xl p-6 border border-white/[0.06]">

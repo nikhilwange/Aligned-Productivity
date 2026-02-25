@@ -57,6 +57,52 @@ const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) =
     }
   };
 
+  const buildFullAnalysisText = (a: StrategicAnalysis): string => {
+    let text = `STRATEGIC ANALYSIS — ALIGNED\n`;
+    text += `Date Range: ${new Date(a.dateRange.start).toLocaleDateString()} – ${new Date(a.dateRange.end).toLocaleDateString()}\n`;
+    text += `Sessions Analyzed: ${a.analyzedMeetingsCount}\n`;
+    text += `Generated: ${new Date(a.generatedAt).toLocaleDateString()}\n\n`;
+    text += `${'═'.repeat(50)}\n\n`;
+
+    text += `EXECUTIVE SUMMARY\n\n${a.summary}\n\n`;
+
+    if (a.strategicActions.length > 0) {
+      text += `${'═'.repeat(50)}\n\n`;
+      text += `STRATEGIC ACTIONS (${a.strategicActions.length})\n\n`;
+      a.strategicActions.forEach((action, i) => {
+        text += `${i + 1}. ${action.title} [${action.priority.toUpperCase()}]\n`;
+        text += `   ${action.description}\n`;
+        text += `   Rationale: ${action.rationale}\n`;
+        if (action.estimatedImpact) text += `   Impact: ${action.estimatedImpact}\n`;
+        text += `\n`;
+      });
+    }
+
+    if (a.processGaps.length > 0) {
+      text += `${'═'.repeat(50)}\n\n`;
+      text += `PROCESS GAPS (${a.processGaps.length})\n\n`;
+      a.processGaps.forEach((gap, i) => {
+        text += `${i + 1}. ${gap.title} [${gap.impact.toUpperCase()} impact, ${gap.frequency}x mentioned]\n`;
+        text += `   ${gap.description}\n\n`;
+      });
+    }
+
+    if (a.issuePatterns.length > 0) {
+      text += `${'═'.repeat(50)}\n\n`;
+      text += `ISSUE PATTERNS (${a.issuePatterns.length})\n\n`;
+      a.issuePatterns.forEach((issue, i) => {
+        text += `${i + 1}. ${issue.issue} [${issue.status.toUpperCase()}, ${issue.occurrences} occurrences]\n`;
+        text += `   Period: ${new Date(issue.firstMentioned).toLocaleDateString()} – ${new Date(issue.lastMentioned).toLocaleDateString()}\n\n`;
+      });
+    }
+
+    if (a.keyThemes.length > 0) {
+      text += `${'═'.repeat(50)}\n\nKEY THEMES: ${a.keyThemes.join(', ')}\n`;
+    }
+
+    return text;
+  };
+
   const shareContent = async (title: string, text: string) => {
     try {
       if (navigator.share) {
@@ -312,37 +358,64 @@ const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) =
                 </p>
               </div>
 
-              {/* Section tabs */}
-              <div className="flex glass p-1.5 rounded-xl w-fit">
+              {/* Section tabs + Copy All */}
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex glass p-1.5 rounded-xl w-fit">
+                  <button
+                    onClick={() => setActiveSection('actions')}
+                    className={`px-6 py-2.5 rounded-lg text-sm font-bold transition-all ${
+                      activeSection === 'actions'
+                        ? 'bg-purple-500/20 text-purple-300 shadow-lg'
+                        : 'opacity-40 hover:opacity-60'
+                    }`}
+                  >
+                    Strategic Actions ({analysis.strategicActions.length})
+                  </button>
+                  <button
+                    onClick={() => setActiveSection('gaps')}
+                    className={`px-6 py-2.5 rounded-lg text-sm font-bold transition-all ${
+                      activeSection === 'gaps'
+                        ? 'bg-purple-500/20 text-purple-300 shadow-lg'
+                        : 'opacity-40 hover:opacity-60'
+                    }`}
+                  >
+                    Process Gaps ({analysis.processGaps.length})
+                  </button>
+                  <button
+                    onClick={() => setActiveSection('issues')}
+                    className={`px-6 py-2.5 rounded-lg text-sm font-bold transition-all ${
+                      activeSection === 'issues'
+                        ? 'bg-purple-500/20 text-purple-300 shadow-lg'
+                        : 'opacity-40 hover:opacity-60'
+                    }`}
+                  >
+                    Issue Patterns ({analysis.issuePatterns.length})
+                  </button>
+                </div>
+
                 <button
-                  onClick={() => setActiveSection('actions')}
-                  className={`px-6 py-2.5 rounded-lg text-sm font-bold transition-all ${
-                    activeSection === 'actions'
-                      ? 'bg-purple-500/20 text-purple-300 shadow-lg'
-                      : 'opacity-40 hover:opacity-60'
+                  onClick={() => copyToClipboard('full-analysis', buildFullAnalysisText(analysis))}
+                  className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+                    copiedSection === 'full-analysis'
+                      ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
+                      : 'glass glass-hover border border-white/[0.06] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
                   }`}
                 >
-                  Strategic Actions ({analysis.strategicActions.length})
-                </button>
-                <button
-                  onClick={() => setActiveSection('gaps')}
-                  className={`px-6 py-2.5 rounded-lg text-sm font-bold transition-all ${
-                    activeSection === 'gaps'
-                      ? 'bg-purple-500/20 text-purple-300 shadow-lg'
-                      : 'opacity-40 hover:opacity-60'
-                  }`}
-                >
-                  Process Gaps ({analysis.processGaps.length})
-                </button>
-                <button
-                  onClick={() => setActiveSection('issues')}
-                  className={`px-6 py-2.5 rounded-lg text-sm font-bold transition-all ${
-                    activeSection === 'issues'
-                      ? 'bg-purple-500/20 text-purple-300 shadow-lg'
-                      : 'opacity-40 hover:opacity-60'
-                  }`}
-                >
-                  Issue Patterns ({analysis.issuePatterns.length})
+                  {copiedSection === 'full-analysis' ? (
+                    <>
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                      </svg>
+                      Copied All
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                      Copy All
+                    </>
+                  )}
                 </button>
               </div>
 
