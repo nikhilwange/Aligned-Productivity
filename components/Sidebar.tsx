@@ -268,6 +268,19 @@ const Sidebar: React.FC<SidebarProps> = ({ user, recordings, activeId, onSelect,
             </svg>
             <span>Strategist</span>
           </button>
+
+          <button
+            onClick={() => onSelect('chatbot')}
+            className={`w-full py-3.5 px-4 rounded-xl font-semibold transition-all duration-300 flex items-center justify-center gap-2.5 text-sm relative overflow-hidden group ${activeId === 'chatbot' && !isLiveActive
+              ? 'bg-gradient-to-r from-teal-500 to-cyan-600 text-white shadow-lg shadow-teal-500/25'
+              : 'glass glass-hover text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+            </svg>
+            <span>Ask Aligned</span>
+          </button>
         </div>
       </div>
 

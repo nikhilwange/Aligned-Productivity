@@ -67,6 +67,23 @@ export interface IssuePattern {
   context: string;
 }
 
+export interface PinnedInsight {
+  id: string;
+  question: string;
+  answer: string;
+  citations?: string[];
+  scope: string;
+  pinnedAt: number;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
+  citations?: string[];
+}
+
 export interface StrategicAnalysis {
   summary: string;
   processGaps: ProcessGap[];

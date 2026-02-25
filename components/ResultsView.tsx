@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { RecordingSession, StrategicAnalysis } from '../types';
 import { generateStrategicAnalysis } from '../services/strategyService';
+import SessionChatPanel from './SessionChatPanel';
 
 interface ResultsViewProps {
   session: RecordingSession;
@@ -11,7 +12,7 @@ interface ResultsViewProps {
 }
 
 const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => {
-  const [activeTab, setActiveTab] = useState<'notes' | 'transcript' | 'strategist'>('notes');
+  const [activeTab, setActiveTab] = useState<'notes' | 'transcript' | 'strategist' | 'chat'>('notes');
   const [title, setTitle] = useState(session.title);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
   const [globalCopied, setGlobalCopied] = useState(false);
@@ -358,11 +359,25 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
             >
               Strategist
             </button>
+            <button
+              onClick={() => setActiveTab('chat')}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${activeTab === 'chat'
+                ? 'bg-teal-500/20 text-teal-300 shadow-lg shadow-teal-500/10'
+                : 'opacity-40 hover:opacity-60'
+              }`}
+            >
+              Chat
+            </button>
           </div>
         </div>
       </header>
 
       {/* Content */}
+      {activeTab === 'chat' ? (
+        <div className="flex-1 overflow-hidden">
+          <SessionChatPanel session={session} />
+        </div>
+      ) : (
       <div className="flex-1 overflow-y-auto bg-[var(--surface-950)] pt-8 md:pt-12 pb-32 px-4 md:px-6 scrollbar-hide">
         <article className="max-w-2xl mx-auto">
           {/* Title Section */}
@@ -748,6 +763,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
           </div>
         </article>
       </div>
+      )}
     </div>
   );
 };
