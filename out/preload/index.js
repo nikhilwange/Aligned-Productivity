@@ -2,7 +2,7 @@
 const electron = require("electron");
 electron.contextBridge.exposeInMainWorld("ipcRenderer", {
   on: (channel, func) => {
-    const validChannels = ["toggle-dictation", "switch-to-hud"];
+    const validChannels = [];
     if (validChannels.includes(channel)) {
       const subscription = (_event, ...args) => func(...args);
       electron.ipcRenderer.on(channel, subscription);
@@ -12,12 +12,9 @@ electron.contextBridge.exposeInMainWorld("ipcRenderer", {
     }
   },
   send: (channel, data) => {
-    const validChannels = ["to-main", "resize-window", "paste-text", "hide-hud"];
+    const validChannels = ["to-main", "resize-window"];
     if (validChannels.includes(channel)) {
-      console.log(`[Preload] Sending to main: ${channel}`, data);
       electron.ipcRenderer.send(channel, data);
-    } else {
-      console.warn(`[Preload] Blocked unauthorized channel: ${channel}`);
     }
   }
 });

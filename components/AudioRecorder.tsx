@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { AppState, AudioRecording } from '../types';
+import { isNativeApp } from '../services/nativePermissions';
 
 interface AudioRecorderProps {
   appState: AppState;
@@ -26,7 +27,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
   const sourceStreamsRef = useRef<MediaStream[]>([]);
 
   useEffect(() => {
-    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    const isMobile = isNativeApp() || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     const hasDisplayMedia = navigator.mediaDevices && 'getDisplayMedia' in navigator.mediaDevices;
     setIsScreenCaptureSupported(hasDisplayMedia && !isMobile);
 

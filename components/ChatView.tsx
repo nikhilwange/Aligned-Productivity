@@ -9,6 +9,8 @@ import PinnedInsightsView from './PinnedInsightsView';
 
 interface ChatViewProps {
   recordings: RecordingSession[];
+  messages: ChatMessage[];
+  onMessagesChange: (messages: ChatMessage[]) => void;
 }
 
 const SUGGESTED_QUESTIONS = [
@@ -18,8 +20,14 @@ const SUGGESTED_QUESTIONS = [
   "Which sessions had the most open questions or blockers?",
 ];
 
-const ChatView: React.FC<ChatViewProps> = ({ recordings }) => {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+const ChatView: React.FC<ChatViewProps> = ({ recordings, messages, onMessagesChange }) => {
+  const setMessages = (update: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => {
+    if (typeof update === 'function') {
+      onMessagesChange(update(messages));
+    } else {
+      onMessagesChange(update);
+    }
+  };
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -10,7 +10,13 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+out
+release
 *.local
+
+# iOS build artifacts
+ios/App/App/public
+ios/App/Pods
 
 # Environment variables
 .env.local

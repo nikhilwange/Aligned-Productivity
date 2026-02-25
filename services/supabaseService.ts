@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { Capacitor } from '@capacitor/core';
 import { RecordingSession } from '../types';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
@@ -8,13 +9,16 @@ if (!supabaseUrl || !supabaseAnonKey) {
   console.error('[Supabase] Missing environment variables! VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY must be set.');
 }
 
-// Configure Supabase without session persistence to avoid lock issues
+// Enable session persistence on native apps so users stay logged in.
+// Disabled on web to avoid lock manager issues.
+const isNative = Capacitor.isNativePlatform();
+
 export const supabase = createClient(supabaseUrl || 'https://placeholder.supabase.co', supabaseAnonKey || 'placeholder', {
   auth: {
     storageKey: 'aligned-auth',
     autoRefreshToken: true,
-    persistSession: false, // Disable persistence to avoid lock manager
-    detectSessionInUrl: true
+    persistSession: isNative,
+    detectSessionInUrl: !isNative
   }
 });
 

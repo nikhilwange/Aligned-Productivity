@@ -8,24 +8,24 @@ import DictationView from './components/DictationView';
 import DictationLogView from './components/DictationLogView';
 import StrategistView from './components/StrategistView';
 import ChatView from './components/ChatView';
-// import FloatingHUD from './components/FloatingHUD'; // Electron feature disabled
 import SessionsLogView from './components/SessionsLogView';
 import AuthView from './components/AuthView';
 import LandingPage from './components/LandingPage';
-import { AppState, RecordingSession, AudioRecording, User } from './types';
+import { AppState, RecordingSession, AudioRecording, User, ChatMessage } from './types';
 import { analyzeConversation, extractTranscript, analyzeTranscript, enhanceDictationText } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb } from './services/supabaseService';
 
-// Electron features disabled - running as web app only
-// declare global {
-//   interface Window {
-//     ipcRenderer?: {
-//       on: (channel: string, func: (...args: any[]) => void) => (() => void) | undefined;
-//       send: (channel: string, data?: any) => void;
-//     };
-//   }
-// }
+declare global {
+  interface Window {
+    ipcRenderer?: {
+      on: (channel: string, func: (...args: any[]) => void) => (() => void) | undefined;
+      send: (channel: string, data?: any) => void;
+    };
+  }
+}
+
+const isElectron = typeof window !== 'undefined' && !!(window as any).ipcRenderer;
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -40,6 +40,7 @@ const App: React.FC = () => {
     return (localStorage.getItem('aligned-theme') as 'light' | 'dark') || 'dark';
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [transcriptionEngine, setTranscriptionEngine] = useState<'gemini' | 'sarvam'>(() => {
     return (localStorage.getItem('aligned-engine') as 'gemini' | 'sarvam') || 'gemini';
   });
@@ -58,18 +59,6 @@ const App: React.FC = () => {
   }, [theme]);
 
   const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
-
-  // Electron HUD mode disabled - web app only
-  // const [viewMode, setViewMode] = useState<'dashboard' | 'hud'>(() => {
-  //   const params = new URLSearchParams(window.location.search);
-  //   return params.get('mode') === 'hud' ? 'hud' : 'dashboard';
-  // });
-
-  // useEffect(() => {
-  //   if (window.ipcRenderer) {
-  //     window.ipcRenderer.on('switch-to-hud', () => setViewMode('hud'));
-  //   }
-  // }, []);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -267,45 +256,6 @@ const App: React.FC = () => {
     }
   }, [user, transcriptionEngine, hasSarvamKey]);
 
-  // Electron HUD features disabled - web app only
-  // const handleHudComplete = async (text: string) => {
-  //   console.log("[App] 🔵 handleHudComplete called with text length:", text.length);
-  //   const cleaned = text.trim();
-
-  //   if (window.ipcRenderer) {
-  //     console.log("[App] 🔵 Sending paste-text via IPC");
-  //     window.ipcRenderer.send('paste-text', cleaned);
-  //     console.log("[App] 🔵 IPC sent - window will hide via main process");
-  //     // DON'T change viewMode - let the window just hide
-  //   } else {
-  //     console.error("[App] ❌ window.ipcRenderer not available!");
-  //     if (navigator.clipboard) {
-  //       navigator.clipboard.writeText(cleaned).catch(console.error);
-  //     }
-  //   }
-  // };
-
-  // const handleHudCancel = () => {
-  //   console.log("[App] 🔵 handleHudCancel called");
-  //   if (window.ipcRenderer) {
-  //     console.log("[App] 🔵 Sending hide-hud via IPC");
-  //     window.ipcRenderer.send('hide-hud');
-  //     console.log("[App] 🔵 IPC sent - window will hide via main process");
-  //     // DON'T change viewMode - let the window just hide
-  //   } else {
-  //     console.error("[App] ❌ window.ipcRenderer not available!");
-  //   }
-  // };
-
-  // HUD View disabled - Electron feature
-  // if (viewMode === 'hud') {
-  //   return (
-  //     <div className="h-screen w-screen flex items-center justify-center bg-transparent">
-  //       <FloatingHUD onComplete={handleHudComplete} onCancel={handleHudCancel} />
-  //     </div>
-  //   );
-  // }
-
   // Loading State
   if (isInitialLoad) return (
     <div className="h-screen w-screen flex items-center justify-center bg-[var(--surface-950)]">
@@ -484,7 +434,7 @@ const App: React.FC = () => {
               userId={user?.id || ''}
             />
           ) : activeRecordingId === 'chatbot' ? (
-            <ChatView recordings={recordings} />
+            <ChatView recordings={recordings} messages={chatMessages} onMessagesChange={setChatMessages} />
           ) : activeSession ? (
             <ResultsView session={activeSession} onUpdateTitle={handleUpdateTitle} />
           ) : (

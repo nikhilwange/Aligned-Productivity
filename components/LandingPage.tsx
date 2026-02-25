@@ -52,7 +52,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
 
         <div className="max-w-5xl mx-auto text-center relative">
           <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass text-xs font-bold text-amber-500 mb-8 animate-bounce">
-            🚀 NOW SUPPORTING 10+ INDIAN LANGUAGES
+            🚀 10+ INDIAN LANGUAGES — POWERED BY SARVAM AI
           </div>
 
           <h1 className="text-4xl sm:text-6xl md:text-8xl font-black tracking-tighter mb-6 md:mb-8 leading-[1.05] md:leading-[0.9] text-[var(--text-primary)]">
@@ -121,9 +121,12 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5h12M9 3v2m1.048 9.5a18.022 18.022 0 01-3.827-5.802M13 15.538l-1.89-1.341a18.152 18.152 0 01-5.11-6.197M13 21l-3-3m0 0l-3 3m3-3V15.538M19 3v2m0 0H7" />
               </svg>
             </div>
-            <h3 className="text-2xl font-bold mb-4 text-[var(--text-primary)]">10+ Indian Languages</h3>
+            <div className="flex items-center gap-2 mb-4">
+              <h3 className="text-2xl font-bold text-[var(--text-primary)]">Sarvam AI for Bharat</h3>
+              <span className="px-2 py-0.5 rounded-md bg-purple-500/15 text-purple-400 text-[10px] font-bold border border-purple-500/20">NEW</span>
+            </div>
             <p className="text-[var(--text-muted)] leading-relaxed">
-              Full support for Hindi, Marathi, Gujarati, Tamil, and more. Transcribed in native scripts with auto-English translation.
+              Powered by Sarvam AI's speech-to-text engine for Hindi, Marathi, Tamil, Gujarati, and 10+ Indian languages. Native script transcription with intelligent English summaries.
             </p>
           </div>
 
@@ -148,7 +151,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             A
           </div>
           <p className="text-[var(--text-muted)] opacity-60 text-sm font-semibold tracking-widest uppercase mb-4">
-            Powered by Gemini 2.5 & Google Cloud
+            Powered by Gemini 2.5, Google Cloud & Sarvam AI
           </p>
           <p className="text-[var(--text-muted)] text-xs">© 2026 Aligned Workspace Intelligence. All rights reserved.</p>
         </div>
