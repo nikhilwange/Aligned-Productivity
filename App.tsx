@@ -10,6 +10,7 @@ import StrategistView from './components/StrategistView';
 import ChatView from './components/ChatView';
 import SessionsLogView from './components/SessionsLogView';
 import AuthView from './components/AuthView';
+import ResetPassword from './components/ResetPassword';
 import LandingPage from './components/LandingPage';
 import { AppState, RecordingSession, AudioRecording, User, ChatMessage } from './types';
 import { analyzeConversation, extractTranscript, analyzeTranscript, enhanceDictationText } from './services/geminiService';
@@ -36,6 +37,7 @@ const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [showAuthView, setShowAuthView] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     return (localStorage.getItem('aligned-theme') as 'light' | 'dark') || 'dark';
   });
@@ -61,6 +63,27 @@ const App: React.FC = () => {
   const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
 
   useEffect(() => {
+    // Register the auth listener FIRST so we never miss events like
+    // PASSWORD_RECOVERY that Supabase fires when it processes URL tokens.
+    const { data: authData } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setShowResetPassword(true);
+        return;
+      }
+      if (session?.user) {
+        setUser({
+          id: session.user.id,
+          email: session.user.email || '',
+          name: session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'User'
+        });
+      } else {
+        setUser(null);
+        setRecordings([]);
+        setActiveRecordingId(null);
+        setIsRecordingMode(true);
+      }
+    });
+
     const initAuth = async () => {
       try {
         const { data, error } = await supabase.auth.getSession();
@@ -73,31 +96,16 @@ const App: React.FC = () => {
             name: data.session.user.user_metadata?.name || data.session.user.email?.split('@')[0] || 'User'
           });
         }
-
-        const { data: authData } = supabase.auth.onAuthStateChange((_event, session) => {
-          if (session?.user) {
-            setUser({
-              id: session.user.id,
-              email: session.user.email || '',
-              name: session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'User'
-            });
-          } else {
-            setUser(null);
-            setRecordings([]);
-            setActiveRecordingId(null);
-            setIsRecordingMode(true);
-          }
-        });
-
-        setIsInitialLoad(false);
-        return () => authData?.subscription?.unsubscribe();
       } catch (err) {
         console.error('Auth initialization error:', err);
+      } finally {
         setIsInitialLoad(false);
       }
     };
 
     initAuth();
+
+    return () => authData?.subscription?.unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -265,6 +273,18 @@ const App: React.FC = () => {
       </div>
     </div>
   );
+
+  // Show Reset Password page when PASSWORD_RECOVERY event is detected
+  if (showResetPassword) {
+    return (
+      <ResetPassword
+        onComplete={() => {
+          setShowResetPassword(false);
+          window.history.replaceState(null, '', '/');
+        }}
+      />
+    );
+  }
 
   // Show Landing Page or Auth View if not logged in
   if (!user) {

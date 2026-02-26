@@ -1,22 +1,16 @@
 
 import React, { useState } from 'react';
-import { User } from '../types';
 import { supabase } from '../services/supabaseService';
-import ForgotPassword from './ForgotPassword';
 
-interface AuthViewProps {
-  onLogin: (user: User) => void;
+interface ForgotPasswordProps {
+  onBack: () => void;
 }
 
-const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
-  const [isLogin, setIsLogin] = useState(true);
+const ForgotPassword: React.FC<ForgotPasswordProps> = ({ onBack }) => {
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isSubmitted, setIsSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isSignupSuccess, setIsSignupSuccess] = useState(false);
-  const [showForgotPassword, setShowForgotPassword] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -24,58 +18,21 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
     setError(null);
 
     try {
-      if (isLogin) {
-        const { data, error: loginError } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
 
-        if (loginError) throw loginError;
-        
-        if (data.user) {
-          onLogin({
-            id: data.user.id,
-            email: data.user.email || '',
-            name: data.user.user_metadata?.name || data.user.email?.split('@')[0] || 'User'
-          });
-        }
-      } else {
-        const { data, error: signupError } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              name: name
-            }
-          }
-        });
+      if (resetError) throw resetError;
 
-        if (signupError) throw signupError;
-
-        if (data.user) {
-          if (data.session) {
-            onLogin({
-              id: data.user.id,
-              email: data.user.email || '',
-              name: name || 'User'
-            });
-          } else {
-            setIsSignupSuccess(true);
-          }
-        }
-      }
+      setIsSubmitted(true);
     } catch (err: any) {
-      setError(err.message || "An authentication error occurred.");
+      setError(err.message || 'An unexpected error occurred. Please try again.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  if (showForgotPassword) {
-    return <ForgotPassword onBack={() => setShowForgotPassword(false)} />;
-  }
-
-  if (isSignupSuccess) {
+  if (isSubmitted) {
     return (
       <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[var(--surface-950)] overflow-hidden px-6">
         {/* Ambient orbs */}
@@ -85,7 +42,7 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
         </div>
 
         <div className="relative max-w-md w-full glass-card rounded-3xl p-10 text-center animate-scale-in">
-          {/* Success Icon */}
+          {/* Email Icon */}
           <div className="relative w-20 h-20 mx-auto mb-8">
             <div className="absolute inset-0 rounded-full bg-gradient-to-br from-teal-400 to-teal-600 opacity-20 blur-xl animate-pulse-glow"></div>
             <div className="relative w-full h-full rounded-full bg-gradient-to-br from-teal-400 to-teal-600 flex items-center justify-center shadow-lg">
@@ -97,18 +54,17 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
 
           <h2 className="text-2xl font-bold text-[var(--text-primary)] mb-3">Check your email</h2>
           <p className="text-[var(--text-secondary)] mb-8 leading-relaxed">
-            We've sent a confirmation link to<br />
-            <span className="text-teal-400 font-semibold">{email}</span>
+            If an account exists for <span className="text-teal-400 font-semibold">{email}</span>, you will receive a password reset link shortly.
           </p>
 
           <button
-            onClick={() => setIsLogin(true)}
+            onClick={onBack}
             className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] text-sm font-medium transition-colors duration-200 flex items-center gap-2 mx-auto"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
             </svg>
-            Return to login
+            Return to sign in
           </button>
         </div>
       </div>
@@ -133,7 +89,6 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
       <div className="relative w-full max-w-md animate-fade-in-up">
         {/* Brand Header */}
         <div className="flex flex-col items-center mb-10">
-          {/* Logo */}
           <div className="relative mb-6 group">
             <div className="absolute -inset-4 rounded-3xl bg-gradient-to-br from-amber-500 via-orange-500 to-yellow-500 opacity-30 blur-2xl group-hover:opacity-50 transition-opacity duration-500"></div>
             <div className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-500 via-orange-500 to-yellow-600 shadow-2xl flex items-center justify-center transform rotate-3 group-hover:rotate-6 transition-transform duration-500">
@@ -145,30 +100,11 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
           <p className="text-[var(--text-muted)] text-sm font-medium tracking-wide">Workspace Intelligence</p>
         </div>
 
-        {/* Auth Card */}
+        {/* Reset Card */}
         <div className="glass-card rounded-3xl p-8 shadow-2xl">
-          {/* Tab indicator */}
-          <div className="flex items-center justify-center gap-2 mb-8">
-            <button
-              onClick={() => { setIsLogin(true); setError(null); }}
-              className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-200 ${
-                isLogin
-                  ? 'bg-[var(--glass-bg-hover)] text-[var(--text-primary)]'
-                  : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
-              }`}
-            >
-              Sign in
-            </button>
-            <button
-              onClick={() => { setIsLogin(false); setError(null); }}
-              className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-200 ${
-                !isLogin
-                  ? 'bg-[var(--glass-bg-hover)] text-[var(--text-primary)]'
-                  : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
-              }`}
-            >
-              Create account
-            </button>
+          <div className="text-center mb-8">
+            <h2 className="text-xl font-bold text-[var(--text-primary)] mb-2">Reset your password</h2>
+            <p className="text-[var(--text-muted)] text-sm">Enter your email address and we'll send you a link to reset your password.</p>
           </div>
 
           {error && (
@@ -183,22 +119,8 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
               </div>
             </div>
           )}
-          
-          <form onSubmit={handleSubmit} className="space-y-5">
-            {!isLogin && (
-              <div className="space-y-2 animate-fade-in-down">
-                <label className="block text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider ml-1">Full name</label>
-                <input
-                  required
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full glass-input rounded-xl px-4 py-3.5 text-[var(--text-primary)] placeholder:text-[var(--text-muted)] text-sm font-medium"
-                  placeholder="John Doe"
-                />
-              </div>
-            )}
 
+          <form onSubmit={handleSubmit} className="space-y-5">
             <div className="space-y-2">
               <label className="block text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider ml-1">Email address</label>
               <input
@@ -211,39 +133,16 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
               />
             </div>
 
-            <div className="space-y-2">
-              <label className="block text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider ml-1">Password</label>
-              <input
-                required
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full glass-input rounded-xl px-4 py-3.5 text-[var(--text-primary)] placeholder:text-[var(--text-muted)] text-sm font-medium"
-                placeholder="••••••••"
-              />
-              {isLogin && (
-                <div className="flex justify-end">
-                  <button
-                    type="button"
-                    onClick={() => setShowForgotPassword(true)}
-                    className="text-xs text-amber-400 hover:text-amber-300 font-medium transition-colors duration-200 mt-1"
-                  >
-                    Forgot password?
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <button 
-              disabled={isLoading} 
-              type="submit" 
+            <button
+              disabled={isLoading}
+              type="submit"
               className="w-full py-4 mt-2 bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-400 hover:via-orange-400 hover:to-amber-500 text-white font-bold rounded-xl shadow-lg shadow-amber-500/25 transition-all duration-300 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {isLoading ? (
                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
               ) : (
                 <>
-                  {isLogin ? 'Sign in' : 'Create account'}
+                  Send reset link
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M14 5l7 7m0 0l-7 7m7-7H3" />
                   </svg>
@@ -254,11 +153,13 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
 
           <div className="mt-8 pt-6 border-t border-[var(--glass-border)] text-center">
             <button
-              onClick={() => { setIsLogin(!isLogin); setError(null); }}
-              className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-sm font-medium transition-colors duration-200"
+              onClick={onBack}
+              className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-sm font-medium transition-colors duration-200 flex items-center gap-2 mx-auto"
             >
-              {isLogin ? "Don't have an account? " : "Already have an account? "}
-              <span className="text-amber-400 hover:text-amber-300">{isLogin ? 'Create one' : 'Sign in'}</span>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+              </svg>
+              Back to sign in
             </button>
           </div>
         </div>
@@ -275,4 +176,4 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
   );
 };
 
-export default AuthView;
+export default ForgotPassword;
