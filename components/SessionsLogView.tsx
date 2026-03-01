@@ -48,10 +48,24 @@ const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, onSelect, o
     });
   };
 
-  const getSnippet = (text: string, max = 200) => {
-    if (!text) return '';
-    if (text.length <= max) return text;
-    return text.slice(0, max).trim() + '...';
+  const getCleanSummary = (summary: string, max = 180): string => {
+    if (!summary) return '';
+    let cleaned = summary
+      .replace(/.*Meeting Overview.*/gi, '')
+      .replace(/\*?\*?Date:?\*?\*?.*/gi, '')
+      .replace(/\*?\*?Duration:?\*?\*?.*/gi, '')
+      .replace(/\*?\*?Attendees?:?\*?\*?.*/gi, '')
+      .replace(/\*?\*?Participants?:?\*?\*?.*/gi, '')
+      .replace(/Speaker\s+\d+[^,\n]*(,\s*)?/gi, '')
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/#{1,4}\s*/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    const paragraphs = cleaned.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 20);
+    const firstPara = paragraphs[0] || cleaned;
+    if (firstPara.length <= max) return firstPara;
+    const cut = firstPara.lastIndexOf(' ', max);
+    return firstPara.slice(0, cut > 0 ? cut : max) + '...';
   };
 
   const getMatchType = (session: RecordingSession, query: string): 'title' | 'summary' | 'transcript' | null => {
@@ -218,7 +232,7 @@ const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, onSelect, o
                             {/* Normal summary box when not searching or title matched */}
                             {(!searchQuery || matchType === 'title') && session.analysis?.summary && (
                               <div className="mt-3 p-3 rounded-lg bg-white/[0.02] border border-white/[0.04] text-sm opacity-50 leading-relaxed italic text-[var(--text-primary)]">
-                                {getSnippet(session.analysis.summary)}
+                                {getCleanSummary(session.analysis.summary)}
                               </div>
                             )}
                           </>

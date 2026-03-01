@@ -22,8 +22,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const apiKey = process.env.SARVAM_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: 'Server misconfiguration: SARVAM_API_KEY not set' });
+  if (!apiKey || apiKey.startsWith('your_')) {
+    return res.status(500).json({ error: 'Server misconfiguration: SARVAM_API_KEY is not configured. Add your real Sarvam API key to the .env file.' });
   }
 
   // Receive audio as base64 from the client, then re-construct FormData for Sarvam

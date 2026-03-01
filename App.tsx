@@ -6,14 +6,15 @@ import ResultsView from './components/ResultsView';
 import Sidebar from './components/Sidebar';
 import DictationView from './components/DictationView';
 import DictationLogView from './components/DictationLogView';
-import StrategistView from './components/StrategistView';
-import ChatView from './components/ChatView';
 import SessionsLogView from './components/SessionsLogView';
 import ActionItemsView from './components/ActionItemsView';
+import HomeView from './components/HomeView';
+import IntelligenceView from './components/IntelligenceView';
+import ManualEntryView from './components/ManualEntryView';
 import AuthView from './components/AuthView';
 import ResetPassword from './components/ResetPassword';
 import LandingPage from './components/LandingPage';
-import { AppState, RecordingSession, AudioRecording, User, ChatMessage } from './types';
+import { AppState, RecordingSession, AudioRecording, User, ChatMessage, RecordingSource } from './types';
 import { analyzeConversation, extractTranscript, analyzeTranscript, enhanceDictationText } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb } from './services/supabaseService';
@@ -32,8 +33,8 @@ const isElectron = typeof window !== 'undefined' && !!(window as any).ipcRendere
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [recordings, setRecordings] = useState<RecordingSession[]>([]);
-  const [activeRecordingId, setActiveRecordingId] = useState<string | null>(null);
-  const [isRecordingMode, setIsRecordingMode] = useState<boolean>(true);
+  const [activeRecordingId, setActiveRecordingId] = useState<string | null>('home');
+  const [isRecordingMode, setIsRecordingMode] = useState<boolean>(false);
   const [isLiveMode, setIsLiveMode] = useState<boolean>(false);
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
@@ -44,6 +45,7 @@ const App: React.FC = () => {
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isManualProcessing, setIsManualProcessing] = useState(false);
   const [transcriptionEngine, setTranscriptionEngine] = useState<'gemini' | 'sarvam'>(() => {
     return (localStorage.getItem('aligned-engine') as 'gemini' | 'sarvam') || 'gemini';
   });
@@ -80,8 +82,8 @@ const App: React.FC = () => {
       } else {
         setUser(null);
         setRecordings([]);
-        setActiveRecordingId(null);
-        setIsRecordingMode(true);
+        setActiveRecordingId('home');
+        setIsRecordingMode(false);
       }
     });
 
@@ -127,10 +129,69 @@ const App: React.FC = () => {
     }
   };
 
+  const handleManualEntry = async (data: {
+    title: string;
+    transcript: string;
+    source: RecordingSource;
+    date: number;
+    duration: number;
+  }) => {
+    if (!user) return;
+    setIsManualProcessing(true);
+
+    const newSession: RecordingSession = {
+      id: uuidv4(),
+      title: data.title,
+      date: data.date,
+      duration: data.duration,
+      analysis: null,
+      status: 'processing',
+      source: data.source,
+      processingStep: 'analyzing',
+    };
+
+    setRecordings(prev => [newSession, ...prev]);
+    setActiveRecordingId(newSession.id);
+
+    const updateSession = (updates: Partial<RecordingSession>) => {
+      setRecordings(prev => prev.map(rec =>
+        rec.id === newSession.id ? { ...rec, ...updates } : rec
+      ));
+    };
+
+    try {
+      await saveRecording(newSession, user.id);
+      const analysisResult = await analyzeTranscript(data.transcript);
+      const fullAnalysis = { ...analysisResult, transcript: data.transcript };
+      const completedSession: RecordingSession = {
+        ...newSession,
+        analysis: fullAnalysis,
+        status: 'completed',
+        processingStep: undefined,
+      };
+      updateSession({ analysis: fullAnalysis, status: 'completed', processingStep: undefined });
+      await saveRecording(completedSession, user.id);
+    } catch (err: any) {
+      console.error('Manual entry processing failed:', err);
+      const errorSession: RecordingSession = { ...newSession, status: 'error', errorMessage: err.message, processingStep: undefined };
+      updateSession({ status: 'error', errorMessage: err.message, processingStep: undefined });
+      await saveRecording(errorSession, user.id);
+    } finally {
+      setIsManualProcessing(false);
+    }
+  };
+
   const handleStartNew = () => {
     setActiveRecordingId(null);
     setIsLiveMode(false);
     setIsRecordingMode(true);
+    setAppState(AppState.IDLE);
+  };
+
+  const handleGoHome = () => {
+    setActiveRecordingId('home');
+    setIsRecordingMode(false);
+    setIsLiveMode(false);
     setAppState(AppState.IDLE);
   };
 
@@ -148,6 +209,10 @@ const App: React.FC = () => {
   };
 
   const handleSelectRecording = (id: string) => {
+    if (id === 'home') {
+      handleGoHome();
+      return;
+    }
     setIsRecordingMode(false);
     setIsLiveMode(false);
     setActiveRecordingId(id);
@@ -177,10 +242,7 @@ const App: React.FC = () => {
       setRecordings(prev => prev.filter(rec => rec.id !== id));
 
       if (activeRecordingId === id) {
-        setActiveRecordingId(null);
-        setIsRecordingMode(true);
-        setIsLiveMode(false);
-        setAppState(AppState.IDLE);
+        handleGoHome();
       }
 
       try {
@@ -227,7 +289,8 @@ const App: React.FC = () => {
           console.log('[App] Using Sarvam STT → Gemini analysis pipeline');
           transcript = await transcribeAudioWithSarvam(audioData.blob);
         } catch (sarvamError: any) {
-          console.warn('[App] Sarvam failed, falling back to Gemini:', sarvamError.message);
+          console.error('[App] ⚠️ Sarvam STT failed — falling back to Gemini transcription.', sarvamError.message);
+          updateSession({ processingStep: 'transcribing' }); // reset so spinner stays visible during fallback
           transcript = await extractTranscript(audioData.blob);
         }
       } else {
@@ -345,10 +408,10 @@ const App: React.FC = () => {
         {!isLiveMode && (
           <header className="h-14 md:h-16 border-b border-white/[0.06] flex items-center px-4 md:px-8 justify-between bg-[var(--surface-900)]/50 backdrop-blur-xl shrink-0">
             <div className="flex items-center space-x-3">
-              {/* Mobile back button - only when viewing content */}
-              {!!activeRecordingId && (
+              {/* Mobile back button - only when viewing a specific session */}
+              {activeSession && (
                 <button
-                  onClick={() => { setActiveRecordingId(null); setIsRecordingMode(true); }}
+                  onClick={handleGoHome}
                   className="md:hidden p-2.5 -ml-1 text-[var(--text-muted)] hover:bg-white/5 rounded-xl transition-colors active:scale-95"
                 >
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -405,7 +468,7 @@ const App: React.FC = () => {
                 };
 
                 setRecordings(prev => [newSession, ...prev]);
-                setActiveRecordingId('dictations'); // Redirect to dictations log
+                setActiveRecordingId('sessions');
                 setIsLiveMode(false);
                 setAppState(AppState.PROCESSING);
 
@@ -419,7 +482,6 @@ const App: React.FC = () => {
                     finalTranscript = fallbackAnalysis.transcript;
                   }
 
-                  // Validate transcript before processing
                   if (!finalTranscript || finalTranscript.trim().length === 0) {
                     throw new Error("No transcript available from dictation or audio fallback");
                   }
@@ -433,17 +495,20 @@ const App: React.FC = () => {
                   console.error("Dictation processing failed", err);
                   const errorSession: RecordingSession = { ...newSession, status: 'error', errorMessage: err.message };
                   setRecordings(prev => prev.map(rec => rec.id === newSession.id ? errorSession : rec));
-                  await saveRecording(errorSession, user.id); // ✅ FIX: Save error state to DB
+                  await saveRecording(errorSession, user.id);
                   setAppState(AppState.IDLE);
                 }
               }}
             />
-          ) : activeRecordingId === 'dictations' ? (
-            <DictationLogView
-              sessions={recordings}
-              onDelete={handleDeleteRecording}
+          ) : activeRecordingId === 'home' ? (
+            <HomeView
+              user={user}
+              recordings={recordings}
+              onSelectSession={handleSelectRecording}
+              onStartNew={handleStartNew}
+              onStartLive={handleStartLive}
             />
-          ) : activeRecordingId === 'sessions' ? (
+          ) : activeRecordingId === 'sessions' || activeRecordingId === 'dictations' ? (
             <SessionsLogView
               sessions={recordings}
               onSelect={handleSelectRecording}
@@ -451,23 +516,27 @@ const App: React.FC = () => {
             />
           ) : activeRecordingId === 'actions' ? (
             <ActionItemsView recordings={recordings} onSelectSession={handleSelectRecording} />
-          ) : activeRecordingId === 'strategist' ? (
-            <StrategistView
+          ) : activeRecordingId === 'manual-entry' ? (
+            <ManualEntryView
+              onSubmit={handleManualEntry}
+              onCancel={handleGoHome}
+              isProcessing={isManualProcessing}
+            />
+          ) : activeRecordingId === 'intelligence' || activeRecordingId === 'strategist' || activeRecordingId === 'chatbot' ? (
+            <IntelligenceView
               recordings={recordings}
               userId={user?.id || ''}
+              messages={chatMessages}
+              onMessagesChange={setChatMessages}
             />
-          ) : activeRecordingId === 'chatbot' ? (
-            <ChatView recordings={recordings} messages={chatMessages} onMessagesChange={setChatMessages} />
           ) : activeSession ? (
             <ResultsView session={activeSession} onUpdateTitle={handleUpdateTitle} />
-          ) : (
+          ) : isRecordingMode ? (
             <div className="h-full flex flex-col items-center justify-center bg-[var(--surface-950)] p-6 relative">
-              {/* Ambient background */}
               <div className="absolute inset-0 overflow-hidden pointer-events-none">
                 <div className="absolute top-1/4 left-1/3 w-[400px] h-[400px] rounded-full bg-purple-600/5 blur-[150px]"></div>
                 <div className="absolute bottom-1/4 right-1/3 w-[300px] h-[300px] rounded-full bg-teal-500/5 blur-[120px]"></div>
               </div>
-              
               <AudioRecorder
                 appState={appState}
                 setAppState={setAppState}
@@ -477,6 +546,14 @@ const App: React.FC = () => {
                 hasSarvamKey={hasSarvamKey}
               />
             </div>
+          ) : (
+            <HomeView
+              user={user}
+              recordings={recordings}
+              onSelectSession={handleSelectRecording}
+              onStartNew={handleStartNew}
+              onStartLive={handleStartLive}
+            />
           )}
         </div>
       </main>
@@ -484,17 +561,17 @@ const App: React.FC = () => {
       {/* Mobile Bottom Navigation */}
       {!isLiveMode && (
         <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[var(--surface-900)]/95 backdrop-blur-xl border-t border-white/[0.06]" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
-          <div className="flex items-center justify-around h-16 px-1">
+          <div className="flex items-end justify-around h-16 px-2">
 
-            {/* Record */}
+            {/* Home */}
             <button
-              onClick={() => { handleStartNew(); setSidebarOpen(false); }}
-              className={`flex flex-col items-center justify-center gap-0.5 min-w-[56px] h-full rounded-xl transition-all active:scale-90 ${isRecordingMode && !activeRecordingId ? 'text-purple-400' : 'text-[var(--text-muted)]'}`}
+              onClick={() => { handleGoHome(); setSidebarOpen(false); }}
+              className={`flex flex-col items-center justify-center gap-0.5 min-w-[56px] h-full rounded-xl transition-all active:scale-90 ${activeRecordingId === 'home' && !isRecordingMode ? 'text-amber-400' : 'text-[var(--text-muted)]'}`}
             >
               <svg className="w-[22px] h-[22px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
               </svg>
-              <span className="text-[10px] font-semibold">Record</span>
+              <span className="text-[10px] font-semibold">Home</span>
             </button>
 
             {/* Sessions */}
@@ -508,6 +585,19 @@ const App: React.FC = () => {
               <span className="text-[10px] font-semibold">Sessions</span>
             </button>
 
+            {/* Record FAB — elevated centre */}
+            <button
+              onClick={() => { handleStartNew(); setSidebarOpen(false); }}
+              className="flex flex-col items-center justify-center -mt-5 active:scale-90 transition-all"
+            >
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center shadow-lg shadow-amber-500/30">
+                <svg className="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                </svg>
+              </div>
+              <span className="text-[10px] font-semibold text-amber-400 mt-1">Record</span>
+            </button>
+
             {/* Actions */}
             <button
               onClick={() => { handleSelectRecording('actions'); setSidebarOpen(false); }}
@@ -519,56 +609,15 @@ const App: React.FC = () => {
               <span className="text-[10px] font-semibold">Actions</span>
             </button>
 
-            {/* Dictate - Center Featured */}
+            {/* Intelligence */}
             <button
-              onClick={() => { handleStartLive(); setSidebarOpen(false); }}
-              className="flex flex-col items-center justify-center -mt-5 active:scale-90 transition-all"
-            >
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-teal-500 to-teal-700 flex items-center justify-center shadow-lg shadow-teal-500/25">
-                <svg className="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                </svg>
-              </div>
-              <span className="text-[10px] font-semibold text-[var(--text-muted)] mt-1">Dictate</span>
-            </button>
-
-            {/* Strategist */}
-            <button
-              onClick={() => { handleSelectRecording('strategist'); setSidebarOpen(false); }}
-              className={`flex flex-col items-center justify-center gap-0.5 min-w-[56px] h-full rounded-xl transition-all active:scale-90 ${activeRecordingId === 'strategist' ? 'text-purple-400' : 'text-[var(--text-muted)]'}`}
+              onClick={() => { handleSelectRecording('intelligence'); setSidebarOpen(false); }}
+              className={`flex flex-col items-center justify-center gap-0.5 min-w-[56px] h-full rounded-xl transition-all active:scale-90 ${activeRecordingId === 'intelligence' || activeRecordingId === 'strategist' || activeRecordingId === 'chatbot' ? 'text-purple-400' : 'text-[var(--text-muted)]'}`}
             >
               <svg className="w-[22px] h-[22px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
               </svg>
-              <span className="text-[10px] font-semibold">Strategy</span>
-            </button>
-
-            {/* Ask Aligned */}
-            <button
-              onClick={() => { handleSelectRecording('chatbot'); setSidebarOpen(false); }}
-              className={`flex flex-col items-center justify-center gap-0.5 min-w-[56px] h-full rounded-xl transition-all active:scale-90 ${activeRecordingId === 'chatbot' ? 'text-teal-400' : 'text-[var(--text-muted)]'}`}
-            >
-              <svg className="w-[22px] h-[22px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-              </svg>
-              <span className="text-[10px] font-semibold">Chat</span>
-            </button>
-
-            {/* Menu */}
-            <button
-              onClick={() => setSidebarOpen(prev => !prev)}
-              className={`flex flex-col items-center justify-center gap-0.5 min-w-[56px] h-full rounded-xl transition-all active:scale-90 ${sidebarOpen ? 'text-purple-400' : 'text-[var(--text-muted)]'}`}
-            >
-              {sidebarOpen ? (
-                <svg className="w-[22px] h-[22px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              ) : (
-                <svg className="w-[22px] h-[22px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
-                </svg>
-              )}
-              <span className="text-[10px] font-semibold">Menu</span>
+              <span className="text-[10px] font-semibold">Intel</span>
             </button>
 
           </div>
