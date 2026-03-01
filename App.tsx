@@ -1,6 +1,7 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
+import { Analytics } from '@vercel/analytics/react';
 import AudioRecorder from './components/AudioRecorder';
 import ResultsView from './components/ResultsView';
 import Sidebar from './components/Sidebar';
@@ -540,6 +541,7 @@ const App: React.FC = () => {
           </div>
         </nav>
       )}
+      <Analytics />
     </div>
   );
 };
