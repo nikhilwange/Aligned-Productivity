@@ -90,10 +90,6 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
           <div style={{ position: 'absolute', inset: 0, opacity: 0.4, backgroundImage: `radial-gradient(circle, ${C.border} 1px, transparent 1px)`, backgroundSize: '32px 32px' }} />
         </div>
       )}
-      {/* Light mode subtle grid */}
-      {!dark && (
-        <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0, backgroundImage: `linear-gradient(rgba(15,23,42,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(15,23,42,0.07) 1px, transparent 1px)`, backgroundSize: '48px 48px' }} />
-      )}
 
       {/* ══════ NAV ══════ */}
       <nav style={{ position: 'fixed', top: 0, width: '100%', zIndex: 50, padding: '16px 20px' }}>
