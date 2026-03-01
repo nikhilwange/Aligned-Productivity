@@ -1,22 +1,27 @@
-import { GoogleGenAI } from "@google/genai";
 import { RecordingSession, ChatMessage } from "../types";
 import { retryOperation } from "./geminiService";
+import { supabase } from "./supabaseService";
 
 const TRANSCRIPT_CHAR_LIMIT = 20000;
 
+const getAuthToken = async (): Promise<string> => {
+  const { data } = await supabase.auth.getSession();
+  const token = data?.session?.access_token;
+  if (!token) throw new Error("Not authenticated. Please log in.");
+  return token;
+};
+
 /**
- * Build context string from ALL completed sessions (global chatbot)
+ * Build context string from ALL completed sessions (global chatbot).
+ * Runs client-side — no API key needed here.
  */
 export const buildGlobalChatContext = (recordings: RecordingSession[]): string => {
-  const completed = recordings.filter(
-    r => r.status === 'completed' && r.analysis
-  );
-
-  if (completed.length === 0) return '';
+  const completed = recordings.filter((r) => r.status === "completed" && r.analysis);
+  if (completed.length === 0) return "";
 
   let context = `# ALIGNED WORKSPACE — SESSION DATABASE\n\n`;
   context += `Total Sessions: ${completed.length}\n`;
-  context += `Date Range: ${new Date(Math.min(...completed.map(r => r.date))).toLocaleDateString()} — ${new Date(Math.max(...completed.map(r => r.date))).toLocaleDateString()}\n\n`;
+  context += `Date Range: ${new Date(Math.min(...completed.map((r) => r.date))).toLocaleDateString()} — ${new Date(Math.max(...completed.map((r) => r.date))).toLocaleDateString()}\n\n`;
   context += `---\n\n`;
 
   completed.forEach((rec, i) => {
@@ -31,14 +36,17 @@ export const buildGlobalChatContext = (recordings: RecordingSession[]): string =
 
     if (rec.analysis!.actionPoints?.length) {
       context += `### Action Items\n`;
-      rec.analysis!.actionPoints.forEach(a => { context += `- ${a}\n`; });
+      rec.analysis!.actionPoints.forEach((a) => {
+        context += `- ${a}\n`;
+      });
       context += `\n`;
     }
 
     if (rec.analysis!.transcript) {
-      const transcript = rec.analysis!.transcript.length > TRANSCRIPT_CHAR_LIMIT
-        ? rec.analysis!.transcript.slice(0, TRANSCRIPT_CHAR_LIMIT) + '\n[...transcript truncated...]'
-        : rec.analysis!.transcript;
+      const transcript =
+        rec.analysis!.transcript.length > TRANSCRIPT_CHAR_LIMIT
+          ? rec.analysis!.transcript.slice(0, TRANSCRIPT_CHAR_LIMIT) + "\n[...transcript truncated...]"
+          : rec.analysis!.transcript;
       context += `### Transcript\n${transcript}\n\n`;
     }
 
@@ -49,10 +57,11 @@ export const buildGlobalChatContext = (recordings: RecordingSession[]): string =
 };
 
 /**
- * Build context string from a SINGLE session (per-session chatbot)
+ * Build context string from a SINGLE session (per-session chatbot).
+ * Runs client-side — no API key needed here.
  */
 export const buildSessionChatContext = (session: RecordingSession): string => {
-  if (!session.analysis) return '';
+  if (!session.analysis) return "";
 
   let context = `# SESSION: ${session.title}\n\n`;
   context += `Date: ${new Date(session.date).toLocaleDateString()}\n`;
@@ -65,7 +74,9 @@ export const buildSessionChatContext = (session: RecordingSession): string => {
 
   if (session.analysis.actionPoints?.length) {
     context += `## Action Items\n`;
-    session.analysis.actionPoints.forEach(a => { context += `- ${a}\n`; });
+    session.analysis.actionPoints.forEach((a) => {
+      context += `- ${a}\n`;
+    });
     context += `\n`;
   }
 
@@ -77,12 +88,11 @@ export const buildSessionChatContext = (session: RecordingSession): string => {
 };
 
 /**
- * Extract citation references from assistant response
+ * Extract citation references from assistant response.
  */
 export const extractCitations = (responseText: string, sessionTitles: string[]): string[] => {
   const citations: string[] = [];
   for (const title of sessionTitles) {
-    // Match **[Title]** or [Title] patterns
     if (responseText.includes(title)) {
       citations.push(title);
     }
@@ -91,7 +101,7 @@ export const extractCitations = (responseText: string, sessionTitles: string[]):
 };
 
 /**
- * Send a chat message and get a response using Gemini multi-turn chat
+ * Send a chat message and get a response via the secure API route.
  */
 export const sendChatMessage = async (
   userMessage: string,
@@ -99,87 +109,35 @@ export const sendChatMessage = async (
   context: string,
   scopeLabel: string
 ): Promise<{ text: string; citations: string[] }> => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-  if (!apiKey) throw new Error("API Key is missing.");
+  const token = await getAuthToken();
 
-  const ai = new GoogleGenAI({ apiKey });
-
-  const systemPreamble = `You are "Ask Aligned", a knowledgeable AI assistant for the Aligned productivity app.
-
-You have access to the following session data as your KNOWLEDGE BASE. Use ONLY this data to answer questions.
-
-${context}
-
-RULES:
-1. ONLY answer based on the session data provided above. Do NOT make up information or claim you don't have access — the data IS above.
-2. When referencing a specific session, cite it using **[Session Title]** format (bold brackets).
-3. If asked about something NOT covered in the session data above, clearly say: "I don't have information about that in your recorded sessions."
-4. Be concise but thorough. Use markdown formatting for readability.
-5. When listing action items or decisions, preserve the original wording from the sessions.
-6. End your responses with 1-2 suggested follow-up questions the user might find useful.
-7. You are scoped to ${scopeLabel}. Only reference data within that scope.
-8. If there are no sessions in the knowledge base above, let the user know they need to record sessions first.
-
-Now answer user questions based on the session data above.`;
-
-  // Build Gemini multi-turn conversation history
-  // Inject the system preamble + first user question as the opening turn,
-  // then alternate user/model for the rest of chat history.
-  const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
-
-  if (chatHistory.length === 0) {
-    // First message: combine preamble with user question
-    contents.push({
-      role: 'user',
-      parts: [{ text: `${systemPreamble}\n\nUser question: ${userMessage}` }],
-    });
-  } else {
-    // Subsequent messages: preamble was in the first turn, replay history
-    contents.push({
-      role: 'user',
-      parts: [{ text: `${systemPreamble}\n\nUser question: ${chatHistory[0].content}` }],
-    });
-
-    for (let i = 1; i < chatHistory.length; i++) {
-      contents.push({
-        role: chatHistory[i].role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: chatHistory[i].content }],
-      });
-    }
-
-    // Add the new user message
-    contents.push({
-      role: 'user',
-      parts: [{ text: userMessage }],
-    });
-  }
-
-  const response = await retryOperation(
-    () =>
-      ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents,
-        generationConfig: {
-          maxOutputTokens: 8192,
-          temperature: 0.3,
+  return retryOperation(
+    async () => {
+      const res = await fetch("/api/gemini/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
         },
-      }),
+        body: JSON.stringify({
+          userMessage,
+          chatHistory,
+          context,
+          scopeLabel,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        const error: any = new Error(err.error || "Chat failed");
+        error.status = res.status;
+        throw error;
+      }
+
+      return res.json();
+    },
     2,
     1000,
-    'Ask Aligned chat'
+    "Ask Aligned chat"
   );
-
-  const responseText = response.text || '';
-
-  // Extract citations from the response
-  const sessionTitlePattern = /\*\*\[([^\]]+)\]\*\*/g;
-  const citations: string[] = [];
-  let match;
-  while ((match = sessionTitlePattern.exec(responseText)) !== null) {
-    if (!citations.includes(match[1])) {
-      citations.push(match[1]);
-    }
-  }
-
-  return { text: responseText, citations };
 };

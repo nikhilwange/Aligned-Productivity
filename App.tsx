@@ -9,6 +9,7 @@ import DictationLogView from './components/DictationLogView';
 import StrategistView from './components/StrategistView';
 import ChatView from './components/ChatView';
 import SessionsLogView from './components/SessionsLogView';
+import ActionItemsView from './components/ActionItemsView';
 import AuthView from './components/AuthView';
 import ResetPassword from './components/ResetPassword';
 import LandingPage from './components/LandingPage';
@@ -448,6 +449,8 @@ const App: React.FC = () => {
               onSelect={handleSelectRecording}
               onDelete={handleDeleteRecording}
             />
+          ) : activeRecordingId === 'actions' ? (
+            <ActionItemsView recordings={recordings} onSelectSession={handleSelectRecording} />
           ) : activeRecordingId === 'strategist' ? (
             <StrategistView
               recordings={recordings}
@@ -503,6 +506,17 @@ const App: React.FC = () => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
               </svg>
               <span className="text-[10px] font-semibold">Sessions</span>
+            </button>
+
+            {/* Actions */}
+            <button
+              onClick={() => { handleSelectRecording('actions'); setSidebarOpen(false); }}
+              className={`flex flex-col items-center justify-center gap-0.5 min-w-[56px] h-full rounded-xl transition-all active:scale-90 ${activeRecordingId === 'actions' ? 'text-amber-400' : 'text-[var(--text-muted)]'}`}
+            >
+              <svg className="w-[22px] h-[22px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+              <span className="text-[10px] font-semibold">Actions</span>
             </button>
 
             {/* Dictate - Center Featured */}

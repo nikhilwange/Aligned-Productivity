@@ -32,6 +32,7 @@ const LiveSession: React.FC<LiveSessionProps> = ({ onEndSession }) => {
     let isMounted = true;
     const init = async () => {
       try {
+        // NOTE: WebSocket API cannot be proxied — rotate this key periodically
         const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
         const ai = new GoogleGenAI({ apiKey: apiKey! });
         inputContextRef.current = new AudioContext({ sampleRate: 16000 });

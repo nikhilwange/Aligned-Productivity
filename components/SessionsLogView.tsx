@@ -54,6 +54,37 @@ const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, onSelect, o
     return text.slice(0, max).trim() + '...';
   };
 
+  const getMatchType = (session: RecordingSession, query: string): 'title' | 'summary' | 'transcript' | null => {
+    if (!query.trim()) return null;
+    const q = query.toLowerCase();
+    if (session.title?.toLowerCase().includes(q)) return 'title';
+    if (session.analysis?.summary?.toLowerCase().includes(q)) return 'summary';
+    if (session.analysis?.transcript?.toLowerCase().includes(q)) return 'transcript';
+    return null;
+  };
+
+  const getMatchSnippet = (text: string, query: string): string => {
+    const idx = text.toLowerCase().indexOf(query.toLowerCase());
+    if (idx === -1) return '';
+    const start = Math.max(0, idx - 50);
+    const end = Math.min(text.length, idx + query.length + 50);
+    const snippet = text.slice(start, end);
+    return (start > 0 ? '...' : '') + snippet + (end < text.length ? '...' : '');
+  };
+
+  const highlightText = (text: string, query: string): React.ReactNode => {
+    if (!query.trim()) return text;
+    const idx = text.toLowerCase().indexOf(query.toLowerCase());
+    if (idx === -1) return text;
+    return (
+      <>
+        {text.slice(0, idx)}
+        <mark className="bg-yellow-400/30 text-yellow-200 px-0.5 rounded not-italic">{text.slice(idx, idx + query.length)}</mark>
+        {text.slice(idx + query.length)}
+      </>
+    );
+  };
+
   return (
     <div className="flex flex-col h-full bg-[var(--surface-950)] overflow-hidden text-[var(--text-primary)]">
       {/* Header */}
@@ -119,15 +150,28 @@ const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, onSelect, o
                 <h3 className="text-[11px] font-bold opacity-30 uppercase tracking-[0.2em] pl-1 text-[var(--text-primary)]">{date}</h3>
 
                 <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl overflow-hidden divide-y divide-white/[0.04]">
-                  {daySessions.map((session) => (
+                  {daySessions.map((session) => {
+                    const matchType = searchQuery ? getMatchType(session, searchQuery) : null;
+                    return (
                     <div
                       key={session.id}
                       className="group relative flex items-start gap-6 p-6 hover:bg-white/[0.02] transition-colors cursor-pointer"
                       onClick={() => onSelect(session.id)}
                     >
-                      {/* Time column */}
-                      <div className="w-20 shrink-0 text-xs font-bold opacity-40 pt-1 text-[var(--text-primary)]">
-                        {formatTime(session.date)}
+                      {/* Time + match badge column */}
+                      <div className="w-20 shrink-0 flex flex-col items-start gap-1.5 pt-1">
+                        <span className="text-xs font-bold opacity-40 text-[var(--text-primary)]">
+                          {formatTime(session.date)}
+                        </span>
+                        {matchType && (
+                          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+                            matchType === 'title'      ? 'bg-purple-500/20 text-purple-300' :
+                            matchType === 'summary'    ? 'bg-teal-500/20 text-teal-300' :
+                                                         'bg-amber-500/20 text-amber-300'
+                          }`}>
+                            {matchType}
+                          </span>
+                        )}
                       </div>
 
                       {/* Content column - matching DictationLogView style */}
@@ -157,12 +201,22 @@ const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, onSelect, o
                           </div>
                         ) : (
                           <>
-                            {/* Title as main text - like transcript in dictation view */}
+                            {/* Title with highlight when query matches */}
                             <div className="opacity-80 text-base leading-relaxed font-medium text-[var(--text-primary)]">
-                              {session.title || "Untitled session"}
+                              {searchQuery ? highlightText(session.title || "Untitled session", searchQuery) : (session.title || "Untitled session")}
                             </div>
-                            {/* Summary in subtle box - like dictation summary */}
-                            {session.analysis?.summary && (
+                            {/* Match snippet for summary/transcript hits */}
+                            {searchQuery && (matchType === 'summary' || matchType === 'transcript') && (() => {
+                              const src = matchType === 'summary' ? session.analysis?.summary : session.analysis?.transcript;
+                              const snippet = src ? getMatchSnippet(src, searchQuery) : '';
+                              return snippet ? (
+                                <div className="mt-2 p-3 rounded-lg bg-white/[0.02] border border-white/[0.04] text-sm opacity-50 leading-relaxed italic text-[var(--text-primary)]">
+                                  {snippet}
+                                </div>
+                              ) : null;
+                            })()}
+                            {/* Normal summary box when not searching or title matched */}
+                            {(!searchQuery || matchType === 'title') && session.analysis?.summary && (
                               <div className="mt-3 p-3 rounded-lg bg-white/[0.02] border border-white/[0.04] text-sm opacity-50 leading-relaxed italic text-[var(--text-primary)]">
                                 {getSnippet(session.analysis.summary)}
                               </div>
@@ -184,7 +238,7 @@ const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, onSelect, o
                         </button>
                       </div>
                     </div>
-                  ))}
+                  )})}
                 </div>
               </div>
             ))

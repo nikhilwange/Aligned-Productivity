@@ -1,5 +1,6 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import ReactDOM from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { RecordingSession, StrategicAnalysis } from '../types';
@@ -20,6 +21,17 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
   const [sessionAnalysis, setSessionAnalysis] = useState<StrategicAnalysis | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const exportRef = useRef<HTMLButtonElement>(null);
+  const [exportPos, setExportPos] = useState({ top: 0, left: 0 });
+
+  const toggleExport = () => {
+    if (!exportOpen && exportRef.current) {
+      const rect = exportRef.current.getBoundingClientRect();
+      setExportPos({ top: rect.bottom + 8, left: rect.left });
+    }
+    setExportOpen(prev => !prev);
+  };
 
   useEffect(() => {
     setTitle(session.title);
@@ -76,6 +88,46 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
       setSharing(true);
       setTimeout(() => setSharing(false), 2000);
     }
+  };
+
+  const exportAsMarkdown = () => {
+    if (!session.analysis) return;
+    const date = new Date(session.date).toLocaleDateString('en-CA');
+    const safeTitle = session.title.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+    const content = [
+      `# ${session.title}`,
+      `**Date:** ${new Date(session.date).toLocaleDateString()}`,
+      `**Duration:** ${Math.floor(session.duration / 60)}m ${session.duration % 60}s`,
+      '',
+      session.analysis.summary,
+      '',
+      session.analysis.transcript ? `---\n\n## Full Transcript\n\n${session.analysis.transcript}` : '',
+    ].filter(Boolean).join('\n');
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${date}-${safeTitle}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setExportOpen(false);
+  };
+
+  const copyNotes = () => {
+    if (!session.analysis) return;
+    navigator.clipboard.writeText(session.analysis.summary);
+    setCopiedSection('notes');
+    setTimeout(() => setCopiedSection(null), 2000);
+    setExportOpen(false);
+  };
+
+  const copyActionItems = () => {
+    if (!session.analysis?.actionPoints?.length) return;
+    const text = session.analysis.actionPoints.map(a => `- [ ] ${a}`).join('\n');
+    navigator.clipboard.writeText(text);
+    setCopiedSection('actions');
+    setTimeout(() => setCopiedSection(null), 2000);
+    setExportOpen(false);
   };
 
   const copySection = (sectionName: string, content: string) => {
@@ -416,15 +468,52 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
             <span className="whitespace-nowrap">{sharing ? "Copied" : "Share"}</span>
           </button>
 
-          <button
-            onClick={copyToClipboard}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${globalCopied 
-              ? 'bg-teal-500/20 text-teal-300' 
-              : 'glass glass-hover opacity-60 hover:opacity-100'
-            }`}
-          >
-            {globalCopied ? "Copied" : "Export"}
-          </button>
+          <div className="relative">
+            <button
+              ref={exportRef}
+              onClick={toggleExport}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${exportOpen ? 'bg-purple-500/20 text-purple-300' : 'glass glass-hover opacity-60 hover:opacity-100'}`}
+            >
+              <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              <span>Export</span>
+              <svg className={`w-3 h-3 transition-transform ${exportOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {exportOpen && ReactDOM.createPortal(
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setExportOpen(false)} />
+                <div className="w-52 bg-[var(--surface-900)] border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden py-1" style={{ position: 'fixed', top: exportPos.top, left: exportPos.left }}>
+                  <button
+                    onClick={copyNotes}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-xs font-semibold text-[var(--text-secondary)] hover:bg-white/[0.05] hover:text-[var(--text-primary)] transition-colors"
+                  >
+                    <svg className="w-4 h-4 text-purple-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
+                    {copiedSection === 'notes' ? '✓ Copied!' : 'Copy Notes'}
+                  </button>
+                  <button
+                    onClick={copyActionItems}
+                    disabled={!session.analysis?.actionPoints?.length}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-xs font-semibold text-[var(--text-secondary)] hover:bg-white/[0.05] hover:text-[var(--text-primary)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    <svg className="w-4 h-4 text-amber-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>
+                    {copiedSection === 'actions' ? '✓ Copied!' : 'Copy Action Items'}
+                  </button>
+                  <div className="h-px bg-white/[0.06] my-1" />
+                  <button
+                    onClick={exportAsMarkdown}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-xs font-semibold text-[var(--text-secondary)] hover:bg-white/[0.05] hover:text-[var(--text-primary)] transition-colors"
+                  >
+                    <svg className="w-4 h-4 text-teal-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                    Download as .md
+                  </button>
+                </div>
+              </>,
+              document.body
+            )}
+          </div>
 
           <div className="flex glass p-1 rounded-xl ml-auto">
             <button

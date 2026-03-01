@@ -1,6 +1,7 @@
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { MeetingAnalysis } from "../types";
 
+// ─── Blob helper ──────────────────────────────────────────────────────────────
 const blobToBase64 = (blob: Blob): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -17,43 +18,70 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
   });
 };
 
-const parseMarkdownResponse = (text: string): MeetingAnalysis => {
-  // Use all possible section markers as lookahead for the transcript
-  const transcriptMatch = text.match(/🗣️\s*Full Transcript\s*([\s\S]*?)(?=[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌📎]|$)/i);
-  const transcript = transcriptMatch ? transcriptMatch[1].trim() : "";
+// ─── JSON parser (replaces the fragile emoji-regex parseMarkdownResponse) ──────
+//
+// Gemini is now asked to return this exact JSON shape:
+// {
+//   "meetingType": string,
+//   "detectedLanguages": string[],
+//   "actionPoints": string[],       // plain text, no "- [ ]" prefix
+//   "notes": string                 // full rich-markdown meeting notes document
+// }
+//
+// The "notes" field is still rich markdown — all the emoji sections, tables,
+// bullet points — exactly as before. Only the structured fields are now JSON.
+// This means zero visual change in ResultsView while making parsing reliable.
 
-  // Extract Action Items specifically for checkboxes
-  const actionItemsMatch = text.match(/✅\s*Action Items\s*([\s\S]*?)(?=[📋🎯📝💬🎲❓📊📅🔗💡🚧📌🗣️📎]|$)/i);
-  const actionPoints = actionItemsMatch
-    ? actionItemsMatch[1]
-      .split('\n')
-      .filter(l => l.trim().startsWith('- [ ]') || l.trim().startsWith('- [x]'))
-      .map(l => l.replace(/^- \[[ x]\]\s*/, '').trim())
-    : [];
+interface GeminiAnalysisJSON {
+  meetingType?: string;
+  detectedLanguages?: string[];
+  actionPoints?: string[];
+  notes?: string;
+}
 
-  // Extract Meeting Type specifically to update session title
-  const meetingTypeMatch = text.match(/Meeting Type\s*:\s*([^\n]+)/i);
-  const meetingType = meetingTypeMatch ? meetingTypeMatch[1].trim() : undefined;
+const parseJsonResponse = (raw: string): MeetingAnalysis => {
+  let parsed: GeminiAnalysisJSON = {};
 
-  // The rest of the content (excluding transcript for brevity in the summary field)
-  // We use the first occurrence of Transcript as the split point
-  const notesDocument = text.split(/🗣️\s*Full Transcript/i)[0].trim();
+  try {
+    // Strip any accidental markdown code fences Gemini may wrap around JSON
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    parsed = JSON.parse(cleaned);
+  } catch (e) {
+    console.warn('[parseJsonResponse] JSON.parse failed, attempting field extraction fallback.', e);
 
-  // Extract detected languages if mentioned
-  const languagesMatch = text.match(/Detected Languages\s*:\s*([\s\S]*?)(?=\n|$)/i);
-  const detectedLanguages = languagesMatch
-    ? languagesMatch[1].split(',').map(l => l.trim())
-    : undefined;
+    // Graceful fallback: extract what we can with light regex on the raw text
+    // so a partially malformed response still gives us something useful
+    const actionItemsMatch = raw.match(/✅\s*Action Items\s*([\s\S]*?)(?=[📋🎯📝💬🔲❓📊📅🔗💡🧱📍📌🗣️📋]|$)/i);
+    const actionPoints = actionItemsMatch
+      ? actionItemsMatch[1]
+          .split('\n')
+          .filter(l => l.trim().startsWith('- [ ]') || l.trim().startsWith('- [x]'))
+          .map(l => l.replace(/^- \[[ x]\]\s*/, '').trim())
+          .filter(Boolean)
+      : [];
+
+    const meetingTypeMatch = raw.match(/Meeting Type\s*:\s*([^\n,}"]+)/i);
+    const languagesMatch = raw.match(/detectedLanguages["\s:]+([^\n\]]+)/i);
+
+    return {
+      summary: raw, // surface the raw text so nothing is lost
+      actionPoints,
+      meetingType: meetingTypeMatch?.[1]?.trim(),
+      detectedLanguages: languagesMatch?.[1]?.split(',').map(l => l.trim().replace(/["\]]/g, '')),
+      transcript: '',
+    };
+  }
 
   return {
-    summary: notesDocument,
-    actionPoints,
-    detectedLanguages,
-    transcript,
-    meetingType
+    summary: parsed.notes ?? '',
+    actionPoints: (parsed.actionPoints ?? []).map(a => a.replace(/^- \[[ x]\]\s*/, '').trim()).filter(Boolean),
+    meetingType: parsed.meetingType,
+    detectedLanguages: parsed.detectedLanguages?.filter(Boolean),
+    transcript: '', // transcript is set by the caller (Pass 1), not by this parser
   };
 };
 
+// ─── Retry helper ──────────────────────────────────────────────────────────────
 export async function retryOperation<T>(
   operation: () => Promise<T>,
   retries = 3,
@@ -63,12 +91,13 @@ export async function retryOperation<T>(
   try {
     return await operation();
   } catch (error: any) {
-    const isRetryable = error.status === 500 ||
-                       error.status === 503 ||
-                       error.status === 429 || // Add rate limit handling
-                       error.message?.includes('xhr error') ||
-                       error.message?.includes('fetch failed') ||
-                       error.message?.includes('code: 6');
+    const isRetryable =
+      error.status === 500 ||
+      error.status === 503 ||
+      error.status === 429 ||
+      error.message?.includes('xhr error') ||
+      error.message?.includes('fetch failed') ||
+      error.message?.includes('code: 6');
 
     if (retries > 0 && isRetryable) {
       console.warn(`[Retry] ${operationName} failed, retrying in ${delay}ms... (${retries} attempts left)`);
@@ -79,7 +108,7 @@ export async function retryOperation<T>(
   }
 }
 
-// Pass 1: Extract verbatim transcript from audio
+// ─── Pass 1: Extract verbatim transcript (unchanged — plain text is reliable) ──
 export const extractTranscript = async (audioBlob: Blob): Promise<string> => {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   if (!apiKey) throw new Error("API Key is missing.");
@@ -105,20 +134,21 @@ REQUIREMENTS:
 Output ONLY the transcript.`;
 
   try {
-    const response = await retryOperation(() =>
-      ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: {
-          parts: [
-            { inlineData: { mimeType, data: base64Audio } },
-            { text: transcriptPrompt }
-          ]
-        },
-        generationConfig: {
-          maxOutputTokens: 65536, // Gemini 2.5 Flash supports up to 65k tokens!
-          temperature: 0.1,
-        }
-      }),
+    const response = await retryOperation(
+      () =>
+        ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: {
+            parts: [
+              { inlineData: { mimeType, data: base64Audio } },
+              { text: transcriptPrompt },
+            ],
+          },
+          generationConfig: {
+            maxOutputTokens: 65536,
+            temperature: 0.1,
+          },
+        }),
       3,
       1000,
       'Pass 1: Transcript extraction'
@@ -129,110 +159,115 @@ Output ONLY the transcript.`;
 
     const wasTruncated = response.candidates?.[0]?.finishReason === 'MAX_TOKENS';
     if (wasTruncated) {
-      console.warn('⚠️ Transcript was truncated. Consider upgrading to Gemini 2.5 Flash.');
+      console.warn('⚠️ Transcript was truncated due to token limits.');
     }
 
     return transcriptText.trim();
-
   } catch (error) {
     console.error("Transcript extraction failed:", error);
     throw error;
   }
 };
 
-// Pass 2: Generate structured analysis from transcript text
+// ─── Pass 2: Analyze transcript — structured JSON response ────────────────────
 export const analyzeTranscript = async (transcript: string): Promise<Omit<MeetingAnalysis, 'transcript'>> => {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   if (!apiKey) throw new Error("API Key is missing.");
 
   const ai = new GoogleGenAI({ apiKey });
 
-  // Reuse the existing system prompt structure but adapted for text input
-  const analysisPrompt = `You are an expert meeting assistant that creates comprehensive, well-structured meeting notes.
+  const analysisPrompt = `You are an expert meeting assistant. Analyze the transcript below and respond with a single valid JSON object — no markdown fences, no extra text outside the JSON.
 
-Analyze this meeting transcript and provide detailed notes in the following format:
+The JSON must match this exact shape:
+{
+  "meetingType": "<inferred type: standup | planning | brainstorm | review | 1on1 | all-hands | other>",
+  "detectedLanguages": ["<language1>", "<language2>"],
+  "actionPoints": ["<plain text action item>", "..."],
+  "notes": "<full rich-markdown meeting notes document — see format below>"
+}
+
+RULES FOR actionPoints:
+- Plain strings only — no "- [ ]" checkbox prefix
+- Each item must be a clear, actionable task
+- Empty array [] if no action items
+
+RULES FOR notes (the full markdown document to show users):
+Write a comprehensive meeting notes document in this exact format. The notes value must be a valid JSON string (escape newlines as \\n, quotes as \\"):
 
 📋 Meeting Overview
-Date: [Extract or use today's date]
-Duration: [Estimate from transcript length/timestamps]
-Attendees: [List all speakers mentioned]
-Meeting Type: [Infer: standup, planning, brainstorm, review, etc.]
+**Date:** [Extract or use today's date]
+**Duration:** [Estimate from transcript]
+**Attendees:** [All speakers]
+**Meeting Type:** [Same as meetingType field above]
 
 🎯 Key Takeaways
-Provide 3-5 concise bullet points highlighting the most important outcomes.
+- [3-5 bullet points of most important outcomes]
 
 📝 Summary
-Write a comprehensive 2-3 paragraph narrative summary.
+[2-3 paragraph narrative summary]
 
 💬 Discussion Points
-Organize by themes. For each theme, use these sub-headers on SEPARATE lines (not inline):
+[Organized by theme. For each theme:]
 ### [Theme Title]
-**Context:** [description on its own line]
+**Context:** [description]
 **Key Points:**
-- bullet point 1
-- bullet point 2
+- point 1
+- point 2
 **Participants' Views:**
 - **[Name]:** their view
 
 ✅ Action Items
-List all tasks with checkboxes:
-- [ ] [Clear, actionable task description]
+- [ ] [Same items as actionPoints array above]
 
-🎲 Decisions Made
+🔲 Decisions Made
 | Decision Title | What was decided | Why | Impact |
+| --- | --- | --- | --- |
 
 ❓ Open Questions
-Capture unresolved questions or items needing discussion.
+[Unresolved questions]
 
 📊 Data & Metrics Mentioned
 | Metric | Value | Context |
+| --- | --- | --- |
 
 📅 Important Dates & Deadlines
-Extract all dates mentioned.
+[All dates mentioned]
 
 🔗 References & Resources
-List documents, links, tools, or resources mentioned.
+[Documents, links, tools mentioned]
 
 💡 Ideas & Suggestions
-Capture brainstormed ideas or proposals.
+[Brainstormed ideas]
 
-🚧 Blockers & Risks
-Identify obstacles, concerns, or risks discussed.
+🧱 Blockers & Risks
+[Obstacles and risks]
 
-📌 Next Steps
-Summarize what should happen next in priority order.
+📍 Next Steps
+[Priority-ordered next steps]
 
-📎 Additional Notes
-Any other relevant information.
+📌 Additional Notes
+[Any other relevant info]
 
-FORMATTING INSTRUCTIONS:
-- Use emoji headers (📋, 🎯, etc.) for each section — always followed by a space and the section title
-- Use **bold** only for primary labels at the start of a line (e.g., **Date:** value, **Duration:** value, **Owner:** value)
-- Every label MUST be followed by a colon and a space (e.g., **Attendees:** John, Sarah)
-- CRITICAL: **Context:**, **Key Points:**, and **Participants' Views:** MUST each start on their OWN new line — never place them inline or on the same line as other content
-- Use standard Markdown tables with header rows and separator rows (| --- |)
-- Use - for bullet points and - [ ] for action item checkboxes
-- Write ALL notes, summaries, and analysis ENTIRELY in English. Do NOT include any Hindi, Marathi, or other non-English words in the notes — translate everything to English. The original language content is preserved separately in the transcript.
-- Use ### for sub-section headers within a section
-- Do NOT use bold for emphasis within sentences — only for labels at the start of lines
+IMPORTANT:
+- Write ALL notes entirely in English — translate any Hindi, Marathi, or other non-English content
 - Professional tone throughout
-- DO NOT include the full transcript in output - I have it separately
+- Do NOT include the full transcript in the notes field
 
-TRANSCRIPT TO ANALYZE:
+TRANSCRIPT:
 ${transcript}`;
 
   try {
-    const response = await retryOperation(() =>
-      ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: {
-          parts: [{ text: analysisPrompt }]
-        },
-        generationConfig: {
-          maxOutputTokens: 65536, // Gemini 2.5 Flash supports up to 65k tokens!
-          temperature: 0.1,
-        }
-      }),
+    const response = await retryOperation(
+      () =>
+        ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: { parts: [{ text: analysisPrompt }] },
+          generationConfig: {
+            maxOutputTokens: 65536,
+            temperature: 0.1,
+            responseMimeType: 'application/json', // Forces Gemini to return valid JSON
+          },
+        }),
       3,
       1000,
       'Pass 2: Analysis generation'
@@ -241,21 +276,17 @@ ${transcript}`;
     const responseText = response.text;
     if (!responseText) throw new Error("Empty analysis response from Gemini.");
 
-    const analysis = parseMarkdownResponse(responseText);
+    const analysis = parseJsonResponse(responseText);
     const isTruncated = response.candidates?.[0]?.finishReason === 'MAX_TOKENS';
 
-    return {
-      ...analysis,
-      isTruncated,
-    };
-
+    return { ...analysis, isTruncated };
   } catch (error) {
     console.error("Transcript analysis failed:", error);
     throw error;
   }
 };
 
-// Legacy single-pass implementation (kept as fallback)
+// ─── Legacy single-pass fallback ───────────────────────────────────────────────
 const legacyAnalyzeConversation = async (audioBlob: Blob): Promise<MeetingAnalysis> => {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   if (!apiKey) throw new Error("API Key is missing.");
@@ -264,218 +295,166 @@ const legacyAnalyzeConversation = async (audioBlob: Blob): Promise<MeetingAnalys
   const base64Audio = await blobToBase64(audioBlob);
   const mimeType = audioBlob.type || 'audio/webm';
 
-  const systemPrompt = `You are an expert meeting assistant that creates comprehensive, well-structured meeting notes in a professional documentation format. Analyze this multilingual audio recording (which may contain English and major Indian languages like Hindi, Marathi, Gujarati, Tamil, Telugu, Kannada, Bengali, Malayalam, and Punjabi) and provide detailed notes in the following format (ensure the output ALWAYS starts with the Meeting Overview):
+  const systemPrompt = `You are an expert meeting assistant. Analyze this audio and respond with a single valid JSON object — no markdown fences, no extra text.
 
-📋 Meeting Overview
-Date: [Extract or use today's date]
-Duration: [Calculate from audio length]
-Attendees: [List all speakers mentioned or identified]
-Meeting Type: [Infer: standup, planning, brainstorm, review, etc.]
+JSON shape:
+{
+  "meetingType": "<type>",
+  "detectedLanguages": ["<lang>"],
+  "actionPoints": ["<plain text action>"],
+  "transcript": "<verbatim transcript>",
+  "notes": "<full rich-markdown meeting notes — same format as the multi-section document with emoji headers>"
+}
 
-🎯 Key Takeaways
-Provide 3-5 concise bullet points highlighting the most important outcomes, decisions, or insights from this meeting.
+For the notes field, write comprehensive meeting notes using these emoji sections:
+📋 Meeting Overview, 🎯 Key Takeaways, 📝 Summary, 💬 Discussion Points, ✅ Action Items, 🔲 Decisions Made, ❓ Open Questions, 📊 Data & Metrics, 📅 Important Dates, 🔗 References, 💡 Ideas & Suggestions, 🧱 Blockers & Risks, 📍 Next Steps, 📌 Additional Notes
 
-📝 Summary
-Write a comprehensive 2-3 paragraph narrative summary of the meeting.
-
-💬 Discussion Points
-Organize by themes. For each theme, use these sub-headers on SEPARATE lines (not inline):
-### [Theme Title]
-**Context:** [description on its own line]
-**Key Points:**
-- bullet point 1
-- bullet point 2
-**Participants' Views:**
-- **[Name]:** their view
-
-✅ Action Items
-List all tasks, follow-ups, and commitments made during the meeting. Each action item should include a checkbox:
-- [ ] [Clear, actionable task description]
-
-🎲 Decisions Made
-List all firm decisions, agreements, or conclusions reached in a tabular format with the following columns:
-| Decision Title | What was decided | Why | Impact |
-
-❓ Open Questions
-Capture any unresolved questions, concerns, or items that need further discussion.
-
-📊 Data & Metrics Mentioned
-Use a markdown table: | Metric | Value | Context |
-
-📅 Important Dates & Deadlines
-Extract all dates mentioned.
-
-🔗 References & Resources
-List any documents, links, tools, or resources mentioned.
-
-💡 Ideas & Suggestions
-Capture any brainstormed ideas, suggestions, or proposals.
-
-🚧 Blockers & Risks
-Identify any obstacles, concerns, or risks discussed.
-
-📌 Next Steps
-Summarize what should happen next in priority order.
-
-🗣️ Full Transcript
-Format: [Speaker Name/Role] (MM:SS): [What they said]
-IMPORTANT: Provide a complete, verbatim transcript of the entire meeting. Do not summarize or skip any parts. This section is critical.
-
-📎 Additional Notes
-Any other relevant information.
-
-FORMATTING INSTRUCTIONS:
-- Use emoji headers (📋, 🎯, etc.) for each section — always followed by a space and the section title
-- Use **bold** only for primary labels at the start of a line (e.g., **Date:** value, **Duration:** value, **Owner:** value)
-- Every label MUST be followed by a colon and a space (e.g., **Attendees:** John, Sarah)
-- CRITICAL: **Context:**, **Key Points:**, and **Participants' Views:** MUST each start on their OWN new line — never place them inline or on the same line as other content
-- Use standard Markdown tables with header rows and separator rows (| --- |)
-- Use - for bullet points and - [ ] for action item checkboxes
-- Write ALL notes, summaries, and analysis ENTIRELY in English. Do NOT include any Hindi, Marathi, or other non-English words in the notes — translate everything to English. The original language content is preserved separately in the transcript.
-- Use ### for sub-section headers within a section
-- Do NOT use bold for emphasis within sentences — only for labels at the start of lines
-- Professional tone throughout.`;
+Write ALL content in English. Professional tone.`;
 
   try {
-    const response: GenerateContentResponse = await retryOperation(() => ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: {
-        parts: [
-          { inlineData: { mimeType: mimeType, data: base64Audio } },
-          { text: systemPrompt }
-        ]
-      },
-      generationConfig: {
-        maxOutputTokens: 8192,
-        temperature: 0.1, // Low temperature for high fidelity transcription
-      }
-    }), 3, 1000, 'Legacy single-pass analysis');
+    const response: GenerateContentResponse = await retryOperation(
+      () =>
+        ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: {
+            parts: [
+              { inlineData: { mimeType, data: base64Audio } },
+              { text: systemPrompt },
+            ],
+          },
+          generationConfig: {
+            maxOutputTokens: 8192,
+            temperature: 0.1,
+            responseMimeType: 'application/json',
+          },
+        }),
+      3,
+      1000,
+      'Legacy single-pass analysis'
+    );
 
     const responseText = response.text;
     if (!responseText) throw new Error("Empty response from Gemini.");
 
-    const analysis = parseMarkdownResponse(responseText);
-    const candidate = response.candidates?.[0];
-    const isTruncated = candidate?.finishReason === 'MAX_TOKENS';
+    const parsed = parseJsonResponse(responseText);
+    const isTruncated = response.candidates?.[0]?.finishReason === 'MAX_TOKENS';
 
-    return { ...analysis, isTruncated };
+    // For legacy mode, transcript comes inside the JSON
+    let transcript = '';
+    try {
+      const raw = JSON.parse(responseText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim());
+      transcript = raw.transcript ?? '';
+    } catch {
+      // ignore
+    }
+
+    return { ...parsed, transcript, isTruncated };
   } catch (error) {
     console.error("Gemini API Error:", error);
     throw error;
   }
 };
 
-// New two-pass orchestrator
+// ─── Two-pass orchestrator (main export — unchanged logic) ────────────────────
 export const analyzeConversation = async (audioBlob: Blob): Promise<MeetingAnalysis> => {
   let transcript: string | null = null;
 
   try {
-    // PASS 1: Extract complete transcript from audio
     console.log('[Pass 1/2] Extracting transcript from audio...');
     transcript = await extractTranscript(audioBlob);
-    console.log(`[Pass 1/2] ✓ Transcript extracted (${transcript.length} characters)`);
-
+    console.log(`[Pass 1/2] ✅ Transcript extracted (${transcript.length} characters)`);
   } catch (pass1Error) {
-    console.error('[Pass 1/2] ✗ Transcript extraction failed:', pass1Error);
-
-    // FALLBACK: Try legacy single-pass method
+    console.error('[Pass 1/2] ❌ Transcript extraction failed:', pass1Error);
     console.log('[Fallback] Attempting legacy single-pass analysis...');
     try {
       return await legacyAnalyzeConversation(audioBlob);
-    } catch (fallbackError) {
-      console.error('[Fallback] ✗ Legacy method also failed');
+    } catch {
       throw pass1Error;
     }
   }
 
   try {
-    // PASS 2: Generate structured analysis from transcript
     console.log('[Pass 2/2] Generating structured analysis...');
     const analysis = await analyzeTranscript(transcript);
-    console.log('[Pass 2/2] ✓ Analysis complete');
-
-    // Combine results
+    console.log('[Pass 2/2] ✅ Analysis complete');
+    return { ...analysis, transcript };
+  } catch (pass2Error: any) {
+    console.error('[Pass 2/2] ❌ Analysis generation failed:', pass2Error);
     return {
-      ...analysis,
-      transcript, // Add transcript from Pass 1
-    };
-
-  } catch (pass2Error) {
-    console.error('[Pass 2/2] ✗ Analysis generation failed:', pass2Error);
-
-    // PARTIAL SUCCESS: Return transcript even if analysis failed
-    console.log('[Recovery] Returning transcript-only result');
-    return {
-      transcript: transcript,
+      transcript,
       summary: `Analysis generation failed. Raw transcript is available.\n\nError: ${pass2Error.message}`,
       actionPoints: [],
       isTruncated: false,
-      meetingType: 'Unknown'
+      meetingType: 'Unknown',
     };
   }
 };
 
+// ─── Dictation enhancement — JSON response ────────────────────────────────────
 export const enhanceDictationText = async (text: string): Promise<MeetingAnalysis> => {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   if (!apiKey) throw new Error("API Key is missing.");
 
   const ai = new GoogleGenAI({ apiKey });
 
-  const systemPrompt = `You are an expert professional editor. Your task is to rewrite the following raw dictation (which may contain English or major Indian languages) into a polished, professional document.
-  
-  Rules:
-  1. Remove filler words (um, uh, you know).
-  2. Fix grammar and punctuation.
-  3. Improve flow and clarity while maintaining the original meaning.
-  4. Format the output as a clean document.
-  5. Detect the primary language(s) used.
-  6. If Indian regional languages are used, preserve the original meaning but rewrite in a professional manner (you may provide the polished version in English or the original script depending on the context).
+  const systemPrompt = `You are an expert professional editor. Rewrite the raw dictation below into a polished document. Respond with a single valid JSON object — no markdown fences, no extra text.
 
-  Output Format:
-  Return the result in the following structure:
-  
-  📝 Summary
-  [The professionally rewritten text goes here. Do not use bullet points unless the user explicitly dictated a list. Write it as a cohesive paragraph or document.]
+JSON shape:
+{
+  "meetingType": "Dictation",
+  "detectedLanguages": ["<primary language>"],
+  "actionPoints": ["<plain text action if any>"],
+  "transcript": "<clean version of dictation with punctuation fixed and fillers removed>",
+  "notes": "<professionally rewritten text as a cohesive paragraph or document>"
+}
 
-  🗣️ Full Transcript
-  [The dictation text with auto-punctuation and fillers removed. Format it as a clean text block.]
+RULES:
+1. Remove filler words (um, uh, you know)
+2. Fix grammar and punctuation
+3. Improve flow and clarity while preserving original meaning
+4. If Indian regional languages used, preserve meaning and rewrite professionally
+5. actionPoints: empty array [] if no clear tasks were dictated
 
-  ✅ Action Items
-  [If any clear tasks were dictated, list them here. Otherwise, leave empty.]
-  
-  detectedLanguages: [Language]
-  meetingType: Dictation
-
-  Input Text:
-  ${text}
-  `;
+INPUT DICTATION:
+${text}`;
 
   try {
-    const response = await retryOperation(() => ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: {
-        parts: [{ text: systemPrompt }]
-      }
-    }));
+    const response = await retryOperation(
+      () =>
+        ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: { parts: [{ text: systemPrompt }] },
+          generationConfig: {
+            responseMimeType: 'application/json',
+          },
+        }),
+      3,
+      1000,
+      'Dictation enhancement'
+    );
 
     const responseText = response.text;
     if (!responseText) throw new Error("Empty response from Gemini.");
 
-    // Reuse existing parser or fallback
-    const analysis = parseMarkdownResponse(responseText);
+    const analysis = parseJsonResponse(responseText);
 
-    // Ensure the transcribed text we passed is preserved if the model didn't return it exactly
-    if (!analysis.transcript) analysis.transcript = text;
+    // Extract transcript field from the JSON (dictation returns it inside the object)
+    let transcript = text; // fallback to original
+    try {
+      const raw = JSON.parse(responseText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim());
+      if (raw.transcript) transcript = raw.transcript;
+    } catch {
+      // ignore, use fallback
+    }
 
-    return analysis;
+    return { ...analysis, transcript };
   } catch (error) {
     console.error("Gemini Dictation Error:", error);
-    // Fallback if enhancement fails
     return {
       transcript: text,
-      summary: text, // Fallback to original
+      summary: text,
       actionPoints: [],
-      meetingType: 'Dictation'
+      meetingType: 'Dictation',
     };
   }
 };

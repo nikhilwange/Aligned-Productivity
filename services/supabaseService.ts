@@ -17,7 +17,7 @@ export const supabase = createClient(supabaseUrl || 'https://placeholder.supabas
   auth: {
     storageKey: 'aligned-auth',
     autoRefreshToken: true,
-    persistSession: isNative,
+    persistSession: true,
     detectSessionInUrl: !isNative
   }
 });
