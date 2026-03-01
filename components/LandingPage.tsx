@@ -92,7 +92,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
       )}
       {/* Light mode subtle grid */}
       {!dark && (
-        <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0, opacity: 0.5, backgroundImage: `linear-gradient(${C.border} 1px, transparent 1px), linear-gradient(90deg, ${C.border} 1px, transparent 1px)`, backgroundSize: '48px 48px' }} />
+        <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0, backgroundImage: `linear-gradient(rgba(15,23,42,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(15,23,42,0.07) 1px, transparent 1px)`, backgroundSize: '48px 48px' }} />
       )}
 
       {/* ══════ NAV ══════ */}
