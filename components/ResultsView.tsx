@@ -214,7 +214,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     if (!session.analysis?.summary) return [];
     const lines = session.analysis.summary.split('\n');
     const result: { title: string; content: string; startIndex: number; endIndex: number }[] = [];
-    const firstLineIsHeader = lines.length > 0 && (/^[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌🗣️📎]/.test(lines[0].trim()) || lines[0].trim().startsWith('## '));
+    const firstLineIsHeader = lines.length > 0 && (/^[\u{1F300}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/u.test(lines[0].trim()) || lines[0].trim().startsWith('## '));
 
     let currentSection: { title: string; content: string[]; startIndex: number } | null = firstLineIsHeader ? null : {
       title: 'Summary',
@@ -222,7 +222,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
       startIndex: 0
     };
     lines.forEach((line, index) => {
-      const isHeader = /^[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌🗣️📎]/.test(line.trim()) || line.trim().startsWith('## ');
+      const isHeader = /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/u.test(line.trim()) || line.trim().startsWith('## ');
       if (isHeader) {
         if (currentSection) {
           result.push({
@@ -330,7 +330,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
 
     for (let i = 0; i < lines.length; i++) {
       const trimmed = lines[i].trim();
-      if (i === 0 && (/^[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌🗣️📎]/.test(trimmed) || trimmed.startsWith('## '))) {
+      if (i === 0 && (/^[\u{1F300}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/u.test(trimmed) || trimmed.startsWith('## '))) {
         headerLine = trimmed;
       } else {
         bodyLines.push(lines[i]);
@@ -344,7 +344,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
         {/* Section header */}
         <div className="flex items-center justify-between mb-5">
           {headerLine ? (
-            /^[📋🎯📝💬✅🎲❓📊📅🔗💡🚧📌🗣️📎]/.test(headerLine) ? (
+            /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/u.test(headerLine) ? (
               <h2 className="text-lg font-bold text-[var(--text-primary)] flex items-center gap-3">
                 <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/20 to-teal-500/20 flex items-center justify-center border border-white/[0.08] shadow-lg text-base">
                   {headerLine.substring(0, 2)}
