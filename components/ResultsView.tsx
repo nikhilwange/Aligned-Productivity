@@ -354,7 +354,31 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
       }
     }
 
-    const bodyContent = bodyLines.join('\n').trim();
+    const rawBody = bodyLines.join('\n').trim();
+
+    // Preprocess markdown to fix single-newline collapse and ensure tables render
+    const preprocessMarkdown = (text: string): string => {
+      const mdLines = text.split('\n');
+      const processed: string[] = [];
+      for (let i = 0; i < mdLines.length; i++) {
+        const current = mdLines[i].trim();
+        const next = mdLines[i + 1]?.trim() ?? '';
+        processed.push(mdLines[i]);
+        // Don't insert blank line after empty lines, within table blocks, or within list blocks
+        if (!current || !next) continue;
+        const isTableRow = (s: string) => s.startsWith('|') || /^[-|:\s]+$/.test(s);
+        const isListItem = (s: string) => /^[-*]\s/.test(s) || /^\d+\.\s/.test(s) || /^- \[/.test(s);
+        if (isTableRow(current) && isTableRow(next)) continue;
+        if (isListItem(current) && isListItem(next)) continue;
+        // Add blank line between non-table, non-consecutive-list lines for proper paragraph breaks
+        if (!isTableRow(current) && !isTableRow(next)) {
+          processed.push('');
+        }
+      }
+      return processed.join('\n');
+    };
+
+    const bodyContent = preprocessMarkdown(rawBody);
 
     // Extract emoji properly using Array.from for multi-codepoint emoji support
     const extractEmoji = (text: string): { emoji: string; rest: string } => {
@@ -678,7 +702,26 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
               </div>
             ) : activeTab === 'transcript' ? (
               <div className="animate-fade-in space-y-8">
-                <h2 className="text-2xl font-bold text-[var(--text-primary)] tracking-tight pb-5 border-b border-white/[0.06]">Verbatim transcript</h2>
+                <div className="flex items-center justify-between pb-5 border-b border-white/[0.06]">
+                  <h2 className="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Verbatim transcript</h2>
+                  <button
+                    onClick={() => {
+                      if (!session.analysis?.transcript) return;
+                      navigator.clipboard.writeText(session.analysis.transcript);
+                      setCopiedSection('transcript');
+                      setTimeout(() => setCopiedSection(null), 2000);
+                    }}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${copiedSection === 'transcript'
+                      ? 'bg-teal-500/20 text-teal-300'
+                      : 'glass glass-hover opacity-60 hover:opacity-100'
+                    }`}
+                  >
+                    <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                    </svg>
+                    {copiedSection === 'transcript' ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
                 <div className="space-y-6 pl-4 border-l-2 border-white/[0.06]">
                   {session.analysis.transcript.split('\n').filter(l => l.trim()).map((line, i) => {
                     const hasSpeakerLabel = line.includes(':');
