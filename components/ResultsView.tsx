@@ -348,7 +348,8 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     for (let i = 0; i < lines.length; i++) {
       const trimmed = lines[i].trim();
       if (i === 0 && (hasEmoji(trimmed) || trimmed.startsWith('## ') || section.title === trimmed)) {
-        headerLine = trimmed;
+        // Normalize: strip ## prefix so emoji detection works consistently
+        headerLine = trimmed.replace(/^##\s*/, '');
       } else {
         bodyLines.push(lines[i]);
       }
@@ -411,7 +412,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
                 </h2>
               );
             })() : (
-              <h2 className="text-xl font-bold text-[var(--text-primary)] tracking-tight">{headerLine.replace(/^##\s*/, '')}</h2>
+              <h2 className="text-xl font-bold text-[var(--text-primary)] tracking-tight">{headerLine}</h2>
             )
           ) : (
             <div className="flex-1"></div>
