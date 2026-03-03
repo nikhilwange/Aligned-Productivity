@@ -144,7 +144,7 @@ Output ONLY the transcript.`;
               { text: transcriptPrompt },
             ],
           },
-          generationConfig: {
+          config: {
             maxOutputTokens: 65536,
             temperature: 0.1,
           },
@@ -262,7 +262,7 @@ ${transcript}`;
         ai.models.generateContent({
           model: 'gemini-2.5-flash',
           contents: { parts: [{ text: analysisPrompt }] },
-          generationConfig: {
+          config: {
             maxOutputTokens: 65536,
             temperature: 0.1,
             responseMimeType: 'application/json', // Forces Gemini to return valid JSON
@@ -322,7 +322,7 @@ Write ALL content in English. Professional tone.`;
               { text: systemPrompt },
             ],
           },
-          generationConfig: {
+          config: {
             maxOutputTokens: 8192,
             temperature: 0.1,
             responseMimeType: 'application/json',
@@ -424,7 +424,7 @@ ${text}`;
         ai.models.generateContent({
           model: 'gemini-2.5-flash',
           contents: { parts: [{ text: systemPrompt }] },
-          generationConfig: {
+          config: {
             responseMimeType: 'application/json',
           },
         }),

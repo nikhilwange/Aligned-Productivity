@@ -102,7 +102,7 @@ ${transcript}`;
       contents: {
         parts: [{ text: analysisPrompt }],
       },
-      generationConfig: {
+      config: {
         maxOutputTokens: 65536,
         temperature: 0.1,
       },

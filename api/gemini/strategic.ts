@@ -125,7 +125,7 @@ ${aggregatedData}`;
       contents: {
         parts: [{ text: strategicPrompt }],
       },
-      generationConfig: {
+      config: {
         maxOutputTokens: 65536,
         temperature: 0.1,
       },
