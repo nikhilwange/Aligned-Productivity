@@ -214,7 +214,23 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     if (!session.analysis?.summary) return [];
     const lines = session.analysis.summary.split('\n');
     const result: { title: string; content: string; startIndex: number; endIndex: number }[] = [];
-    const firstLineIsHeader = lines.length > 0 && (/^[\u{1F300}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/u.test(lines[0].trim()) || lines[0].trim().startsWith('## '));
+
+    const hasEmoji = (s: string) => /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/u.test(s);
+    const isEmojiOrMarkdownHeader = (s: string) => {
+      const t = s.trim();
+      if (!t) return false;
+      return hasEmoji(t) || t.startsWith('## ');
+    };
+    // For the first line only, also detect plain-text titles (e.g. "Meeting Overview")
+    const isPlainTextTitle = (s: string) => {
+      const t = s.trim();
+      if (!t || t.length > 60) return false;
+      if (/^[-*|>]/.test(t) || t.includes('**') || t.includes('- [') || /[.!?;,]$/.test(t)) return false;
+      return /^[A-Z]/.test(t);
+    };
+
+    const firstLine = lines.length > 0 ? lines[0].trim() : '';
+    const firstLineIsHeader = isEmojiOrMarkdownHeader(firstLine) || isPlainTextTitle(firstLine);
 
     let currentSection: { title: string; content: string[]; startIndex: number } | null = firstLineIsHeader ? null : {
       title: 'Summary',
@@ -222,7 +238,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
       startIndex: 0
     };
     lines.forEach((line, index) => {
-      const isHeader = /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/u.test(line.trim()) || line.trim().startsWith('## ');
+      const isHeader = index === 0 ? firstLineIsHeader : isEmojiOrMarkdownHeader(line.trim());
       if (isHeader) {
         if (currentSection) {
           result.push({
@@ -325,12 +341,13 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
     const isLast = index === sections.length - 1;
 
     // Extract the emoji header line and body content separately
+    const hasEmoji = (s: string) => /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/u.test(s);
     let headerLine: string | null = null;
     let bodyLines: string[] = [];
 
     for (let i = 0; i < lines.length; i++) {
       const trimmed = lines[i].trim();
-      if (i === 0 && (/^[\u{1F300}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/u.test(trimmed) || trimmed.startsWith('## '))) {
+      if (i === 0 && (hasEmoji(trimmed) || trimmed.startsWith('## ') || section.title === trimmed)) {
         headerLine = trimmed;
       } else {
         bodyLines.push(lines[i]);
@@ -339,19 +356,37 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
 
     const bodyContent = bodyLines.join('\n').trim();
 
+    // Extract emoji properly using Array.from for multi-codepoint emoji support
+    const extractEmoji = (text: string): { emoji: string; rest: string } => {
+      const chars = Array.from(text);
+      // Check if first character is in emoji range
+      const cp = chars[0]?.codePointAt(0) || 0;
+      const isEmoji = (cp >= 0x1F300 && cp <= 0x1FAFF) || (cp >= 0x2600 && cp <= 0x26FF) || (cp >= 0x2700 && cp <= 0x27BF);
+      if (isEmoji) {
+        // Handle emoji + optional variation selector (U+FE0F)
+        let emojiLen = 1;
+        if (chars[1] === '\uFE0F') emojiLen = 2;
+        return { emoji: chars.slice(0, emojiLen).join(''), rest: chars.slice(emojiLen).join('').trim() };
+      }
+      return { emoji: '', rest: text };
+    };
+
     return (
       <div key={section.title} className={`group/section relative animate-fade-in-up ${!isLast ? 'mb-10 pb-8 border-b border-white/[0.06]' : 'mb-8'}`}>
         {/* Section header */}
         <div className="flex items-center justify-between mb-5">
           {headerLine ? (
-            /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/u.test(headerLine) ? (
-              <h2 className="text-lg font-bold text-[var(--text-primary)] flex items-center gap-3">
-                <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/20 to-teal-500/20 flex items-center justify-center border border-white/[0.08] shadow-lg text-base">
-                  {headerLine.substring(0, 2)}
-                </span>
-                <span className="opacity-90">{headerLine.substring(2).trim()}</span>
-              </h2>
-            ) : (
+            hasEmoji(headerLine) ? (() => {
+              const { emoji, rest } = extractEmoji(headerLine);
+              return (
+                <h2 className="text-lg font-bold text-[var(--text-primary)] flex items-center gap-3">
+                  <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/20 to-teal-500/20 flex items-center justify-center border border-white/[0.08] shadow-lg text-base">
+                    {emoji}
+                  </span>
+                  <span className="opacity-90">{rest}</span>
+                </h2>
+              );
+            })() : (
               <h2 className="text-xl font-bold text-[var(--text-primary)] tracking-tight">{headerLine.replace(/^##\s*/, '')}</h2>
             )
           ) : (
