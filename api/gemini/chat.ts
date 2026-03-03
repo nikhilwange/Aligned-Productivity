@@ -95,6 +95,8 @@ Now answer user questions based on the session data above.`;
     return res.status(200).json({ text: responseText, citations });
   } catch (error: any) {
     console.error('[API] Gemini chat error:', error);
-    return res.status(500).json({ error: error.message || 'Chat failed' });
+    const detail = error.message || error.toString() || 'Unknown error';
+    const status = error.status || error.httpError || error.code || 500;
+    return res.status(500).json({ error: `[${status}] ${detail}` });
   }
 }

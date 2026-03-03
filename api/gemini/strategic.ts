@@ -139,6 +139,8 @@ ${aggregatedData}`;
     return res.status(200).json({ responseText });
   } catch (error: any) {
     console.error('[API] Gemini strategic error:', error);
-    return res.status(500).json({ error: error.message || 'Strategic analysis failed' });
+    const detail = error.message || error.toString() || 'Unknown error';
+    const status = error.status || error.httpError || error.code || 500;
+    return res.status(500).json({ error: `[${status}] ${detail}` });
   }
 }
