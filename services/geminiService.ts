@@ -115,7 +115,8 @@ export const extractTranscript = async (audioBlob: Blob): Promise<string> => {
 
   const ai = new GoogleGenAI({ apiKey });
   const base64Audio = await blobToBase64(audioBlob);
-  const mimeType = audioBlob.type || 'audio/webm';
+  // Strip codec parameters — Gemini inline data requires clean MIME types (e.g. "audio/webm" not "audio/webm;codecs=opus")
+  const mimeType = (audioBlob.type || 'audio/webm').split(';')[0];
 
   const transcriptPrompt = `You are a professional transcription service.
 
@@ -162,7 +163,23 @@ Output ONLY the transcript.`;
       console.warn('⚠️ Transcript was truncated due to token limits.');
     }
 
-    return transcriptText.trim();
+    const trimmed = transcriptText.trim();
+
+    // Detect Gemini repetition loop: if the same line appears ≥ 10 times, the transcript is garbage
+    const lines = trimmed.split('\n').filter(l => l.trim().length > 0);
+    if (lines.length >= 10) {
+      const lineCounts = new Map<string, number>();
+      for (const line of lines) {
+        const key = line.trim().toLowerCase();
+        lineCounts.set(key, (lineCounts.get(key) ?? 0) + 1);
+      }
+      const maxRepeat = Math.max(...lineCounts.values());
+      if (maxRepeat >= 10 || maxRepeat / lines.length > 0.4) {
+        throw new Error("Transcription produced repetitive output — the audio may be too quiet, unclear, or silent. Please re-record with the microphone closer and ensure audio is audible.");
+      }
+    }
+
+    return trimmed;
   } catch (error) {
     console.error("Transcript extraction failed:", error);
     throw error;
@@ -293,7 +310,7 @@ const legacyAnalyzeConversation = async (audioBlob: Blob): Promise<MeetingAnalys
 
   const ai = new GoogleGenAI({ apiKey });
   const base64Audio = await blobToBase64(audioBlob);
-  const mimeType = audioBlob.type || 'audio/webm';
+  const mimeType = (audioBlob.type || 'audio/webm').split(';')[0];
 
   const systemPrompt = `You are an expert meeting assistant. Analyze this audio and respond with a single valid JSON object — no markdown fences, no extra text.
 

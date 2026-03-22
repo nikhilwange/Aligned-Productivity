@@ -65,7 +65,13 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
     try {
       let finalStream: MediaStream;
       if (inputMode === 'mic' || inputMode === 'call') {
-        finalStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        finalStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          }
+        });
         sourceStreamsRef.current = [finalStream];
       } else {
         const displayStream = await (navigator.mediaDevices as any).getDisplayMedia({
@@ -89,7 +95,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
         sourceStreamsRef.current = [displayStream, micStream];
       }
 
-      const options = { audioBitsPerSecond: 16000 };
+      const options = { audioBitsPerSecond: 128000 };
       const mediaRecorder = new MediaRecorder(finalStream, options);
       mediaRecorderRef.current = mediaRecorder;
       chunksRef.current = [];
