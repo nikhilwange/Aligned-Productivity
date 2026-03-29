@@ -18,6 +18,7 @@ import { AppState, RecordingSession, AudioRecording, User, ChatMessage, Recordin
 import { analyzeConversation, extractTranscript, analyzeTranscript, enhanceDictationText } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb } from './services/supabaseService';
+import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery } from './services/recordingRecovery';
 
 declare global {
   interface Window {
@@ -118,6 +119,36 @@ const App: React.FC = () => {
         const data = await fetchRecordings(user.id);
         console.log('[App] Fetched recordings:', data.length, 'recordings');
         setRecordings(data);
+
+        // Check for recoverable recordings from crashed/closed sessions
+        try {
+          const recoverable = await getRecoverableRecordings();
+          if (recoverable.length > 0) {
+            const newest = recoverable[0];
+            const durationStr = newest.meta.duration > 0
+              ? `${Math.floor(newest.meta.duration / 60)}m ${newest.meta.duration % 60}s`
+              : 'unknown duration';
+            const timeAgo = Math.round((Date.now() - newest.meta.startedAt) / 60000);
+
+            if (window.confirm(
+              `Found an unsaved recording from ${timeAgo} minute${timeAgo !== 1 ? 's' : ''} ago (${durationStr}). Would you like to recover and process it?`
+            )) {
+              // Process the recovered recording
+              const source = (newest.meta.source || 'in-person') as RecordingSource;
+              handleRecordingComplete({
+                blob: newest.blob,
+                url: URL.createObjectURL(newest.blob),
+                duration: newest.meta.duration,
+                source,
+              });
+              clearRecoverySession(newest.meta.id);
+            } else {
+              clearAllRecovery();
+            }
+          }
+        } catch (err) {
+          console.warn('[App] Recovery check failed:', err);
+        }
       };
       loadData();
     }
@@ -280,7 +311,11 @@ const App: React.FC = () => {
     };
 
     try {
-      await saveRecording(newSession, user.id);
+      try {
+        await saveRecording(newSession, user.id);
+      } catch (saveErr) {
+        console.warn("Initial save failed, continuing with processing:", saveErr);
+      }
 
       // Phase 1: Transcription
       let transcript: string;
@@ -324,7 +359,13 @@ const App: React.FC = () => {
       console.error("Recording process failed:", err);
       const errorSession: RecordingSession = { ...newSession, status: 'error', errorMessage: err.message, processingStep: undefined };
       updateSession({ status: 'error', errorMessage: err.message, processingStep: undefined });
-      await saveRecording(errorSession, user.id);
+      try {
+        await saveRecording(errorSession, user.id);
+      } catch (saveErr) {
+        console.error("Failed to save error state:", saveErr);
+      }
+    } finally {
+      setAppState(AppState.IDLE);
     }
   }, [user, transcriptionEngine, hasSarvamKey]);
 

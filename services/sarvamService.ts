@@ -121,6 +121,10 @@ const splitAudioBlob = async (audioBlob: Blob, chunkDurationMs: number): Promise
 
 // Main export: Transcribe audio with Sarvam (handles chunking for long recordings)
 export const transcribeAudioWithSarvam = async (audioBlob: Blob): Promise<string> => {
+  if (!audioBlob || audioBlob.size === 0) {
+    throw new Error("No audio was captured. Please check your microphone and try again.");
+  }
+
   console.log(`[Sarvam] Transcribing audio (${(audioBlob.size / 1024).toFixed(1)} KB)...`);
   const token = await getAuthToken();
   const chunks = await splitAudioBlob(audioBlob, CHUNK_DURATION_MS);
@@ -140,7 +144,7 @@ export const transcribeAudioWithSarvam = async (audioBlob: Blob): Promise<string
 
   for (let i = 0; i < chunks.length; i += concurrency) {
     const batch = chunks.slice(i, i + concurrency);
-    const batchResults = await Promise.all(
+    const batchResults = await Promise.allSettled(
       batch.map((chunk, j) =>
         retryOperation(
           () => transcribeChunk(chunk, token),
@@ -150,8 +154,13 @@ export const transcribeAudioWithSarvam = async (audioBlob: Blob): Promise<string
         )
       )
     );
-    batchResults.forEach((text, j) => {
-      results[i + j] = text;
+    batchResults.forEach((result, j) => {
+      if (result.status === 'fulfilled') {
+        results[i + j] = result.value;
+      } else {
+        console.warn(`[Sarvam] Chunk ${i + j + 1} failed: ${result.reason?.message}`);
+        results[i + j] = `[chunk ${i + j + 1} failed]`;
+      }
     });
   }
 

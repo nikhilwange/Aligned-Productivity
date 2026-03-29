@@ -81,6 +81,17 @@ const parseJsonResponse = (raw: string): MeetingAnalysis => {
   };
 };
 
+// ─── Timeout helper ───────────────────────────────────────────────────────────
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s — please try again.`)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
 // ─── Retry helper ──────────────────────────────────────────────────────────────
 export async function retryOperation<T>(
   operation: () => Promise<T>,
@@ -89,7 +100,7 @@ export async function retryOperation<T>(
   operationName = 'API call'
 ): Promise<T> {
   try {
-    return await operation();
+    return await withTimeout(operation(), 120_000, operationName);
   } catch (error: any) {
     const isRetryable =
       error.status === 500 ||
@@ -97,6 +108,7 @@ export async function retryOperation<T>(
       error.status === 429 ||
       error.message?.includes('xhr error') ||
       error.message?.includes('fetch failed') ||
+      error.message?.includes('timed out') ||
       error.message?.includes('code: 6');
 
     if (retries > 0 && isRetryable) {
@@ -110,6 +122,13 @@ export async function retryOperation<T>(
 
 // ─── Pass 1: Extract verbatim transcript (unchanged — plain text is reliable) ──
 export const extractTranscript = async (audioBlob: Blob): Promise<string> => {
+  if (!audioBlob || audioBlob.size === 0) {
+    throw new Error("No audio was captured. Please check your microphone and try again.");
+  }
+  if (audioBlob.size < 1000) {
+    throw new Error("Audio recording is too short. Please record for at least a few seconds.");
+  }
+
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   if (!apiKey) throw new Error("API Key is missing.");
 
