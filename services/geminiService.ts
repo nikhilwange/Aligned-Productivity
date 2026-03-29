@@ -39,45 +39,116 @@ interface GeminiAnalysisJSON {
   notes?: string;
 }
 
-const parseJsonResponse = (raw: string): MeetingAnalysis => {
-  let parsed: GeminiAnalysisJSON = {};
+/** Try multiple strategies to parse JSON from Gemini */
+const tryParseJSON = (raw: string): GeminiAnalysisJSON | null => {
+  // Strategy 1: direct parse
+  try { return JSON.parse(raw); } catch {}
 
+  // Strategy 2: strip markdown code fences
   try {
-    // Strip any accidental markdown code fences Gemini may wrap around JSON
     const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-    parsed = JSON.parse(cleaned);
-  } catch (e) {
-    console.warn('[parseJsonResponse] JSON.parse failed, attempting field extraction fallback.', e);
+    return JSON.parse(cleaned);
+  } catch {}
 
-    // Graceful fallback: extract what we can with light regex on the raw text
-    // so a partially malformed response still gives us something useful
-    const actionItemsMatch = raw.match(/✅\s*Action Items\s*([\s\S]*?)(?=[📋🎯📝💬🔲❓📊📅🔗💡🧱📍📌🗣️📋]|$)/i);
-    const actionPoints = actionItemsMatch
-      ? actionItemsMatch[1]
-          .split('\n')
-          .filter(l => l.trim().startsWith('- [ ]') || l.trim().startsWith('- [x]'))
-          .map(l => l.replace(/^- \[[ x]\]\s*/, '').trim())
-          .filter(Boolean)
-      : [];
+  // Strategy 3: extract JSON object from surrounding text
+  try {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) return JSON.parse(match[0]);
+  } catch {}
 
-    const meetingTypeMatch = raw.match(/Meeting Type\s*:\s*([^\n,}"]+)/i);
-    const languagesMatch = raw.match(/detectedLanguages["\s:]+([^\n\]]+)/i);
+  // Strategy 4: fix common Gemini JSON issues (unescaped newlines inside string values)
+  try {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) {
+      // Replace actual newlines inside JSON string values with \\n
+      const fixed = match[0].replace(/"([^"\\]|\\.)*"/g, (str) =>
+        str.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')
+      );
+      return JSON.parse(fixed);
+    }
+  } catch {}
+
+  return null;
+};
+
+/** Extract the notes field directly via regex when JSON parsing fails entirely */
+const extractNotesFromRaw = (raw: string): string => {
+  // Try to pull out the "notes" value from malformed JSON
+  const notesMatch = raw.match(/"notes"\s*:\s*"([\s\S]*?)(?:"\s*[,}])/);
+  if (notesMatch) {
+    return notesMatch[1]
+      .replace(/\\n/g, '\n')
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, '\\');
+  }
+
+  // If the raw text contains emoji section headers, it's probably markdown — use it directly
+  if (/[📋🎯📝💬✅🔲❓📊📅🔗💡🧱📍📌]/.test(raw)) {
+    // Strip any JSON wrapper artifacts
+    return raw
+      .replace(/^\s*\{[\s\S]*?"notes"\s*:\s*"?/, '')
+      .replace(/"?\s*\}\s*$/, '')
+      .replace(/\\n/g, '\n')
+      .replace(/\\"/g, '"')
+      .trim();
+  }
+
+  return '';
+};
+
+const parseJsonResponse = (raw: string): MeetingAnalysis => {
+  const parsed = tryParseJSON(raw);
+
+  if (parsed) {
+    // Successful parse — ensure notes has real newlines (not literal \n strings)
+    let notes = parsed.notes ?? '';
+    if (notes.includes('\\n')) {
+      notes = notes.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+    }
 
     return {
-      summary: raw, // surface the raw text so nothing is lost
-      actionPoints,
-      meetingType: meetingTypeMatch?.[1]?.trim(),
-      detectedLanguages: languagesMatch?.[1]?.split(',').map(l => l.trim().replace(/["\]]/g, '')),
+      summary: notes,
+      actionPoints: (parsed.actionPoints ?? []).map(a => a.replace(/^- \[[ x]\]\s*/, '').trim()).filter(Boolean),
+      meetingType: parsed.meetingType,
+      detectedLanguages: parsed.detectedLanguages?.filter(Boolean),
       transcript: '',
     };
   }
 
+  // JSON parse failed — extract what we can without showing raw JSON to user
+  console.warn('[parseJsonResponse] All JSON parse strategies failed, extracting fields manually.');
+
+  const notes = extractNotesFromRaw(raw);
+  const meetingTypeMatch = raw.match(/"?meetingType"?\s*:\s*"?([^",}\n]+)/i);
+  const languagesMatch = raw.match(/"?detectedLanguages"?\s*:\s*\[([^\]]*)\]/i);
+  const actionItemsMatch = raw.match(/"?actionPoints"?\s*:\s*\[([\s\S]*?)\]/i);
+
+  let actionPoints: string[] = [];
+  if (actionItemsMatch) {
+    actionPoints = actionItemsMatch[1]
+      .split(',')
+      .map(s => s.replace(/^[\s"]+|[\s"]+$/g, ''))
+      .filter(Boolean);
+  }
+
+  // If we couldn't extract notes, use the raw text but strip JSON artifacts
+  const summary = notes || raw
+    .replace(/^\s*\{/, '')
+    .replace(/\}\s*$/, '')
+    .replace(/"meetingType"\s*:\s*"[^"]*"\s*,?/g, '')
+    .replace(/"detectedLanguages"\s*:\s*\[[^\]]*\]\s*,?/g, '')
+    .replace(/"actionPoints"\s*:\s*\[[^\]]*\]\s*,?/g, '')
+    .replace(/"notes"\s*:\s*"?/g, '')
+    .replace(/\\n/g, '\n')
+    .replace(/\\"/g, '"')
+    .trim();
+
   return {
-    summary: parsed.notes ?? '',
-    actionPoints: (parsed.actionPoints ?? []).map(a => a.replace(/^- \[[ x]\]\s*/, '').trim()).filter(Boolean),
-    meetingType: parsed.meetingType,
-    detectedLanguages: parsed.detectedLanguages?.filter(Boolean),
-    transcript: '', // transcript is set by the caller (Pass 1), not by this parser
+    summary,
+    actionPoints,
+    meetingType: meetingTypeMatch?.[1]?.trim(),
+    detectedLanguages: languagesMatch?.[1]?.split(',').map(l => l.trim().replace(/["\]]/g, '')).filter(Boolean),
+    transcript: '',
   };
 };
 
