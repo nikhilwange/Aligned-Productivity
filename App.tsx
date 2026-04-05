@@ -14,10 +14,10 @@ import ManualEntryView from './components/ManualEntryView';
 import AuthView from './components/AuthView';
 import ResetPassword from './components/ResetPassword';
 import LandingPage from './components/LandingPage';
-import { AppState, RecordingSession, AudioRecording, User, ChatMessage, RecordingSource } from './types';
+import { AppState, RecordingSession, AudioRecording, User, ChatMessage, RecordingSource, TrackedActionItem } from './types';
 import { analyzeConversation, extractTranscript, analyzeTranscript, enhanceDictationText } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
-import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb } from './services/supabaseService';
+import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems, syncActionItemsFromRecording, updateActionItem, deleteActionItem } from './services/supabaseService';
 import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery } from './services/recordingRecovery';
 
 declare global {
@@ -47,6 +47,7 @@ const App: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isManualProcessing, setIsManualProcessing] = useState(false);
+  const [actionItems, setActionItems] = useState<TrackedActionItem[]>([]);
   const [transcriptionEngine, setTranscriptionEngine] = useState<'gemini' | 'sarvam'>(() => {
     return (localStorage.getItem('aligned-engine') as 'gemini' | 'sarvam') || 'gemini';
   });
@@ -116,9 +117,41 @@ const App: React.FC = () => {
     if (user) {
       const loadData = async () => {
         console.log('[App] Loading recordings for user:', user.id);
-        const data = await fetchRecordings(user.id);
+
+        // Fetch recordings and action items in parallel
+        const [data, trackedItems] = await Promise.all([
+          fetchRecordings(user.id),
+          fetchActionItems(user.id),
+        ]);
         console.log('[App] Fetched recordings:', data.length, 'recordings');
         setRecordings(data);
+
+        // Attach session titles/dates for display
+        const itemsWithMeta = trackedItems.map(item => {
+          const session = data.find(r => r.id === item.recordingId);
+          return session ? { ...item, sessionTitle: session.title, sessionDate: session.date } : item;
+        });
+        setActionItems(itemsWithMeta);
+
+        // Migrate existing completed recordings that have no action_items rows yet
+        const syncedIds = new Set(itemsWithMeta.filter(i => i.recordingId).map(i => i.recordingId!));
+        const unsynced = data.filter(r =>
+          r.status === 'completed' &&
+          (r.analysis?.actionPoints?.length ?? 0) > 0 &&
+          !syncedIds.has(r.id)
+        );
+        if (unsynced.length > 0) {
+          console.log('[App] Migrating action items for', unsynced.length, 'recordings...');
+          for (let i = 0; i < unsynced.length; i += 5) {
+            const batch = unsynced.slice(i, i + 5);
+            const results = await Promise.all(batch.map(r => syncActionItemsFromRecording(r, user.id)));
+            const newItems = results.flat().map(item => {
+              const session = data.find(r => r.id === item.recordingId);
+              return session ? { ...item, sessionTitle: session.title, sessionDate: session.date } : item;
+            });
+            if (newItems.length > 0) setActionItems(prev => [...prev, ...newItems]);
+          }
+        }
 
         // Check for recoverable recordings from crashed/closed sessions
         try {
@@ -133,7 +166,6 @@ const App: React.FC = () => {
             if (window.confirm(
               `Found an unsaved recording from ${timeAgo} minute${timeAgo !== 1 ? 's' : ''} ago (${durationStr}). Would you like to recover and process it?`
             )) {
-              // Process the recovered recording
               const source = (newest.meta.source || 'in-person') as RecordingSource;
               handleRecordingComplete({
                 blob: newest.blob,
@@ -202,6 +234,14 @@ const App: React.FC = () => {
       };
       updateSession({ analysis: fullAnalysis, status: 'completed', processingStep: undefined });
       await saveRecording(completedSession, user.id);
+
+      try {
+        const newItems = await syncActionItemsFromRecording(completedSession, user.id);
+        const withMeta = newItems.map(i => ({ ...i, sessionTitle: completedSession.title, sessionDate: completedSession.date }));
+        if (withMeta.length > 0) setActionItems(prev => [...prev, ...withMeta]);
+      } catch (syncErr) {
+        console.warn('[App] Action item sync failed:', syncErr);
+      }
     } catch (err: any) {
       console.error('Manual entry processing failed:', err);
       const errorSession: RecordingSession = { ...newSession, status: 'error', errorMessage: err.message, processingStep: undefined };
@@ -275,6 +315,9 @@ const App: React.FC = () => {
       if (activeRecordingId === id) {
         handleGoHome();
       }
+
+      // Remove action items locally immediately (DB handles cascade via on delete set null)
+      setActionItems(prev => prev.filter(i => i.recordingId !== id));
 
       try {
         await deleteRecordingFromDb(id, user.id);
@@ -355,6 +398,15 @@ const App: React.FC = () => {
       };
       updateSession({ analysis: fullAnalysis, status: 'completed', processingStep: undefined });
       await saveRecording(completedSession, user.id);
+
+      // Sync action items to the tracker
+      try {
+        const newItems = await syncActionItemsFromRecording(completedSession, user.id);
+        const withMeta = newItems.map(i => ({ ...i, sessionTitle: completedSession.title, sessionDate: completedSession.date }));
+        if (withMeta.length > 0) setActionItems(prev => [...prev, ...withMeta]);
+      } catch (syncErr) {
+        console.warn('[App] Action item sync failed, will migrate on next load:', syncErr);
+      }
     } catch (err: any) {
       console.error("Recording process failed:", err);
       const errorSession: RecordingSession = { ...newSession, status: 'error', errorMessage: err.message, processingStep: undefined };
@@ -417,6 +469,7 @@ const App: React.FC = () => {
           onLogout={handleLogout}
           theme={theme}
           onToggleTheme={toggleTheme}
+          actionItems={actionItems}
         />
       </div>
 
@@ -545,6 +598,7 @@ const App: React.FC = () => {
             <HomeView
               user={user}
               recordings={recordings}
+              actionItems={actionItems}
               onSelectSession={handleSelectRecording}
               onStartNew={handleStartNew}
               onStartLive={handleStartLive}
@@ -556,7 +610,13 @@ const App: React.FC = () => {
               onDelete={handleDeleteRecording}
             />
           ) : activeRecordingId === 'actions' ? (
-            <ActionItemsView recordings={recordings} onSelectSession={handleSelectRecording} />
+            <ActionItemsView
+              recordings={recordings}
+              actionItems={actionItems}
+              onActionItemsChange={setActionItems}
+              userId={user.id}
+              onSelectSession={handleSelectRecording}
+            />
           ) : activeRecordingId === 'manual-entry' ? (
             <ManualEntryView
               onSubmit={handleManualEntry}
@@ -591,6 +651,7 @@ const App: React.FC = () => {
             <HomeView
               user={user}
               recordings={recordings}
+              actionItems={actionItems}
               onSelectSession={handleSelectRecording}
               onStartNew={handleStartNew}
               onStartLive={handleStartLive}

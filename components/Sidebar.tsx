@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { RecordingSession, User } from '../types';
+import { RecordingSession, User, TrackedActionItem } from '../types';
 
 interface SidebarProps {
   user: User | null;
@@ -14,19 +14,12 @@ interface SidebarProps {
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
   onClose?: () => void;
+  actionItems?: TrackedActionItem[];
 }
-
-const STORAGE_KEY = 'aligned-action-items-done';
-const loadDoneIds = (): Set<string> => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return new Set(raw ? JSON.parse(raw) : []);
-  } catch { return new Set(); }
-};
 
 const Sidebar: React.FC<SidebarProps> = ({
   user, recordings, activeId, onSelect, onNew, onStartLive,
-  isLiveActive, onDelete, onLogout, theme, onToggleTheme, onClose
+  isLiveActive, onDelete, onLogout, theme, onToggleTheme, onClose, actionItems,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -34,19 +27,24 @@ const Sidebar: React.FC<SidebarProps> = ({
   const getUserInitials = (name: string) =>
     name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
 
-  // Pending action items count for badge
+  // Pending action items count for badge — use tracker if available, fallback to localStorage
   const pendingActionsCount = useMemo(() => {
-    const doneIds = loadDoneIds();
-    let count = 0;
-    recordings
-      .filter(r => r.status === 'completed')
-      .forEach(rec => {
+    if (actionItems) {
+      return actionItems.filter(i => i.status !== 'completed').length;
+    }
+    // Legacy localStorage fallback
+    try {
+      const raw = localStorage.getItem('aligned-action-items-done');
+      const doneIds = new Set<string>(raw ? JSON.parse(raw) : []);
+      let count = 0;
+      recordings.filter(r => r.status === 'completed').forEach(rec => {
         (rec.analysis?.actionPoints ?? []).forEach((_, i) => {
           if (!doneIds.has(`${rec.id}-${i}`)) count++;
         });
       });
-    return count;
-  }, [recordings]);
+      return count;
+    } catch { return 0; }
+  }, [actionItems, recordings]);
 
   // Unified sessions list (both meeting recordings and dictations)
   const recentSessions = useMemo(() =>

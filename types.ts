@@ -69,6 +69,33 @@ export interface IssuePattern {
   context: string;
 }
 
+// ─── Action Tracker ───────────────────────────────────────────────────────────
+
+export type ActionItemStatus = 'not_started' | 'in_progress' | 'on_hold' | 'completed';
+
+export interface TrackedActionItem {
+  id: string;
+  userId: string;
+  recordingId: string | null;
+  text: string;
+  status: ActionItemStatus;
+  functionTag: string | null;
+  assignee: string | null;
+  sourceIndex: number | null;
+  createdAt: number;
+  updatedAt: number;
+  // Denormalized client-side from recordings array
+  sessionTitle?: string;
+  sessionDate?: number;
+}
+
+export interface ActionItemUpdate {
+  status?: ActionItemStatus;
+  functionTag?: string | null;
+  assignee?: string | null;
+  text?: string;
+}
+
 export interface PinnedInsight {
   id: string;
   question: string;

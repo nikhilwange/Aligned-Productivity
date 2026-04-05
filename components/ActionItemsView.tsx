@@ -1,329 +1,467 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { RecordingSession } from '../types';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { RecordingSession, TrackedActionItem, ActionItemStatus, ActionItemUpdate } from '../types';
+import { updateActionItem, deleteActionItem } from '../services/supabaseService';
 
 interface ActionItemsViewProps {
   recordings: RecordingSession[];
+  actionItems: TrackedActionItem[];
+  onActionItemsChange: React.Dispatch<React.SetStateAction<TrackedActionItem[]>>;
+  userId: string;
   onSelectSession: (id: string) => void;
 }
 
-type FilterState = 'all' | 'pending' | 'done';
+type ViewMode = 'list' | 'board';
+type FilterStatus = 'all' | ActionItemStatus;
 
-interface ActionItem {
-  id: string;           // unique: `${sessionId}-${index}`
-  text: string;
-  sessionId: string;
-  sessionTitle: string;
-  sessionDate: number;
-  done: boolean;
+const STATUS_ORDER: ActionItemStatus[] = ['not_started', 'in_progress', 'on_hold', 'completed'];
+
+const STATUS_CONFIG: Record<ActionItemStatus, {
+  label: string; bg: string; text: string; dot: string; border: string; colHeader: string;
+}> = {
+  not_started: { label: 'Not Started', bg: 'bg-white/5',       text: 'text-[var(--text-muted)]',   dot: 'bg-white/30',   border: 'border-white/10',      colHeader: 'text-[var(--text-secondary)]' },
+  in_progress: { label: 'In Progress', bg: 'bg-amber-500/10',  text: 'text-amber-300',             dot: 'bg-amber-400',  border: 'border-amber-500/20',  colHeader: 'text-amber-300' },
+  on_hold:     { label: 'On Hold',     bg: 'bg-teal-500/10',   text: 'text-teal-300',              dot: 'bg-teal-400',   border: 'border-teal-500/20',   colHeader: 'text-teal-300' },
+  completed:   { label: 'Completed',   bg: 'bg-purple-500/10', text: 'text-purple-300',            dot: 'bg-purple-400', border: 'border-purple-500/20', colHeader: 'text-purple-300' },
+};
+
+const nextStatus = (s: ActionItemStatus): ActionItemStatus =>
+  STATUS_ORDER[(STATUS_ORDER.indexOf(s) + 1) % 4];
+
+// ─── Inline Edit Form ──────────────────────────────────────────────────────────
+interface EditFormProps {
+  item: TrackedActionItem;
+  allTags: string[];
+  allAssignees: string[];
+  onSave: (updates: ActionItemUpdate) => void;
+  onCancel: () => void;
 }
 
-const STORAGE_KEY = 'aligned-action-items-done';
+const EditForm: React.FC<EditFormProps> = ({ item, allTags, allAssignees, onSave, onCancel }) => {
+  const [text, setText] = useState(item.text);
+  const [tag, setTag] = useState(item.functionTag ?? '');
+  const [assignee, setAssignee] = useState(item.assignee ?? '');
+  const textRef = useRef<HTMLTextAreaElement>(null);
 
-const loadDoneIds = (): Set<string> => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return new Set(raw ? JSON.parse(raw) : []);
-  } catch {
-    return new Set();
-  }
-};
-
-const saveDoneIds = (ids: Set<string>) => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify([...ids]));
-};
-
-const ActionItemsView: React.FC<ActionItemsViewProps> = ({ recordings, onSelectSession }) => {
-  const [filter, setFilter] = useState<FilterState>('pending');
-  const [doneIds, setDoneIds] = useState<Set<string>>(loadDoneIds);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-
-  // Persist done state whenever it changes
   useEffect(() => {
-    saveDoneIds(doneIds);
-  }, [doneIds]);
+    if (textRef.current) {
+      textRef.current.focus();
+      textRef.current.style.height = 'auto';
+      textRef.current.style.height = textRef.current.scrollHeight + 'px';
+    }
+  }, []);
 
-  // Aggregate all action items across all completed sessions
-  const allItems: ActionItem[] = useMemo(() => {
-    const items: ActionItem[] = [];
-    recordings
-      .filter(r => r.status === 'completed' && r.analysis?.actionPoints?.length)
-      .sort((a, b) => b.date - a.date)
-      .forEach(rec => {
-        rec.analysis!.actionPoints.forEach((text, i) => {
-          const id = `${rec.id}-${i}`;
-          items.push({
-            id,
-            text,
-            sessionId: rec.id,
-            sessionTitle: rec.title,
-            sessionDate: rec.date,
-            done: doneIds.has(id),
-          });
-        });
-      });
-    return items;
-  }, [recordings, doneIds]);
+  const handleSave = () => {
+    if (!text.trim()) return;
+    onSave({ text: text.trim(), functionTag: tag.trim() || null, assignee: assignee.trim() || null });
+  };
+
+  return (
+    <div className="mt-3 pt-3 border-t border-white/[0.06] flex flex-col gap-2">
+      <textarea
+        ref={textRef}
+        value={text}
+        onChange={e => { setText(e.target.value); e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; }}
+        className="glass-input rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] resize-none w-full"
+        rows={2}
+      />
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <input value={tag} onChange={e => setTag(e.target.value)} list="aligned-tags-list"
+            placeholder="Function / Dept (e.g. Engineering)"
+            className="glass-input rounded-lg px-3 py-1.5 text-xs w-full text-[var(--text-primary)]" />
+          <datalist id="aligned-tags-list">{allTags.map(t => <option key={t} value={t} />)}</datalist>
+        </div>
+        <div className="relative flex-1">
+          <input value={assignee} onChange={e => setAssignee(e.target.value)} list="aligned-assignees-list"
+            placeholder="Assignee (e.g. Me, Priya)"
+            className="glass-input rounded-lg px-3 py-1.5 text-xs w-full text-[var(--text-primary)]" />
+          <datalist id="aligned-assignees-list">{allAssignees.map(a => <option key={a} value={a} />)}</datalist>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button onClick={handleSave} className="px-4 py-1.5 rounded-lg bg-amber-500/20 text-amber-300 text-xs font-semibold hover:bg-amber-500/30 transition-colors">Save</button>
+        <button onClick={onCancel} className="px-4 py-1.5 rounded-lg glass text-[var(--text-muted)] text-xs font-semibold hover:text-[var(--text-secondary)] transition-colors">Cancel</button>
+      </div>
+    </div>
+  );
+};
+
+// ─── Action Card ───────────────────────────────────────────────────────────────
+interface ActionCardProps {
+  item: TrackedActionItem;
+  variant: 'board' | 'list';
+  allTags: string[];
+  allAssignees: string[];
+  editingId: string | null;
+  savingId: string | null;
+  onStatusCycle: (item: TrackedActionItem) => void;
+  onEdit: (id: string) => void;
+  onSaveEdit: (id: string, updates: ActionItemUpdate) => void;
+  onCancelEdit: () => void;
+  onDelete: (item: TrackedActionItem) => void;
+  onSelectSession: (id: string) => void;
+}
+
+const ActionCard: React.FC<ActionCardProps> = ({
+  item, variant, allTags, allAssignees, editingId, savingId,
+  onStatusCycle, onEdit, onSaveEdit, onCancelEdit, onDelete, onSelectSession,
+}) => {
+  const cfg = STATUS_CONFIG[item.status];
+  const isEditing = editingId === item.id;
+  const isSaving = savingId === item.id;
+  const isCompleted = item.status === 'completed';
+
+  return (
+    <div className={`glass-card rounded-xl p-4 group/card transition-all duration-200 ${variant === 'board' ? 'mb-2' : ''}`}>
+      {/* Row 1: status dot + text */}
+      <div className="flex items-start gap-3">
+        <button
+          onClick={() => onStatusCycle(item)}
+          title={`Click to set: ${STATUS_CONFIG[nextStatus(item.status)].label}`}
+          className={`mt-0.5 flex-shrink-0 w-4 h-4 rounded-full transition-all duration-200 ${isSaving ? 'opacity-50 cursor-wait' : 'cursor-pointer hover:scale-125'} ${cfg.dot}`}
+        />
+        <p
+          onClick={() => !isEditing && onEdit(item.id)}
+          className={`flex-1 text-sm leading-relaxed cursor-pointer transition-colors ${isCompleted ? 'line-through text-[var(--text-muted)]' : 'text-[var(--text-primary)] hover:text-[var(--text-secondary)]'}`}
+        >
+          {item.text}
+        </p>
+      </div>
+
+      {/* Row 2: pills + actions */}
+      <div className={`flex items-center gap-2 mt-2.5 flex-wrap transition-opacity duration-200 ${isEditing ? 'opacity-100' : 'opacity-0 group-hover/card:opacity-100'}`}>
+        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-semibold ${cfg.bg} ${cfg.text}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />{cfg.label}
+        </span>
+
+        {item.functionTag ? (
+          <button onClick={() => onEdit(item.id)} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 text-[10px] font-semibold hover:bg-amber-500/20 transition-colors">
+            {item.functionTag}
+          </button>
+        ) : (
+          <button onClick={() => onEdit(item.id)} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md glass text-[var(--text-muted)] text-[10px] font-semibold hover:text-amber-300 transition-colors">
+            + Function
+          </button>
+        )}
+
+        {item.assignee ? (
+          <button onClick={() => onEdit(item.id)} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-300 text-[10px] font-semibold hover:bg-teal-500/20 transition-colors">
+            {item.assignee}
+          </button>
+        ) : (
+          <button onClick={() => onEdit(item.id)} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md glass text-[var(--text-muted)] text-[10px] font-semibold hover:text-teal-300 transition-colors">
+            + Assignee
+          </button>
+        )}
+
+        <div className="ml-auto flex items-center gap-1">
+          {variant === 'list' && item.recordingId && (
+            <button onClick={() => onSelectSession(item.recordingId!)} title="Open session"
+              className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-white/5 transition-colors">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+            </button>
+          )}
+          <button onClick={() => onDelete(item)}
+            className="p-1 rounded-lg text-[var(--text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {isEditing && (
+        <EditForm item={item} allTags={allTags} allAssignees={allAssignees}
+          onSave={updates => onSaveEdit(item.id, updates)} onCancel={onCancelEdit} />
+      )}
+    </div>
+  );
+};
+
+// ─── Main Component ────────────────────────────────────────────────────────────
+const ActionItemsView: React.FC<ActionItemsViewProps> = ({
+  recordings, actionItems, onActionItemsChange, userId, onSelectSession,
+}) => {
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    (localStorage.getItem('aligned-action-view') as ViewMode) || 'list'
+  );
+  const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
+  const [filterTag, setFilterTag] = useState('all');
+  const [filterAssignee, setFilterAssignee] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+
+  const toggleView = (mode: ViewMode) => { setViewMode(mode); localStorage.setItem('aligned-action-view', mode); };
+
+  const allTags = useMemo(() =>
+    [...new Set(actionItems.map(i => i.functionTag).filter(Boolean) as string[])].sort(), [actionItems]);
+
+  const allAssignees = useMemo(() =>
+    [...new Set(actionItems.map(i => i.assignee).filter(Boolean) as string[])].sort(), [actionItems]);
 
   const filteredItems = useMemo(() => {
-    let items = allItems;
-
-    if (filter === 'pending') items = items.filter(i => !i.done);
-    else if (filter === 'done') items = items.filter(i => i.done);
-
+    let items = actionItems;
+    if (filterStatus !== 'all') items = items.filter(i => i.status === filterStatus);
+    if (filterTag !== 'all') items = items.filter(i => i.functionTag === filterTag);
+    if (filterAssignee !== 'all') items = items.filter(i => i.assignee === filterAssignee);
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      items = items.filter(
-        i =>
-          i.text.toLowerCase().includes(q) ||
-          i.sessionTitle.toLowerCase().includes(q)
+      items = items.filter(i =>
+        i.text.toLowerCase().includes(q) ||
+        (i.sessionTitle ?? '').toLowerCase().includes(q) ||
+        (i.functionTag ?? '').toLowerCase().includes(q) ||
+        (i.assignee ?? '').toLowerCase().includes(q)
       );
     }
-
     return items;
-  }, [allItems, filter, searchQuery]);
+  }, [actionItems, filterStatus, filterTag, filterAssignee, searchQuery]);
 
-  const pendingCount = allItems.filter(i => !i.done).length;
-  const doneCount = allItems.filter(i => i.done).length;
+  const boardColumns = useMemo(() => ({
+    not_started: filteredItems.filter(i => i.status === 'not_started'),
+    in_progress: filteredItems.filter(i => i.status === 'in_progress'),
+    on_hold:     filteredItems.filter(i => i.status === 'on_hold'),
+    completed:   filteredItems.filter(i => i.status === 'completed'),
+  }), [filteredItems]);
 
-  const toggleDone = (id: string) => {
-    setDoneIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const handleCopy = async (item: ActionItem) => {
-    await navigator.clipboard.writeText(item.text);
-    setCopiedId(item.id);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
-
-  const clearAllDone = () => {
-    setDoneIds(prev => {
-      const next = new Set(prev);
-      allItems.filter(i => i.done).forEach(i => next.delete(i.id));
-      return next;
-    });
-  };
-
-  // Group filtered items by session
   const groupedBySession = useMemo(() => {
-    const map = new Map<string, { title: string; date: number; id: string; items: ActionItem[] }>();
+    const map = new Map<string, { id: string; title: string; date: number; items: TrackedActionItem[] }>();
     filteredItems.forEach(item => {
-      if (!map.has(item.sessionId)) {
-        map.set(item.sessionId, {
-          id: item.sessionId,
-          title: item.sessionTitle,
-          date: item.sessionDate,
-          items: [],
-        });
+      const key = item.recordingId ?? 'standalone';
+      if (!map.has(key)) {
+        map.set(key, { id: item.recordingId ?? 'standalone', title: item.sessionTitle ?? 'Standalone Items', date: item.sessionDate ?? item.createdAt, items: [] });
       }
-      map.get(item.sessionId)!.items.push(item);
+      map.get(key)!.items.push(item);
     });
     return [...map.values()].sort((a, b) => b.date - a.date);
   }, [filteredItems]);
 
-  return (
-    <div className="flex flex-col h-full bg-[var(--surface-950)] overflow-hidden text-[var(--text-primary)]">
+  const statusCounts = useMemo(() => ({
+    not_started: actionItems.filter(i => i.status === 'not_started').length,
+    in_progress: actionItems.filter(i => i.status === 'in_progress').length,
+    on_hold:     actionItems.filter(i => i.status === 'on_hold').length,
+    completed:   actionItems.filter(i => i.status === 'completed').length,
+  }), [actionItems]);
 
-      {/* Header */}
-      <header className="shrink-0 bg-[var(--surface-900)]/80 backdrop-blur-xl border-b border-white/[0.06] sticky top-0 z-40">
-        <div className="h-16 flex items-center px-4 md:px-8 gap-4">
-          <div className="flex items-center gap-3 flex-1">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-white shrink-0">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+  const handleStatusCycle = async (item: TrackedActionItem) => {
+    const newStatus = nextStatus(item.status);
+    onActionItemsChange(prev => prev.map(i => i.id === item.id ? { ...i, status: newStatus } : i));
+    setSavingId(item.id);
+    try {
+      await updateActionItem(item.id, { status: newStatus });
+    } catch {
+      onActionItemsChange(prev => prev.map(i => i.id === item.id ? { ...i, status: item.status } : i));
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const handleSaveEdit = async (id: string, updates: ActionItemUpdate) => {
+    onActionItemsChange(prev => prev.map(i => i.id === id ? { ...i, ...updates } : i));
+    setEditingId(null);
+    await updateActionItem(id, updates);
+  };
+
+  const handleDelete = async (item: TrackedActionItem) => {
+    onActionItemsChange(prev => prev.filter(i => i.id !== item.id));
+    await deleteActionItem(item.id);
+  };
+
+  const cardProps = {
+    allTags, allAssignees, editingId, savingId,
+    onStatusCycle: handleStatusCycle,
+    onEdit: (id: string) => setEditingId(prev => prev === id ? null : id),
+    onSaveEdit: handleSaveEdit,
+    onCancelEdit: () => setEditingId(null),
+    onDelete: handleDelete,
+    onSelectSession,
+  };
+
+  if (actionItems.length === 0) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center p-8 text-center">
+        <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-5">
+          <svg className="w-8 h-8 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+          </svg>
+        </div>
+        <h3 className="text-lg font-bold text-[var(--text-primary)] mb-2">No action items yet</h3>
+        <p className="text-sm text-[var(--text-muted)] max-w-xs">Action items from your recorded sessions will appear here automatically once processing is complete.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col overflow-hidden">
+
+      {/* ── Header ─────────────────────────────────────────────────────── */}
+      <div className="px-6 md:px-8 pt-6 pb-4 border-b border-white/[0.06] shrink-0">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500/20 to-orange-500/20 flex items-center justify-center border border-white/[0.08]">
+              <svg className="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
               </svg>
             </div>
-            <h1 className="text-xl font-bold tracking-tight">Action Items</h1>
+            <div>
+              <h1 className="text-lg font-bold text-[var(--text-primary)] tracking-tight">Action Tracker</h1>
+              <p className="text-xs text-[var(--text-muted)]">{actionItems.length} items total</p>
+            </div>
           </div>
 
-          {/* Stats */}
-          <div className="flex items-center gap-3 text-xs font-semibold">
-            <span className="px-2.5 py-1 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/20">
-              {pendingCount} pending
-            </span>
-            <span className="px-2.5 py-1 rounded-lg bg-white/5 text-[var(--text-muted)] border border-white/10">
-              {doneCount} done
-            </span>
+          <div className="flex items-center gap-3">
+            {/* Status counts */}
+            <div className="hidden sm:flex items-center gap-2">
+              {STATUS_ORDER.map(s => (
+                <div key={s} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold ${STATUS_CONFIG[s].bg} ${STATUS_CONFIG[s].text}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${STATUS_CONFIG[s].dot}`} />
+                  {statusCounts[s]}
+                </div>
+              ))}
+            </div>
+            {/* View toggle */}
+            <div className="flex glass-card p-1 rounded-xl gap-1">
+              <button onClick={() => toggleView('list')} title="List view"
+                className={`p-1.5 rounded-lg transition-all ${viewMode === 'list' ? 'bg-white/10 text-[var(--text-primary)]' : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`}>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                </svg>
+              </button>
+              <button onClick={() => toggleView('board')} title="Board view"
+                className={`p-1.5 rounded-lg transition-all ${viewMode === 'board' ? 'bg-white/10 text-[var(--text-primary)]' : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`}>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Filter + Search row */}
-        <div className="px-4 md:px-8 pb-4 flex flex-col sm:flex-row gap-3">
-          {/* Filter tabs */}
-          <div className="flex gap-1 p-1 bg-white/[0.04] rounded-xl shrink-0">
-            {(['pending', 'all', 'done'] as FilterState[]).map(f => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`px-4 py-1.5 rounded-lg text-xs font-semibold capitalize transition-all ${
-                  filter === f
-                    ? 'bg-amber-500 text-white shadow-md shadow-amber-500/25'
-                    : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-                }`}
-              >
-                {f}
+        {/* Filter bar */}
+        <div className="flex flex-wrap gap-2">
+          <div className="flex glass-card p-1 rounded-xl gap-1">
+            <button onClick={() => setFilterStatus('all')}
+              className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${filterStatus === 'all' ? 'bg-white/10 text-[var(--text-primary)]' : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`}>
+              All
+            </button>
+            {STATUS_ORDER.map(s => (
+              <button key={s} onClick={() => setFilterStatus(s)}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${filterStatus === s ? `${STATUS_CONFIG[s].bg} ${STATUS_CONFIG[s].text}` : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`}>
+                {STATUS_CONFIG[s].label}
               </button>
             ))}
           </div>
 
-          {/* Search */}
-          <div className="relative flex-1">
-            <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          {allTags.length > 0 && (
+            <select value={filterTag} onChange={e => setFilterTag(e.target.value)}
+              className="glass-input rounded-xl px-3 py-1.5 text-xs text-[var(--text-secondary)] cursor-pointer">
+              <option value="all">All Functions</option>
+              {allTags.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          )}
+
+          {allAssignees.length > 0 && (
+            <select value={filterAssignee} onChange={e => setFilterAssignee(e.target.value)}
+              className="glass-input rounded-xl px-3 py-1.5 text-xs text-[var(--text-secondary)] cursor-pointer">
+              <option value="all">All Assignees</option>
+              {allAssignees.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          )}
+
+          <div className="relative flex-1 min-w-[160px]">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              placeholder="Search action items..."
-              className="w-full glass-input rounded-xl pl-10 pr-10 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
-            />
+            <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Search actions..."
+              className="glass-input rounded-xl pl-8 pr-3 py-1.5 text-xs w-full text-[var(--text-primary)]" />
             {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <button onClick={() => setSearchQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             )}
           </div>
         </div>
-      </header>
+      </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto pt-6 pb-32 px-4 md:px-8 scrollbar-hide">
-        <div className="max-w-3xl mx-auto space-y-8">
+      {/* ── Content ─────────────────────────────────────────────────────── */}
+      <div className="flex-1 overflow-hidden">
+        {filteredItems.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center p-8">
+            <svg className="w-10 h-10 text-[var(--text-muted)] mb-4 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <p className="text-sm font-semibold text-[var(--text-secondary)]">No items match your filters</p>
+            <button onClick={() => { setFilterStatus('all'); setFilterTag('all'); setFilterAssignee('all'); setSearchQuery(''); }}
+              className="mt-3 text-xs text-amber-400 hover:text-amber-300 font-semibold transition-colors">
+              Clear all filters
+            </button>
+          </div>
 
-          {/* Empty state */}
-          {allItems.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-24 text-center">
-              <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
-                <svg className="w-8 h-8 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-                </svg>
-              </div>
-              <h3 className="opacity-60 font-semibold">No action items yet</h3>
-              <p className="opacity-30 text-sm mt-1">Action items from your recorded sessions will appear here.</p>
-            </div>
-          ) : filteredItems.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-24 text-center">
-              <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
-                <svg className="w-8 h-8 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
-              </div>
-              <h3 className="opacity-60 font-semibold">
-                {filter === 'done' ? 'Nothing marked done yet' : 'All caught up!'}
-              </h3>
-              <p className="opacity-30 text-sm mt-1">
-                {filter === 'pending' ? 'All action items have been completed.' : searchQuery ? `No results for "${searchQuery}"` : ''}
-              </p>
-              {filter === 'pending' && doneCount > 0 && (
-                <button
-                  onClick={() => setFilter('done')}
-                  className="mt-4 px-4 py-2 text-sm font-semibold text-amber-300 bg-amber-500/10 rounded-xl border border-amber-500/20 hover:bg-amber-500/20 transition-all"
-                >
-                  View {doneCount} completed items
-                </button>
-              )}
-            </div>
-          ) : (
-            <>
-              {/* Clear done button */}
-              {filter === 'done' && doneCount > 0 && (
-                <div className="flex justify-end">
-                  <button
-                    onClick={clearAllDone}
-                    className="text-xs text-[var(--text-muted)] hover:text-red-400 transition-colors px-3 py-1.5 rounded-lg hover:bg-red-500/10"
-                  >
-                    Clear all completed
-                  </button>
-                </div>
-              )}
-
-              {/* Grouped by session */}
-              {groupedBySession.map(group => (
-                <div key={group.id} className="space-y-2">
-                  {/* Session header */}
-                  <button
-                    onClick={() => onSelectSession(group.id)}
-                    className="flex items-center gap-2 group/session w-full text-left mb-3"
-                  >
-                    <span className="text-[11px] font-bold opacity-30 uppercase tracking-[0.2em] text-[var(--text-primary)]">
-                      {group.title}
-                    </span>
-                    <span className="text-[10px] opacity-20 text-[var(--text-primary)]">
-                      · {new Date(group.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                    </span>
-                    <svg className="w-3 h-3 opacity-0 group-hover/session:opacity-40 transition-opacity ml-1 text-[var(--text-primary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                    </svg>
-                  </button>
-
-                  {/* Items */}
-                  <div className="bg-white/[0.03] border border-white/[0.06] rounded-2xl overflow-hidden divide-y divide-white/[0.04]">
-                    {group.items.map(item => (
-                      <div
-                        key={item.id}
-                        className={`group/item flex items-start gap-4 px-5 py-4 transition-colors ${
-                          item.done ? 'opacity-50' : 'hover:bg-white/[0.02]'
-                        }`}
-                      >
-                        {/* Checkbox */}
-                        <button
-                          onClick={() => toggleDone(item.id)}
-                          className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-all ${
-                            item.done
-                              ? 'bg-amber-500 border-amber-500 text-white'
-                              : 'border-white/20 hover:border-amber-500/60'
-                          }`}
-                          title={item.done ? 'Mark as pending' : 'Mark as done'}
-                        >
-                          {item.done && (
-                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                            </svg>
-                          )}
-                        </button>
-
-                        {/* Text */}
-                        <span className={`flex-1 text-sm leading-relaxed pt-0.5 ${
-                          item.done ? 'line-through text-[var(--text-muted)]' : 'text-[var(--text-primary)]'
-                        }`}>
-                          {item.text}
-                        </span>
-
-                        {/* Copy button */}
-                        <button
-                          onClick={() => handleCopy(item)}
-                          className="opacity-0 group-hover/item:opacity-100 p-1.5 rounded-lg hover:bg-white/10 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-all shrink-0"
-                          title="Copy"
-                        >
-                          {copiedId === item.id ? (
-                            <svg className="w-4 h-4 text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-                            </svg>
-                          ) : (
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                            </svg>
-                          )}
-                        </button>
+        ) : viewMode === 'board' ? (
+          // ── Board View ────────────────────────────────────────────────
+          <div className="h-full overflow-x-auto">
+            <div className="grid grid-cols-4 gap-4 min-w-[860px] h-full p-6">
+              {STATUS_ORDER.map(status => {
+                const cfg = STATUS_CONFIG[status];
+                const col = boardColumns[status];
+                return (
+                  <div key={status} className="flex flex-col h-full min-h-0">
+                    <div className="flex items-center justify-between mb-3 px-1">
+                      <div className="flex items-center gap-2">
+                        <span className={`w-2 h-2 rounded-full ${cfg.dot}`} />
+                        <span className={`text-xs font-bold uppercase tracking-wider ${cfg.colHeader}`}>{cfg.label}</span>
                       </div>
-                    ))}
+                      <span className={`text-xs font-bold px-2 py-0.5 rounded-lg ${cfg.bg} ${cfg.text}`}>{col.length}</span>
+                    </div>
+                    <div className={`flex-1 overflow-y-auto rounded-xl border ${cfg.border} p-2 bg-white/[0.015]`}>
+                      {col.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-32 text-center opacity-30">
+                          <span className={`w-6 h-6 rounded-full border-2 ${cfg.border} mb-2`} />
+                          <p className="text-xs text-[var(--text-muted)]">No items</p>
+                        </div>
+                      ) : (
+                        col.map(item => <ActionCard key={item.id} item={item} variant="board" {...cardProps} />)
+                      )}
+                    </div>
                   </div>
+                );
+              })}
+            </div>
+          </div>
+
+        ) : (
+          // ── List View ─────────────────────────────────────────────────
+          <div className="h-full overflow-y-auto px-6 md:px-8 py-6">
+            <p className="text-xs text-[var(--text-muted)] mb-6">
+              {filteredItems.length} item{filteredItems.length !== 1 ? 's' : ''}
+              {statusCounts.in_progress > 0 && ` · ${statusCounts.in_progress} in progress`}
+              {statusCounts.completed > 0 && ` · ${statusCounts.completed} completed`}
+            </p>
+
+            {groupedBySession.map(group => (
+              <div key={group.id} className="mb-8">
+                <div className="flex items-center gap-3 mb-3">
+                  <button
+                    onClick={() => group.id !== 'standalone' && onSelectSession(group.id)}
+                    className={`text-sm font-bold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors truncate max-w-xs ${group.id === 'standalone' ? 'cursor-default' : 'cursor-pointer'}`}
+                  >
+                    {group.title}
+                  </button>
+                  <span className="text-xs text-[var(--text-muted)] shrink-0">{new Date(group.date).toLocaleDateString()}</span>
+                  <span className="text-xs text-[var(--text-muted)] ml-auto shrink-0">{group.items.length} item{group.items.length !== 1 ? 's' : ''}</span>
                 </div>
-              ))}
-            </>
-          )}
-        </div>
+                <div className="flex flex-col gap-2">
+                  {group.items.map(item => <ActionCard key={item.id} item={item} variant="list" {...cardProps} />)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

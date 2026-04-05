@@ -1,15 +1,16 @@
 import React, { useMemo } from 'react';
-import { RecordingSession } from '../types';
+import { RecordingSession, TrackedActionItem } from '../types';
 
 interface HomeViewProps {
   user: { name: string; email: string };
   recordings: RecordingSession[];
+  actionItems?: TrackedActionItem[];
   onSelectSession: (id: string) => void;
   onStartNew: () => void;
   onStartLive: () => void;
 }
 
-// Reuse the done-ids logic from ActionItemsView
+// Legacy localStorage fallback
 const STORAGE_KEY = 'aligned-action-items-done';
 const loadDoneIds = (): Set<string> => {
   try {
@@ -47,7 +48,7 @@ const getSourceColor = (source: string) => {
 };
 
 const HomeView: React.FC<HomeViewProps> = ({
-  user, recordings, onSelectSession, onStartNew, onStartLive
+  user, recordings, actionItems, onSelectSession, onStartNew, onStartLive
 }) => {
   const doneIds = useMemo(() => loadDoneIds(), []);
 
@@ -57,23 +58,34 @@ const HomeView: React.FC<HomeViewProps> = ({
     [recordings]
   );
 
-  const allActionItems = useMemo(() => {
-    const items: { id: string; text: string; sessionId: string; sessionTitle: string; sessionDate: number }[] = [];
-    completedRecordings
-      .sort((a, b) => b.date - a.date)
-      .forEach(rec => {
-        (rec.analysis?.actionPoints ?? []).forEach((text, i) => {
-          const id = `${rec.id}-${i}`;
-          if (!doneIds.has(id)) {
-            items.push({ id, text, sessionId: rec.id, sessionTitle: rec.title, sessionDate: rec.date });
-          }
-        });
+  // Use tracked action items if available, else fall back to localStorage
+  const pendingCount = useMemo(() => {
+    if (actionItems) return actionItems.filter(i => i.status !== 'completed').length;
+    const items: unknown[] = [];
+    completedRecordings.sort((a, b) => b.date - a.date).forEach(rec => {
+      (rec.analysis?.actionPoints ?? []).forEach((_, i) => {
+        if (!doneIds.has(`${rec.id}-${i}`)) items.push(null);
       });
-    return items;
-  }, [completedRecordings, doneIds]);
+    });
+    return items.length;
+  }, [actionItems, completedRecordings, doneIds]);
 
-  const pendingCount = allActionItems.length;
-  const top3Actions = allActionItems.slice(0, 3);
+  const top3Actions = useMemo(() => {
+    if (actionItems) {
+      return actionItems
+        .filter(i => i.status !== 'completed')
+        .slice(0, 3)
+        .map(i => ({ id: i.id, text: i.text, sessionId: i.recordingId ?? '', sessionTitle: i.sessionTitle ?? '', sessionDate: i.sessionDate ?? i.createdAt }));
+    }
+    const items: { id: string; text: string; sessionId: string; sessionTitle: string; sessionDate: number }[] = [];
+    completedRecordings.sort((a, b) => b.date - a.date).forEach(rec => {
+      (rec.analysis?.actionPoints ?? []).forEach((text, i) => {
+        const id = `${rec.id}-${i}`;
+        if (!doneIds.has(id)) items.push({ id, text, sessionId: rec.id, sessionTitle: rec.title, sessionDate: rec.date });
+      });
+    });
+    return items.slice(0, 3);
+  }, [actionItems, completedRecordings, doneIds]);
 
   const thisMonthSessions = useMemo(() => {
     const now = new Date();
