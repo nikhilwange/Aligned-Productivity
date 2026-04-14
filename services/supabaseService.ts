@@ -139,7 +139,11 @@ export const syncActionItemsFromRecording = async (
     .eq('user_id', userId)
     .eq('recording_id', recording.id);
 
-  const existingIndices = new Set((existing ?? []).map((r: any) => r.source_index as number));
+  const existingIndices = new Set(
+    (existing ?? [])
+      .map((r: any) => r.source_index)
+      .filter((v): v is number => typeof v === 'number')
+  );
 
   const toInsert = points
     .map((text, i) => ({ index: i, text }))

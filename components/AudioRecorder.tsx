@@ -22,7 +22,7 @@ type InputMode = 'mic' | 'meeting' | 'call';
 const MAX_RECORDING_SECONDS = 7200; // 2 Hours limit for API stability
 const SILENCE_THRESHOLD = 0.01; // RMS below this = silence
 const SILENCE_AUTO_STOP_SECONDS = 300; // 5 minutes of continuous silence → auto-stop
-const CHECKPOINT_INTERVAL_CHUNKS = 30; // checkpoint to IndexedDB every ~30s (since timeslice=1000ms)
+const CHECKPOINT_INTERVAL_CHUNKS = 10; // checkpoint to IndexedDB every ~10s (since timeslice=1000ms)
 
 const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, onRecordingComplete, transcriptionEngine, onEngineChange, hasSarvamKey }) => {
   const [timer, setTimer] = useState(0);
@@ -56,6 +56,11 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (appState === AppState.RECORDING || appState === AppState.PAUSED) {
+        // Best-effort flush of any uncheckpointed chunks before the tab closes
+        if (recoveryIdRef.current && uncheckpointedRef.current.length > 0) {
+          checkpointChunks(recoveryIdRef.current, uncheckpointedRef.current);
+          uncheckpointedRef.current = [];
+        }
         e.preventDefault();
         e.returnValue = 'Recording is in progress. Are you sure you want to leave?';
       }

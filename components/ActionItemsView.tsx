@@ -18,10 +18,10 @@ const STATUS_ORDER: ActionItemStatus[] = ['not_started', 'in_progress', 'on_hold
 const STATUS_CONFIG: Record<ActionItemStatus, {
   label: string; bg: string; text: string; dot: string; border: string; colHeader: string;
 }> = {
-  not_started: { label: 'Not Started', bg: 'bg-white/5',       text: 'text-[var(--text-muted)]',   dot: 'bg-white/30',   border: 'border-white/10',      colHeader: 'text-[var(--text-secondary)]' },
-  in_progress: { label: 'In Progress', bg: 'bg-amber-500/10',  text: 'text-amber-300',             dot: 'bg-amber-400',  border: 'border-amber-500/20',  colHeader: 'text-amber-300' },
-  on_hold:     { label: 'On Hold',     bg: 'bg-teal-500/10',   text: 'text-teal-300',              dot: 'bg-teal-400',   border: 'border-teal-500/20',   colHeader: 'text-teal-300' },
-  completed:   { label: 'Completed',   bg: 'bg-purple-500/10', text: 'text-purple-300',            dot: 'bg-purple-400', border: 'border-purple-500/20', colHeader: 'text-purple-300' },
+  not_started: { label: 'Not Started', bg: 'bg-[var(--glass-bg)]',   text: 'text-[var(--text-muted)]',   dot: 'bg-[var(--text-muted)]', border: 'border-[var(--glass-border)]', colHeader: 'text-[var(--text-secondary)]' },
+  in_progress: { label: 'In Progress', bg: 'bg-amber-500/10',        text: 'text-amber-400',             dot: 'bg-amber-400',           border: 'border-amber-500/20',          colHeader: 'text-amber-400' },
+  on_hold:     { label: 'On Hold',     bg: 'bg-teal-500/10',         text: 'text-teal-400',              dot: 'bg-teal-400',            border: 'border-teal-500/20',           colHeader: 'text-teal-400' },
+  completed:   { label: 'Completed',   bg: 'bg-purple-500/10',       text: 'text-purple-400',            dot: 'bg-purple-400',          border: 'border-purple-500/20',         colHeader: 'text-purple-400' },
 };
 
 const nextStatus = (s: ActionItemStatus): ActionItemStatus =>
@@ -56,7 +56,7 @@ const EditForm: React.FC<EditFormProps> = ({ item, allTags, allAssignees, onSave
   };
 
   return (
-    <div className="mt-3 pt-3 border-t border-white/[0.06] flex flex-col gap-2">
+    <div className="mt-3 pt-3 border-t border-[var(--glass-border)] flex flex-col gap-2">
       <textarea
         ref={textRef}
         value={text}
@@ -113,13 +113,16 @@ const ActionCard: React.FC<ActionCardProps> = ({
 
   return (
     <div className={`glass-card rounded-xl p-4 group/card transition-all duration-200 ${variant === 'board' ? 'mb-2' : ''}`}>
-      {/* Row 1: status dot + text */}
-      <div className="flex items-start gap-3">
+      {/* Row 1: status badge + text */}
+      <div className="flex items-start gap-2.5">
         <button
           onClick={() => onStatusCycle(item)}
           title={`Click to set: ${STATUS_CONFIG[nextStatus(item.status)].label}`}
-          className={`mt-0.5 flex-shrink-0 w-4 h-4 rounded-full transition-all duration-200 ${isSaving ? 'opacity-50 cursor-wait' : 'cursor-pointer hover:scale-125'} ${cfg.dot}`}
-        />
+          className={`mt-0.5 flex-shrink-0 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-bold transition-all duration-200 ${isSaving ? 'opacity-50 cursor-wait' : 'cursor-pointer hover:opacity-75'} ${cfg.bg} ${cfg.text}`}
+        >
+          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${cfg.dot}`} />
+          {cfg.label}
+        </button>
         <p
           onClick={() => !isEditing && onEdit(item.id)}
           className={`flex-1 text-sm leading-relaxed cursor-pointer transition-colors ${isCompleted ? 'line-through text-[var(--text-muted)]' : 'text-[var(--text-primary)] hover:text-[var(--text-secondary)]'}`}
@@ -128,12 +131,8 @@ const ActionCard: React.FC<ActionCardProps> = ({
         </p>
       </div>
 
-      {/* Row 2: pills + actions */}
-      <div className={`flex items-center gap-2 mt-2.5 flex-wrap transition-opacity duration-200 ${isEditing ? 'opacity-100' : 'opacity-0 group-hover/card:opacity-100'}`}>
-        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-semibold ${cfg.bg} ${cfg.text}`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />{cfg.label}
-        </span>
-
+      {/* Row 2: pills + actions — always visible */}
+      <div className="flex items-center gap-2 mt-2.5 flex-wrap">
         {item.functionTag ? (
           <button onClick={() => onEdit(item.id)} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 text-[10px] font-semibold hover:bg-amber-500/20 transition-colors">
             {item.functionTag}
@@ -297,7 +296,7 @@ const ActionItemsView: React.FC<ActionItemsViewProps> = ({
     <div className="h-full flex flex-col overflow-hidden">
 
       {/* ── Header ─────────────────────────────────────────────────────── */}
-      <div className="px-6 md:px-8 pt-6 pb-4 border-b border-white/[0.06] shrink-0">
+      <div className="px-6 md:px-8 pt-6 pb-4 border-b border-[var(--glass-border)] shrink-0">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500/20 to-orange-500/20 flex items-center justify-center border border-white/[0.08]">
@@ -418,7 +417,7 @@ const ActionItemsView: React.FC<ActionItemsViewProps> = ({
                       </div>
                       <span className={`text-xs font-bold px-2 py-0.5 rounded-lg ${cfg.bg} ${cfg.text}`}>{col.length}</span>
                     </div>
-                    <div className={`flex-1 overflow-y-auto rounded-xl border ${cfg.border} p-2 bg-white/[0.015]`}>
+                    <div className={`flex-1 overflow-y-auto rounded-xl border ${cfg.border} p-2 bg-[var(--glass-bg)]`}>
                       {col.length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-32 text-center opacity-30">
                           <span className={`w-6 h-6 rounded-full border-2 ${cfg.border} mb-2`} />

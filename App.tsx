@@ -224,7 +224,7 @@ const App: React.FC = () => {
 
     try {
       await saveRecording(newSession, user.id);
-      const analysisResult = await analyzeTranscript(data.transcript);
+      const analysisResult = await analyzeTranscript(data.transcript, data.date);
       const fullAnalysis = { ...analysisResult, transcript: data.transcript };
       const completedSession: RecordingSession = {
         ...newSession,
@@ -387,7 +387,7 @@ const App: React.FC = () => {
       await saveRecording(transcribedSession, user.id);
 
       // Phase 2: Analysis
-      const analysisResult = await analyzeTranscript(transcript);
+      const analysisResult = await analyzeTranscript(transcript, newSession.date);
       const fullAnalysis = { ...analysisResult, transcript };
 
       const completedSession: RecordingSession = {

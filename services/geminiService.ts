@@ -277,11 +277,15 @@ Output ONLY the transcript.`;
 };
 
 // ─── Pass 2: Analyze transcript — structured JSON response ────────────────────
-export const analyzeTranscript = async (transcript: string): Promise<Omit<MeetingAnalysis, 'transcript'>> => {
+export const analyzeTranscript = async (transcript: string, recordingDate?: number): Promise<Omit<MeetingAnalysis, 'transcript'>> => {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   if (!apiKey) throw new Error("API Key is missing.");
 
   const ai = new GoogleGenAI({ apiKey });
+
+  const dateStr = new Date(recordingDate ?? Date.now()).toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+  });
 
   const analysisPrompt = `You are an expert meeting assistant. Analyze the transcript below and respond with a single valid JSON object — no markdown fences, no extra text outside the JSON.
 
@@ -302,7 +306,7 @@ RULES FOR notes (the full markdown document to show users):
 Write a comprehensive meeting notes document in this exact format. The notes value must be a valid JSON string (escape newlines as \\n, quotes as \\"):
 
 📋 Meeting Overview
-**Date:** [Extract or use today's date]
+**Date:** ${dateStr}
 **Duration:** [Estimate from transcript]
 **Attendees:** [All speakers]
 **Meeting Type:** [Same as meetingType field above]
