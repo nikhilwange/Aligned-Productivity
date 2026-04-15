@@ -203,14 +203,18 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
       };
 
       mediaRecorder.onstop = () => {
+        // Flush any uncheckpointed chunks so IndexedDB has the complete audio before handoff
+        if (uncheckpointedRef.current.length > 0 && recoveryIdRef.current) {
+          checkpointChunks(recoveryIdRef.current, uncheckpointedRef.current);
+          uncheckpointedRef.current = [];
+        }
+
         const blob = new Blob(chunksRef.current, { type: mediaRecorder.mimeType || 'audio/webm' });
         cleanupStreams();
 
-        // Clear recovery data — recording completed normally
-        clearRecoverySession(recoveryId);
-
         if (blob.size === 0 || chunksRef.current.length === 0) {
           console.error('[AudioRecorder] Recording produced empty audio blob');
+          clearRecoverySession(recoveryId);
           setAppState(AppState.IDLE);
           alert('Recording captured no audio. Please check your microphone permissions and try again.');
           return;
@@ -218,7 +222,10 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
 
         const url = URL.createObjectURL(blob);
         const source = inputMode === 'meeting' ? 'virtual-meeting' : inputMode === 'call' ? 'phone-call' : 'in-person';
-        onRecordingComplete({ blob, url, duration: durationRef.current, source });
+        // NOTE: recoveryId is passed up so App.tsx can clear IndexedDB only after processing
+        // fully succeeds. This way any processing failure (timeout, tab close, Gemini error)
+        // leaves the audio recoverable for retry.
+        onRecordingComplete({ blob, url, duration: durationRef.current, source, recoveryId });
       };
 
       mediaRecorder.onerror = (e: any) => {
@@ -293,6 +300,8 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
 
   // Show silence warning when silence exceeds 60s
   const showSilenceWarning = isRecording && silenceSeconds >= 60;
+  // Show long-recording heads-up after 90 minutes
+  const showLongRecordingWarning = isRecording && timer >= 5400;
 
   return (
     <div className="flex flex-col items-center justify-center w-full max-w-xl mx-auto p-4 animate-fade-in-up h-full md:h-auto">
@@ -306,6 +315,20 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
             </div>
             <span className="text-xs font-semibold text-[var(--text-secondary)] tracking-wide">
               High-precision active session
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Long recording heads-up */}
+      {showLongRecordingWarning && (
+        <div className="mb-4 animate-fade-in-down">
+          <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-purple-500/10 border border-purple-500/20">
+            <svg className="w-4 h-4 text-purple-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M12 18a6 6 0 100-12 6 6 0 000 12z" />
+            </svg>
+            <span className="text-xs font-medium text-purple-300">
+              Long recording — processing may take several minutes after you stop.
             </span>
           </div>
         </div>

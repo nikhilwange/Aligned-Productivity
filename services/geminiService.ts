@@ -1,5 +1,13 @@
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, GenerateContentResponse, createPartFromUri } from "@google/genai";
 import { MeetingAnalysis } from "../types";
+
+// ─── Large-audio threshold (Files API vs inline) ──────────────────────────────
+// 15 MB ≈ 15 min at 128 kbps. Safely under Gemini's ~20 MB inline-data limit.
+// Anything larger is uploaded via the Files API so it actually makes it through.
+const LARGE_AUDIO_THRESHOLD_BYTES = 15 * 1024 * 1024;
+const LARGE_AUDIO_TIMEOUT_MS = 10 * 60_000;  // 10 min for Gemini to transcribe long audio
+const SMALL_AUDIO_TIMEOUT_MS = 2 * 60_000;   // existing 2 min for inline path
+const FILES_API_READY_TIMEOUT_MS = 5 * 60_000; // max wait for file.state === ACTIVE
 
 // ─── Blob helper ──────────────────────────────────────────────────────────────
 const blobToBase64 = (blob: Blob): Promise<string> => {
@@ -168,10 +176,11 @@ export async function retryOperation<T>(
   operation: () => Promise<T>,
   retries = 3,
   delay = 1000,
-  operationName = 'API call'
+  operationName = 'API call',
+  timeoutMs = 120_000,
 ): Promise<T> {
   try {
-    return await withTimeout(operation(), 120_000, operationName);
+    return await withTimeout(operation(), timeoutMs, operationName);
   } catch (error: any) {
     const isRetryable =
       error.status === 500 ||
@@ -185,13 +194,51 @@ export async function retryOperation<T>(
     if (retries > 0 && isRetryable) {
       console.warn(`[Retry] ${operationName} failed, retrying in ${delay}ms... (${retries} attempts left)`);
       await new Promise(resolve => setTimeout(resolve, delay));
-      return retryOperation(operation, retries - 1, delay * 2, operationName);
+      return retryOperation(operation, retries - 1, delay * 2, operationName, timeoutMs);
     }
     throw error;
   }
 }
 
-// ─── Pass 1: Extract verbatim transcript (unchanged — plain text is reliable) ──
+// ─── Gemini Files API helper (used for audio > 15 MB) ─────────────────────────
+// The inline-data path caps around ~20 MB per request. Long recordings (2h at
+// 128 kbps = ~115 MB) cannot be sent inline and must be uploaded via the Files
+// API first. We then reference the uploaded file by URI in the generate call.
+async function uploadAudioViaFilesAPI(
+  ai: GoogleGenAI,
+  blob: Blob,
+  mimeType: string,
+): Promise<{ uri: string; mimeType: string; name: string }> {
+  console.log(`[Gemini Files API] Uploading ${(blob.size / 1024 / 1024).toFixed(1)} MB audio...`);
+  const uploaded = await ai.files.upload({
+    file: blob,
+    config: { mimeType, displayName: `aligned-recording-${Date.now()}` },
+  });
+
+  if (!uploaded.name) throw new Error('Gemini Files API: upload returned no file name.');
+
+  // Poll until the file is ACTIVE (Gemini pre-processes audio asynchronously)
+  const start = Date.now();
+  let file = uploaded;
+  while (file.state !== 'ACTIVE') {
+    if (file.state === 'FAILED') {
+      throw new Error('Gemini Files API rejected the audio file.');
+    }
+    if (Date.now() - start > FILES_API_READY_TIMEOUT_MS) {
+      throw new Error('Gemini file upload timed out during preprocessing (waited 5 min).');
+    }
+    await new Promise(r => setTimeout(r, 2000));
+    file = await ai.files.get({ name: uploaded.name });
+  }
+
+  if (!file.uri) throw new Error('Gemini Files API: uploaded file has no URI.');
+  console.log(`[Gemini Files API] ✅ File ACTIVE: ${file.name}`);
+  return { uri: file.uri, mimeType: file.mimeType || mimeType, name: uploaded.name };
+}
+
+// ─── Pass 1: Extract verbatim transcript ──────────────────────────────────────
+// Small audio (< 15 MB): uses inline data (fast, one request).
+// Large audio (≥ 15 MB): uploads via Files API (required for 2h+ recordings).
 export const extractTranscript = async (audioBlob: Blob): Promise<string> => {
   if (!audioBlob || audioBlob.size === 0) {
     throw new Error("No audio was captured. Please check your microphone and try again.");
@@ -204,9 +251,10 @@ export const extractTranscript = async (audioBlob: Blob): Promise<string> => {
   if (!apiKey) throw new Error("API Key is missing.");
 
   const ai = new GoogleGenAI({ apiKey });
-  const base64Audio = await blobToBase64(audioBlob);
-  // Strip codec parameters — Gemini inline data requires clean MIME types (e.g. "audio/webm" not "audio/webm;codecs=opus")
+  // Strip codec parameters — Gemini requires clean MIME types (e.g. "audio/webm" not "audio/webm;codecs=opus")
   const mimeType = (audioBlob.type || 'audio/webm').split(';')[0];
+
+  const useFilesApi = audioBlob.size > LARGE_AUDIO_THRESHOLD_BYTES;
 
   const transcriptPrompt = `You are a professional transcription service.
 
@@ -224,17 +272,24 @@ REQUIREMENTS:
 
 Output ONLY the transcript.`;
 
+  let fileName: string | null = null;
+
   try {
+    let parts: any[];
+    if (useFilesApi) {
+      const file = await uploadAudioViaFilesAPI(ai, audioBlob, mimeType);
+      fileName = file.name;
+      parts = [createPartFromUri(file.uri, file.mimeType), { text: transcriptPrompt }];
+    } else {
+      const base64Audio = await blobToBase64(audioBlob);
+      parts = [{ inlineData: { mimeType, data: base64Audio } }, { text: transcriptPrompt }];
+    }
+
     const response = await retryOperation(
       () =>
         ai.models.generateContent({
           model: 'gemini-2.5-flash',
-          contents: {
-            parts: [
-              { inlineData: { mimeType, data: base64Audio } },
-              { text: transcriptPrompt },
-            ],
-          },
+          contents: { parts },
           config: {
             maxOutputTokens: 65536,
             temperature: 0.1,
@@ -242,7 +297,8 @@ Output ONLY the transcript.`;
         }),
       3,
       1000,
-      'Pass 1: Transcript extraction'
+      'Pass 1: Transcript extraction',
+      useFilesApi ? LARGE_AUDIO_TIMEOUT_MS : SMALL_AUDIO_TIMEOUT_MS,
     );
 
     const transcriptText = response.text;
@@ -273,6 +329,10 @@ Output ONLY the transcript.`;
   } catch (error) {
     console.error("Transcript extraction failed:", error);
     throw error;
+  } finally {
+    if (fileName) {
+      ai.files.delete({ name: fileName }).catch(e => console.warn('[Gemini Files API] Cleanup failed:', e));
+    }
   }
 };
 
@@ -403,8 +463,8 @@ const legacyAnalyzeConversation = async (audioBlob: Blob): Promise<MeetingAnalys
   if (!apiKey) throw new Error("API Key is missing.");
 
   const ai = new GoogleGenAI({ apiKey });
-  const base64Audio = await blobToBase64(audioBlob);
   const mimeType = (audioBlob.type || 'audio/webm').split(';')[0];
+  const useFilesApi = audioBlob.size > LARGE_AUDIO_THRESHOLD_BYTES;
 
   const systemPrompt = `You are an expert meeting assistant. Analyze this audio and respond with a single valid JSON object — no markdown fences, no extra text.
 
@@ -422,17 +482,24 @@ For the notes field, write comprehensive meeting notes using these emoji section
 
 Write ALL content in English. Professional tone.`;
 
+  let fileName: string | null = null;
+
   try {
+    let parts: any[];
+    if (useFilesApi) {
+      const file = await uploadAudioViaFilesAPI(ai, audioBlob, mimeType);
+      fileName = file.name;
+      parts = [createPartFromUri(file.uri, file.mimeType), { text: systemPrompt }];
+    } else {
+      const base64Audio = await blobToBase64(audioBlob);
+      parts = [{ inlineData: { mimeType, data: base64Audio } }, { text: systemPrompt }];
+    }
+
     const response: GenerateContentResponse = await retryOperation(
       () =>
         ai.models.generateContent({
           model: 'gemini-2.5-flash',
-          contents: {
-            parts: [
-              { inlineData: { mimeType, data: base64Audio } },
-              { text: systemPrompt },
-            ],
-          },
+          contents: { parts },
           config: {
             maxOutputTokens: 8192,
             temperature: 0.1,
@@ -441,7 +508,8 @@ Write ALL content in English. Professional tone.`;
         }),
       3,
       1000,
-      'Legacy single-pass analysis'
+      'Legacy single-pass analysis',
+      useFilesApi ? LARGE_AUDIO_TIMEOUT_MS : SMALL_AUDIO_TIMEOUT_MS,
     );
 
     const responseText = response.text;
@@ -463,6 +531,10 @@ Write ALL content in English. Professional tone.`;
   } catch (error) {
     console.error("Gemini API Error:", error);
     throw error;
+  } finally {
+    if (fileName) {
+      ai.files.delete({ name: fileName }).catch(e => console.warn('[Gemini Files API] Cleanup failed:', e));
+    }
   }
 };
 

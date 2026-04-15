@@ -167,13 +167,16 @@ const App: React.FC = () => {
               `Found an unsaved recording from ${timeAgo} minute${timeAgo !== 1 ? 's' : ''} ago (${durationStr}). Would you like to recover and process it?`
             )) {
               const source = (newest.meta.source || 'in-person') as RecordingSource;
+              // Pass the original recoveryId so the IndexedDB row is only cleared after
+              // processing fully succeeds. If processing fails again, the blob stays
+              // recoverable via the Retry button on the error-state session.
               handleRecordingComplete({
                 blob: newest.blob,
                 url: URL.createObjectURL(newest.blob),
                 duration: newest.meta.duration,
                 source,
+                recoveryId: newest.meta.id,
               });
-              clearRecoverySession(newest.meta.id);
             } else {
               clearAllRecovery();
             }
@@ -328,6 +331,95 @@ const App: React.FC = () => {
     }
   };
 
+  // Shared pipeline: transcribe → analyze → save. Works for both fresh recordings and
+  // retries. Caller is responsible for adding/updating the session in `recordings` state
+  // and setting it to processing before calling this. On success, clears the IndexedDB
+  // recovery entry. On failure, leaves IndexedDB intact so the user can retry again.
+  const runProcessingForSession = useCallback(async (session: RecordingSession, blob: Blob) => {
+    if (!user) return;
+
+    const updateSession = (updates: Partial<RecordingSession>) => {
+      setRecordings(prev => prev.map(rec =>
+        rec.id === session.id ? { ...rec, ...updates } : rec
+      ));
+    };
+
+    try {
+      try {
+        await saveRecording(session, user.id);
+      } catch (saveErr) {
+        console.warn("Initial save failed, continuing with processing:", saveErr);
+      }
+
+      // Phase 1: Transcription
+      let transcript: string;
+      if (transcriptionEngine === 'sarvam' && hasSarvamKey) {
+        try {
+          console.log('[App] Using Sarvam STT → Gemini analysis pipeline');
+          transcript = await transcribeAudioWithSarvam(blob);
+        } catch (sarvamError: any) {
+          console.error('[App] ⚠️ Sarvam STT failed — falling back to Gemini transcription.', sarvamError.message);
+          updateSession({ processingStep: 'transcribing' });
+          transcript = await extractTranscript(blob);
+        }
+      } else {
+        transcript = await extractTranscript(blob);
+      }
+
+      // Intermediate update: show transcript immediately
+      const partialAnalysis = { transcript, summary: '', actionPoints: [] as string[] };
+      const transcribedSession: RecordingSession = {
+        ...session,
+        analysis: partialAnalysis,
+        status: 'processing',
+        processingStep: 'analyzing',
+      };
+      updateSession({ analysis: partialAnalysis, processingStep: 'analyzing' });
+      await saveRecording(transcribedSession, user.id);
+
+      // Phase 2: Analysis
+      const analysisResult = await analyzeTranscript(transcript, session.date);
+      const fullAnalysis = { ...analysisResult, transcript };
+
+      const completedSession: RecordingSession = {
+        ...session,
+        analysis: fullAnalysis,
+        status: 'completed',
+        processingStep: undefined,
+        errorMessage: undefined,
+        recoveryId: undefined, // clear from DB row — blob is about to be removed from IndexedDB
+      };
+      updateSession({ analysis: fullAnalysis, status: 'completed', processingStep: undefined, errorMessage: undefined, recoveryId: undefined });
+      await saveRecording(completedSession, user.id);
+
+      // Clear the IndexedDB recovery entry — processing fully succeeded
+      if (session.recoveryId) {
+        clearRecoverySession(session.recoveryId);
+      }
+
+      // Sync action items to the tracker
+      try {
+        const newItems = await syncActionItemsFromRecording(completedSession, user.id);
+        const withMeta = newItems.map(i => ({ ...i, sessionTitle: completedSession.title, sessionDate: completedSession.date }));
+        if (withMeta.length > 0) setActionItems(prev => [...prev, ...withMeta]);
+      } catch (syncErr) {
+        console.warn('[App] Action item sync failed, will migrate on next load:', syncErr);
+      }
+    } catch (err: any) {
+      console.error("Recording process failed:", err);
+      // Keep recoveryId so the user can retry from the IndexedDB blob
+      const errorSession: RecordingSession = { ...session, status: 'error', errorMessage: err.message, processingStep: undefined };
+      updateSession({ status: 'error', errorMessage: err.message, processingStep: undefined });
+      try {
+        await saveRecording(errorSession, user.id);
+      } catch (saveErr) {
+        console.error("Failed to save error state:", saveErr);
+      }
+    } finally {
+      setAppState(AppState.IDLE);
+    }
+  }, [user, transcriptionEngine, hasSarvamKey]);
+
   const handleRecordingComplete = useCallback(async (audioData: AudioRecording) => {
     if (!user) return;
 
@@ -340,6 +432,7 @@ const App: React.FC = () => {
       status: 'processing',
       source: audioData.source,
       processingStep: 'transcribing',
+      recoveryId: audioData.recoveryId,
     };
 
     setRecordings(prev => [newSession, ...prev]);
@@ -347,79 +440,39 @@ const App: React.FC = () => {
     setIsRecordingMode(false);
     setAppState(AppState.PROCESSING);
 
-    const updateSession = (updates: Partial<RecordingSession>) => {
-      setRecordings(prev => prev.map(rec =>
-        rec.id === newSession.id ? { ...rec, ...updates } : rec
-      ));
-    };
+    await runProcessingForSession(newSession, audioData.blob);
+  }, [user, runProcessingForSession]);
 
-    try {
-      try {
-        await saveRecording(newSession, user.id);
-      } catch (saveErr) {
-        console.warn("Initial save failed, continuing with processing:", saveErr);
-      }
-
-      // Phase 1: Transcription
-      let transcript: string;
-      if (transcriptionEngine === 'sarvam' && hasSarvamKey) {
-        try {
-          console.log('[App] Using Sarvam STT → Gemini analysis pipeline');
-          transcript = await transcribeAudioWithSarvam(audioData.blob);
-        } catch (sarvamError: any) {
-          console.error('[App] ⚠️ Sarvam STT failed — falling back to Gemini transcription.', sarvamError.message);
-          updateSession({ processingStep: 'transcribing' }); // reset so spinner stays visible during fallback
-          transcript = await extractTranscript(audioData.blob);
-        }
-      } else {
-        transcript = await extractTranscript(audioData.blob);
-      }
-
-      // Intermediate update: show transcript immediately
-      const partialAnalysis = { transcript, summary: '', actionPoints: [] as string[] };
-      const transcribedSession: RecordingSession = {
-        ...newSession,
-        analysis: partialAnalysis,
-        status: 'processing',
-        processingStep: 'analyzing',
-      };
-      updateSession({ analysis: partialAnalysis, processingStep: 'analyzing' });
-      await saveRecording(transcribedSession, user.id);
-
-      // Phase 2: Analysis
-      const analysisResult = await analyzeTranscript(transcript, newSession.date);
-      const fullAnalysis = { ...analysisResult, transcript };
-
-      const completedSession: RecordingSession = {
-        ...newSession,
-        analysis: fullAnalysis,
-        status: 'completed',
-        processingStep: undefined,
-      };
-      updateSession({ analysis: fullAnalysis, status: 'completed', processingStep: undefined });
-      await saveRecording(completedSession, user.id);
-
-      // Sync action items to the tracker
-      try {
-        const newItems = await syncActionItemsFromRecording(completedSession, user.id);
-        const withMeta = newItems.map(i => ({ ...i, sessionTitle: completedSession.title, sessionDate: completedSession.date }));
-        if (withMeta.length > 0) setActionItems(prev => [...prev, ...withMeta]);
-      } catch (syncErr) {
-        console.warn('[App] Action item sync failed, will migrate on next load:', syncErr);
-      }
-    } catch (err: any) {
-      console.error("Recording process failed:", err);
-      const errorSession: RecordingSession = { ...newSession, status: 'error', errorMessage: err.message, processingStep: undefined };
-      updateSession({ status: 'error', errorMessage: err.message, processingStep: undefined });
-      try {
-        await saveRecording(errorSession, user.id);
-      } catch (saveErr) {
-        console.error("Failed to save error state:", saveErr);
-      }
-    } finally {
-      setAppState(AppState.IDLE);
+  const handleRetryProcessing = useCallback(async (sessionId: string) => {
+    if (!user) return;
+    const session = recordings.find(r => r.id === sessionId);
+    if (!session) return;
+    if (!session.recoveryId) {
+      alert('No recoverable audio for this session. Retry is only available right after a failed recording on the same device.');
+      return;
     }
-  }, [user, transcriptionEngine, hasSarvamKey]);
+
+    const recoverable = await getRecoverableRecordings();
+    const match = recoverable.find(r => r.meta.id === session.recoveryId);
+    if (!match) {
+      alert('The recorded audio is no longer available in this browser. Retry is not possible.');
+      return;
+    }
+
+    // Reset the session to a processing state so the UI shows the spinner again
+    const resetSession: RecordingSession = {
+      ...session,
+      status: 'processing',
+      processingStep: 'transcribing',
+      errorMessage: undefined,
+      analysis: null,
+    };
+    setRecordings(prev => prev.map(r => r.id === sessionId ? resetSession : r));
+    setActiveRecordingId(sessionId);
+    setAppState(AppState.PROCESSING);
+
+    await runProcessingForSession(resetSession, match.blob);
+  }, [user, recordings, runProcessingForSession]);
 
   // Loading State
   if (isInitialLoad) return (
@@ -608,6 +661,7 @@ const App: React.FC = () => {
               sessions={recordings}
               onSelect={handleSelectRecording}
               onDelete={handleDeleteRecording}
+              onRetry={handleRetryProcessing}
             />
           ) : activeRecordingId === 'actions' ? (
             <ActionItemsView

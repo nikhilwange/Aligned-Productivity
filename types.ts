@@ -26,6 +26,7 @@ export interface RecordingSession {
   errorMessage?: string;
   source: RecordingSource;
   processingStep?: ProcessingStep;
+  recoveryId?: string; // IndexedDB key — kept while audio is still recoverable for retry
 }
 
 export enum AppState {
@@ -41,6 +42,7 @@ export interface AudioRecording {
   url: string;
   duration: number;
   source: RecordingSource;
+  recoveryId?: string;
 }
 
 export interface ProcessGap {
