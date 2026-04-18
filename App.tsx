@@ -19,6 +19,9 @@ import { analyzeConversation, extractTranscript, analyzeTranscript, enhanceDicta
 import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems, syncActionItemsFromRecording, updateActionItem, deleteActionItem } from './services/supabaseService';
 import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery } from './services/recordingRecovery';
+import ProcessingBanner from './components/ProcessingBanner';
+import RecoveryModal from './components/RecoveryModal';
+import { ToastContainer, ToastData } from './components/Toast';
 
 declare global {
   interface Window {
@@ -51,6 +54,72 @@ const App: React.FC = () => {
   const [transcriptionEngine, setTranscriptionEngine] = useState<'gemini' | 'sarvam'>(() => {
     return (localStorage.getItem('aligned-engine') as 'gemini' | 'sarvam') || 'gemini';
   });
+
+  // ─── Processing UX State ──────────────────────────────────────────────────
+  const [processingSessionId, setProcessingSessionId] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<ToastData[]>([]);
+  const [recoveryData, setRecoveryData] = useState<{
+    durationStr: string;
+    timeAgo: number;
+    blob: Blob;
+    source: RecordingSource;
+    recoveryId: string;
+  } | null>(null);
+
+  // ─── Toast helper ─────────────────────────────────────────────────────────
+  const addToast = useCallback((message: string, type: ToastData['type'] = 'success', opts?: { actionLabel?: string; onAction?: () => void }) => {
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    setToasts(prev => [...prev, { id, message, type, ...opts }]);
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  // ─── Detect when processing finishes (success or error) ───────────────────
+  useEffect(() => {
+    if (!processingSessionId) return;
+    const session = recordings.find(r => r.id === processingSessionId);
+    if (!session) return;
+
+    if (session.status === 'completed') {
+      const actionCount = session.analysis?.actionPoints?.length || 0;
+      const isViewingSession = activeRecordingId === processingSessionId;
+
+      if (!isViewingSession) {
+        addToast(
+          `"${session.title}" is ready` + (actionCount > 0 ? ` — ${actionCount} action item${actionCount !== 1 ? 's' : ''} found` : ''),
+          'success',
+          {
+            actionLabel: 'View session',
+            onAction: () => {
+              setIsRecordingMode(false);
+              setIsLiveMode(false);
+              setActiveRecordingId(processingSessionId);
+            },
+          }
+        );
+      }
+      setProcessingSessionId(null);
+    } else if (session.status === 'error') {
+      const isViewingSession = activeRecordingId === processingSessionId;
+      if (!isViewingSession) {
+        addToast(
+          `Processing failed for "${session.title}"` + (session.recoveryId ? ' — tap to retry' : ''),
+          'error',
+          session.recoveryId ? {
+            actionLabel: 'View & retry',
+            onAction: () => {
+              setIsRecordingMode(false);
+              setIsLiveMode(false);
+              setActiveRecordingId(processingSessionId);
+            },
+          } : undefined
+        );
+      }
+      setProcessingSessionId(null);
+    }
+  }, [recordings, processingSessionId, activeRecordingId, addToast]);
 
   const handleEngineChange = (engine: 'gemini' | 'sarvam') => {
     setTranscriptionEngine(engine);
@@ -124,7 +193,16 @@ const App: React.FC = () => {
           fetchActionItems(user.id),
         ]);
         console.log('[App] Fetched recordings:', data.length, 'recordings');
-        setRecordings(data);
+
+        // Fix stale processing sessions (interrupted by page close/crash)
+        const now = Date.now();
+        const fixedData = data.map(r => {
+          if (r.status === 'processing' && (now - r.date) > 5 * 60 * 1000) {
+            return { ...r, status: 'error' as const, errorMessage: 'Processing was interrupted. Tap Retry if audio is still available.', processingStep: undefined };
+          }
+          return r;
+        });
+        setRecordings(fixedData);
 
         // Attach session titles/dates for display
         const itemsWithMeta = trackedItems.map(item => {
@@ -158,27 +236,29 @@ const App: React.FC = () => {
           const recoverable = await getRecoverableRecordings();
           if (recoverable.length > 0) {
             const newest = recoverable[0];
-            const durationStr = newest.meta.duration > 0
-              ? `${Math.floor(newest.meta.duration / 60)}m ${newest.meta.duration % 60}s`
-              : 'unknown duration';
-            const timeAgo = Math.round((Date.now() - newest.meta.startedAt) / 60000);
 
-            if (window.confirm(
-              `Found an unsaved recording from ${timeAgo} minute${timeAgo !== 1 ? 's' : ''} ago (${durationStr}). Would you like to recover and process it?`
-            )) {
+            // Smart check: skip if this recording already completed in Supabase
+            const alreadyCompleted = data.find(
+              r => r.recoveryId === newest.meta.id && r.status === 'completed'
+            );
+            if (alreadyCompleted) {
+              console.log('[App] Recovery entry already completed — clearing silently');
+              clearRecoverySession(newest.meta.id);
+            } else {
+              const durationStr = newest.meta.duration > 0
+                ? `${Math.floor(newest.meta.duration / 60)}m ${newest.meta.duration % 60}s`
+                : 'unknown duration';
+              const timeAgo = Math.round((Date.now() - newest.meta.startedAt) / 60000);
               const source = (newest.meta.source || 'in-person') as RecordingSource;
-              // Pass the original recoveryId so the IndexedDB row is only cleared after
-              // processing fully succeeds. If processing fails again, the blob stays
-              // recoverable via the Retry button on the error-state session.
-              handleRecordingComplete({
+
+              // Show in-app modal instead of window.confirm
+              setRecoveryData({
+                durationStr,
+                timeAgo,
                 blob: newest.blob,
-                url: URL.createObjectURL(newest.blob),
-                duration: newest.meta.duration,
                 source,
                 recoveryId: newest.meta.id,
               });
-            } else {
-              clearAllRecovery();
             }
           }
         } catch (err) {
@@ -218,6 +298,7 @@ const App: React.FC = () => {
 
     setRecordings(prev => [newSession, ...prev]);
     setActiveRecordingId(newSession.id);
+    setProcessingSessionId(newSession.id);
 
     const updateSession = (updates: Partial<RecordingSession>) => {
       setRecordings(prev => prev.map(rec =>
@@ -392,9 +473,14 @@ const App: React.FC = () => {
       updateSession({ analysis: fullAnalysis, status: 'completed', processingStep: undefined, errorMessage: undefined, recoveryId: undefined });
       await saveRecording(completedSession, user.id);
 
-      // Clear the IndexedDB recovery entry — processing fully succeeded
+      // Clear the IndexedDB recovery entry IMMEDIATELY after Supabase save succeeds
+      // This prevents the false recovery popup on page reload
       if (session.recoveryId) {
-        clearRecoverySession(session.recoveryId);
+        try {
+          clearRecoverySession(session.recoveryId);
+        } catch (clearErr) {
+          console.warn('[App] IndexedDB cleanup failed (non-critical):', clearErr);
+        }
       }
 
       // Sync action items to the tracker
@@ -439,6 +525,7 @@ const App: React.FC = () => {
     setActiveRecordingId(newSession.id);
     setIsRecordingMode(false);
     setAppState(AppState.PROCESSING);
+    setProcessingSessionId(newSession.id);
 
     await runProcessingForSession(newSession, audioData.blob);
   }, [user, runProcessingForSession]);
@@ -470,9 +557,28 @@ const App: React.FC = () => {
     setRecordings(prev => prev.map(r => r.id === sessionId ? resetSession : r));
     setActiveRecordingId(sessionId);
     setAppState(AppState.PROCESSING);
+    setProcessingSessionId(sessionId);
 
     await runProcessingForSession(resetSession, match.blob);
   }, [user, recordings, runProcessingForSession]);
+
+  // ─── Recovery modal handlers ──────────────────────────────────────────────
+  const handleRecoverRecording = useCallback(() => {
+    if (!recoveryData) return;
+    handleRecordingComplete({
+      blob: recoveryData.blob,
+      url: URL.createObjectURL(recoveryData.blob),
+      duration: 0,
+      source: recoveryData.source,
+      recoveryId: recoveryData.recoveryId,
+    });
+    setRecoveryData(null);
+  }, [recoveryData, handleRecordingComplete]);
+
+  const handleDiscardRecovery = useCallback(() => {
+    clearAllRecovery();
+    setRecoveryData(null);
+  }, []);
 
   // Loading State
   if (isInitialLoad) return (
@@ -597,6 +703,20 @@ const App: React.FC = () => {
         )}
 
         <div className="flex-1 overflow-hidden relative pb-16 md:pb-0">
+          {/* Processing Banner — visible on all views when a session is processing */}
+          {processingSessionId && activeRecordingId !== processingSessionId && (() => {
+            const ps = recordings.find(r => r.id === processingSessionId);
+            return ps && ps.status === 'processing' ? (
+              <ProcessingBanner
+                session={ps}
+                onTap={() => {
+                  setIsRecordingMode(false);
+                  setIsLiveMode(false);
+                  setActiveRecordingId(processingSessionId);
+                }}
+              />
+            ) : null;
+          })()}
           {isLiveMode ? (
             <DictationView
               onCancel={handleEndLive}
@@ -615,9 +735,10 @@ const App: React.FC = () => {
                 };
 
                 setRecordings(prev => [newSession, ...prev]);
-                setActiveRecordingId('sessions');
+                setActiveRecordingId(newSession.id);
                 setIsLiveMode(false);
                 setAppState(AppState.PROCESSING);
+                setProcessingSessionId(newSession.id);
 
                 try {
                   await saveRecording(newSession, user.id);
@@ -778,6 +899,19 @@ const App: React.FC = () => {
 
           </div>
         </nav>
+      )}
+
+      {/* Toast notifications */}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
+      {/* Recovery modal */}
+      {recoveryData && (
+        <RecoveryModal
+          durationStr={recoveryData.durationStr}
+          timeAgo={recoveryData.timeAgo}
+          onRecover={handleRecoverRecording}
+          onDiscard={handleDiscardRecovery}
+        />
       )}
     </div>
   );
