@@ -1,13 +1,21 @@
-import { GoogleGenAI, GenerateContentResponse, createPartFromUri } from "@google/genai";
 import { MeetingAnalysis } from "../types";
+import { supabase } from "./supabaseService";
 
-// ─── Large-audio threshold (Files API vs inline) ──────────────────────────────
-// 15 MB ≈ 15 min at 128 kbps. Safely under Gemini's ~20 MB inline-data limit.
-// Anything larger is uploaded via the Files API so it actually makes it through.
+// ─── Large-audio threshold (kept for client-side timeout selection) ────────────
+// 15 MB ≈ 15 min at 128 kbps. Crossing this threshold means the server route
+// will use the Gemini Files API path internally (slower upload + preprocessing),
+// so we extend the client timeout accordingly.
 const LARGE_AUDIO_THRESHOLD_BYTES = 15 * 1024 * 1024;
-const LARGE_AUDIO_TIMEOUT_MS = 10 * 60_000;  // 10 min for Gemini to transcribe long audio
-const SMALL_AUDIO_TIMEOUT_MS = 2 * 60_000;   // existing 2 min for inline path
-const FILES_API_READY_TIMEOUT_MS = 5 * 60_000; // max wait for file.state === ACTIVE
+const LARGE_AUDIO_TIMEOUT_MS = 10 * 60_000;
+const SMALL_AUDIO_TIMEOUT_MS = 2 * 60_000;
+
+// ─── Auth helper (matches the proven sarvamService pattern) ───────────────────
+const getAuthToken = async (): Promise<string> => {
+  const { data } = await supabase.auth.getSession();
+  const token = data?.session?.access_token;
+  if (!token) throw new Error("Not authenticated. Please log in.");
+  return token;
+};
 
 // ─── Blob helper ──────────────────────────────────────────────────────────────
 const blobToBase64 = (blob: Blob): Promise<string> => {
@@ -26,19 +34,15 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
   });
 };
 
-// ─── JSON parser (replaces the fragile emoji-regex parseMarkdownResponse) ──────
+// ─── JSON parser (server returns this exact JSON shape) ───────────────────────
 //
-// Gemini is now asked to return this exact JSON shape:
+// Gemini is asked to return:
 // {
 //   "meetingType": string,
 //   "detectedLanguages": string[],
 //   "actionPoints": string[],       // plain text, no "- [ ]" prefix
 //   "notes": string                 // full rich-markdown meeting notes document
 // }
-//
-// The "notes" field is still rich markdown — all the emoji sections, tables,
-// bullet points — exactly as before. Only the structured fields are now JSON.
-// This means zero visual change in ResultsView while making parsing reliable.
 
 interface GeminiAnalysisJSON {
   meetingType?: string;
@@ -68,7 +72,6 @@ const tryParseJSON = (raw: string): GeminiAnalysisJSON | null => {
   try {
     const match = raw.match(/\{[\s\S]*\}/);
     if (match) {
-      // Replace actual newlines inside JSON string values with \\n
       const fixed = match[0].replace(/"([^"\\]|\\.)*"/g, (str) =>
         str.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')
       );
@@ -81,7 +84,6 @@ const tryParseJSON = (raw: string): GeminiAnalysisJSON | null => {
 
 /** Extract the notes field directly via regex when JSON parsing fails entirely */
 const extractNotesFromRaw = (raw: string): string => {
-  // Try to pull out the "notes" value from malformed JSON
   const notesMatch = raw.match(/"notes"\s*:\s*"([\s\S]*?)(?:"\s*[,}])/);
   if (notesMatch) {
     return notesMatch[1]
@@ -90,9 +92,7 @@ const extractNotesFromRaw = (raw: string): string => {
       .replace(/\\\\/g, '\\');
   }
 
-  // If the raw text contains emoji section headers, it's probably markdown — use it directly
   if (/[📋🎯📝💬✅🔲❓📊📅🔗💡🧱📍📌]/.test(raw)) {
-    // Strip any JSON wrapper artifacts
     return raw
       .replace(/^\s*\{[\s\S]*?"notes"\s*:\s*"?/, '')
       .replace(/"?\s*\}\s*$/, '')
@@ -108,7 +108,6 @@ const parseJsonResponse = (raw: string): MeetingAnalysis => {
   const parsed = tryParseJSON(raw);
 
   if (parsed) {
-    // Successful parse — ensure notes has real newlines (not literal \n strings)
     let notes = parsed.notes ?? '';
     if (notes.includes('\\n')) {
       notes = notes.replace(/\\n/g, '\n').replace(/\\"/g, '"');
@@ -123,7 +122,6 @@ const parseJsonResponse = (raw: string): MeetingAnalysis => {
     };
   }
 
-  // JSON parse failed — extract what we can without showing raw JSON to user
   console.warn('[parseJsonResponse] All JSON parse strategies failed, extracting fields manually.');
 
   const notes = extractNotesFromRaw(raw);
@@ -139,7 +137,6 @@ const parseJsonResponse = (raw: string): MeetingAnalysis => {
       .filter(Boolean);
   }
 
-  // If we couldn't extract notes, use the raw text but strip JSON artifacts
   const summary = notes || raw
     .replace(/^\s*\{/, '')
     .replace(/\}\s*$/, '')
@@ -200,45 +197,7 @@ export async function retryOperation<T>(
   }
 }
 
-// ─── Gemini Files API helper (used for audio > 15 MB) ─────────────────────────
-// The inline-data path caps around ~20 MB per request. Long recordings (2h at
-// 128 kbps = ~115 MB) cannot be sent inline and must be uploaded via the Files
-// API first. We then reference the uploaded file by URI in the generate call.
-async function uploadAudioViaFilesAPI(
-  ai: GoogleGenAI,
-  blob: Blob,
-  mimeType: string,
-): Promise<{ uri: string; mimeType: string; name: string }> {
-  console.log(`[Gemini Files API] Uploading ${(blob.size / 1024 / 1024).toFixed(1)} MB audio...`);
-  const uploaded = await ai.files.upload({
-    file: blob,
-    config: { mimeType, displayName: `aligned-recording-${Date.now()}` },
-  });
-
-  if (!uploaded.name) throw new Error('Gemini Files API: upload returned no file name.');
-
-  // Poll until the file is ACTIVE (Gemini pre-processes audio asynchronously)
-  const start = Date.now();
-  let file = uploaded;
-  while (file.state !== 'ACTIVE') {
-    if (file.state === 'FAILED') {
-      throw new Error('Gemini Files API rejected the audio file.');
-    }
-    if (Date.now() - start > FILES_API_READY_TIMEOUT_MS) {
-      throw new Error('Gemini file upload timed out during preprocessing (waited 5 min).');
-    }
-    await new Promise(r => setTimeout(r, 2000));
-    file = await ai.files.get({ name: uploaded.name });
-  }
-
-  if (!file.uri) throw new Error('Gemini Files API: uploaded file has no URI.');
-  console.log(`[Gemini Files API] ✅ File ACTIVE: ${file.name}`);
-  return { uri: file.uri, mimeType: file.mimeType || mimeType, name: uploaded.name };
-}
-
-// ─── Pass 1: Extract verbatim transcript ──────────────────────────────────────
-// Small audio (< 15 MB): uses inline data (fast, one request).
-// Large audio (≥ 15 MB): uploads via Files API (required for 2h+ recordings).
+// ─── Pass 1: Extract verbatim transcript via /api/gemini/transcribe-audio ─────
 export const extractTranscript = async (audioBlob: Blob): Promise<string> => {
   if (!audioBlob || audioBlob.size === 0) {
     throw new Error("No audio was captured. Please check your microphone and try again.");
@@ -247,397 +206,83 @@ export const extractTranscript = async (audioBlob: Blob): Promise<string> => {
     throw new Error("Audio recording is too short. Please record for at least a few seconds.");
   }
 
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-  if (!apiKey) throw new Error("API Key is missing.");
-
-  const ai = new GoogleGenAI({ apiKey });
-  // Strip codec parameters — Gemini requires clean MIME types (e.g. "audio/webm" not "audio/webm;codecs=opus")
+  const token = await getAuthToken();
   const mimeType = (audioBlob.type || 'audio/webm').split(';')[0];
-
+  const audioBase64 = await blobToBase64(audioBlob);
   const useFilesApi = audioBlob.size > LARGE_AUDIO_THRESHOLD_BYTES;
 
-  const transcriptPrompt = `You are a professional transcription service.
+  const data = await retryOperation(
+    async () => {
+      const res = await fetch('/api/gemini/transcribe-audio', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ audioBase64, mimeType, audioSizeBytes: audioBlob.size }),
+      });
 
-Your task is to provide a complete, verbatim transcript of this audio recording.
-
-REQUIREMENTS:
-1. Transcribe EVERY word spoken - do not summarize or skip any content
-2. Format: [Speaker Name/Role] (MM:SS): [Exact words spoken]
-3. Identify speakers by voice (Speaker 1, Speaker 2, etc.)
-4. Preserve multilingual content (English and Indian languages)
-5. If spoken in a regional language, transcribe in native script with [English translation]
-6. Mark unclear segments as [inaudible] rather than guessing
-7. Include timestamps every 30-60 seconds
-8. Do not add commentary or analysis - ONLY verbatim transcript
-
-Output ONLY the transcript.`;
-
-  let fileName: string | null = null;
-
-  try {
-    let parts: any[];
-    if (useFilesApi) {
-      const file = await uploadAudioViaFilesAPI(ai, audioBlob, mimeType);
-      fileName = file.name;
-      parts = [createPartFromUri(file.uri, file.mimeType), { text: transcriptPrompt }];
-    } else {
-      const base64Audio = await blobToBase64(audioBlob);
-      parts = [{ inlineData: { mimeType, data: base64Audio } }, { text: transcriptPrompt }];
-    }
-
-    const response = await retryOperation(
-      () =>
-        ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: { parts },
-          config: {
-            maxOutputTokens: 65536,
-            temperature: 0.1,
-          },
-        }),
-      3,
-      1000,
-      'Pass 1: Transcript extraction',
-      useFilesApi ? LARGE_AUDIO_TIMEOUT_MS : SMALL_AUDIO_TIMEOUT_MS,
-    );
-
-    const transcriptText = response.text;
-    if (!transcriptText) throw new Error("Empty transcript from Gemini.");
-
-    const wasTruncated = response.candidates?.[0]?.finishReason === 'MAX_TOKENS';
-    if (wasTruncated) {
-      console.warn('⚠️ Transcript was truncated due to token limits.');
-    }
-
-    const trimmed = transcriptText.trim();
-
-    // Detect Gemini repetition loop: if the same line appears ≥ 10 times, the transcript is garbage
-    const lines = trimmed.split('\n').filter(l => l.trim().length > 0);
-    if (lines.length >= 10) {
-      const lineCounts = new Map<string, number>();
-      for (const line of lines) {
-        const key = line.trim().toLowerCase();
-        lineCounts.set(key, (lineCounts.get(key) ?? 0) + 1);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        const error = new Error(err.error || `Transcription failed (${res.status})`);
+        (error as any).status = res.status;
+        throw error;
       }
-      const maxRepeat = Math.max(...lineCounts.values());
-      if (maxRepeat >= 10 || maxRepeat / lines.length > 0.4) {
-        throw new Error("Transcription produced repetitive output — the audio may be too quiet, unclear, or silent. Please re-record with the microphone closer and ensure audio is audible.");
+
+      return res.json() as Promise<{ transcript: string; wasTruncated?: boolean }>;
+    },
+    3,
+    1000,
+    'Pass 1: Transcript extraction',
+    useFilesApi ? LARGE_AUDIO_TIMEOUT_MS : SMALL_AUDIO_TIMEOUT_MS,
+  );
+
+  const transcript = (data.transcript ?? '').trim();
+  if (!transcript) throw new Error("Empty transcript from Gemini.");
+
+  if (data.wasTruncated) {
+    console.warn('⚠️ Transcript was truncated due to token limits.');
+  }
+
+  return transcript;
+};
+
+// ─── Pass 2: Analyze transcript via /api/gemini/analyze ───────────────────────
+export const analyzeTranscript = async (
+  transcript: string,
+  recordingDate?: number,
+): Promise<Omit<MeetingAnalysis, 'transcript'>> => {
+  const token = await getAuthToken();
+
+  const data = await retryOperation(
+    async () => {
+      const res = await fetch('/api/gemini/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ transcript, recordingDate }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        const error = new Error(err.error || `Analysis failed (${res.status})`);
+        (error as any).status = res.status;
+        throw error;
       }
-    }
 
-    return trimmed;
-  } catch (error) {
-    console.error("Transcript extraction failed:", error);
-    throw error;
-  } finally {
-    if (fileName) {
-      ai.files.delete({ name: fileName }).catch(e => console.warn('[Gemini Files API] Cleanup failed:', e));
-    }
-  }
+      return res.json() as Promise<{ responseText: string; isTruncated?: boolean }>;
+    },
+    3,
+    1000,
+    'Pass 2: Analysis generation',
+  );
+
+  if (!data.responseText) throw new Error("Empty analysis response from Gemini.");
+
+  const analysis = parseJsonResponse(data.responseText);
+  return { ...analysis, isTruncated: !!data.isTruncated };
 };
 
-// ─── Pass 2: Analyze transcript — structured JSON response ────────────────────
-export const analyzeTranscript = async (transcript: string, recordingDate?: number): Promise<Omit<MeetingAnalysis, 'transcript'>> => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-  if (!apiKey) throw new Error("API Key is missing.");
 
-  const ai = new GoogleGenAI({ apiKey });
-
-  const dateStr = new Date(recordingDate ?? Date.now()).toLocaleDateString('en-US', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-  });
-
-  const analysisPrompt = `You are an expert meeting assistant. Analyze the transcript below and respond with a single valid JSON object — no markdown fences, no extra text outside the JSON.
-
-The JSON must match this exact shape:
-{
-  "meetingType": "<inferred type: standup | planning | brainstorm | review | 1on1 | all-hands | other>",
-  "detectedLanguages": ["<language1>", "<language2>"],
-  "actionPoints": ["<plain text action item>", "..."],
-  "notes": "<full rich-markdown meeting notes document — see format below>"
-}
-
-RULES FOR actionPoints:
-- Plain strings only — no "- [ ]" checkbox prefix
-- Each item must be a clear, actionable task
-- Empty array [] if no action items
-
-RULES FOR notes (the full markdown document to show users):
-Write a comprehensive meeting notes document in this exact format. The notes value must be a valid JSON string (escape newlines as \\n, quotes as \\"):
-
-📋 Meeting Overview
-**Date:** ${dateStr}
-**Duration:** [Estimate from transcript]
-**Attendees:** [All speakers]
-**Meeting Type:** [Same as meetingType field above]
-
-🎯 Key Takeaways
-- [3-5 bullet points of most important outcomes]
-
-📝 Summary
-[2-3 paragraph narrative summary]
-
-💬 Discussion Points
-[Organized by theme. For each theme:]
-### [Theme Title]
-**Context:** [description]
-**Key Points:**
-- point 1
-- point 2
-**Participants' Views:**
-- **[Name]:** their view
-
-✅ Action Items
-- [ ] [Same items as actionPoints array above]
-
-🔲 Decisions Made
-| Decision Title | What was decided | Why | Impact |
-| --- | --- | --- | --- |
-
-❓ Open Questions
-[Unresolved questions]
-
-📊 Data & Metrics Mentioned
-| Metric | Value | Context |
-| --- | --- | --- |
-
-📅 Important Dates & Deadlines
-[All dates mentioned]
-
-🔗 References & Resources
-[Documents, links, tools mentioned]
-
-💡 Ideas & Suggestions
-[Brainstormed ideas]
-
-🧱 Blockers & Risks
-[Obstacles and risks]
-
-📍 Next Steps
-[Priority-ordered next steps]
-
-📌 Additional Notes
-[Any other relevant info]
-
-IMPORTANT:
-- Write ALL notes entirely in English — translate any Hindi, Marathi, or other non-English content
-- Professional tone throughout
-- Do NOT include the full transcript in the notes field
-
-TRANSCRIPT:
-${transcript}`;
-
-  try {
-    const response = await retryOperation(
-      () =>
-        ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: { parts: [{ text: analysisPrompt }] },
-          config: {
-            maxOutputTokens: 65536,
-            temperature: 0.1,
-            responseMimeType: 'application/json', // Forces Gemini to return valid JSON
-          },
-        }),
-      3,
-      1000,
-      'Pass 2: Analysis generation'
-    );
-
-    const responseText = response.text;
-    if (!responseText) throw new Error("Empty analysis response from Gemini.");
-
-    const analysis = parseJsonResponse(responseText);
-    const isTruncated = response.candidates?.[0]?.finishReason === 'MAX_TOKENS';
-
-    return { ...analysis, isTruncated };
-  } catch (error) {
-    console.error("Transcript analysis failed:", error);
-    throw error;
-  }
-};
-
-// ─── Legacy single-pass fallback ───────────────────────────────────────────────
-const legacyAnalyzeConversation = async (audioBlob: Blob): Promise<MeetingAnalysis> => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-  if (!apiKey) throw new Error("API Key is missing.");
-
-  const ai = new GoogleGenAI({ apiKey });
-  const mimeType = (audioBlob.type || 'audio/webm').split(';')[0];
-  const useFilesApi = audioBlob.size > LARGE_AUDIO_THRESHOLD_BYTES;
-
-  const systemPrompt = `You are an expert meeting assistant. Analyze this audio and respond with a single valid JSON object — no markdown fences, no extra text.
-
-JSON shape:
-{
-  "meetingType": "<type>",
-  "detectedLanguages": ["<lang>"],
-  "actionPoints": ["<plain text action>"],
-  "transcript": "<verbatim transcript>",
-  "notes": "<full rich-markdown meeting notes — same format as the multi-section document with emoji headers>"
-}
-
-For the notes field, write comprehensive meeting notes using these emoji sections:
-📋 Meeting Overview, 🎯 Key Takeaways, 📝 Summary, 💬 Discussion Points, ✅ Action Items, 🔲 Decisions Made, ❓ Open Questions, 📊 Data & Metrics, 📅 Important Dates, 🔗 References, 💡 Ideas & Suggestions, 🧱 Blockers & Risks, 📍 Next Steps, 📌 Additional Notes
-
-Write ALL content in English. Professional tone.`;
-
-  let fileName: string | null = null;
-
-  try {
-    let parts: any[];
-    if (useFilesApi) {
-      const file = await uploadAudioViaFilesAPI(ai, audioBlob, mimeType);
-      fileName = file.name;
-      parts = [createPartFromUri(file.uri, file.mimeType), { text: systemPrompt }];
-    } else {
-      const base64Audio = await blobToBase64(audioBlob);
-      parts = [{ inlineData: { mimeType, data: base64Audio } }, { text: systemPrompt }];
-    }
-
-    const response: GenerateContentResponse = await retryOperation(
-      () =>
-        ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: { parts },
-          config: {
-            maxOutputTokens: 8192,
-            temperature: 0.1,
-            responseMimeType: 'application/json',
-          },
-        }),
-      3,
-      1000,
-      'Legacy single-pass analysis',
-      useFilesApi ? LARGE_AUDIO_TIMEOUT_MS : SMALL_AUDIO_TIMEOUT_MS,
-    );
-
-    const responseText = response.text;
-    if (!responseText) throw new Error("Empty response from Gemini.");
-
-    const parsed = parseJsonResponse(responseText);
-    const isTruncated = response.candidates?.[0]?.finishReason === 'MAX_TOKENS';
-
-    // For legacy mode, transcript comes inside the JSON
-    let transcript = '';
-    try {
-      const raw = JSON.parse(responseText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim());
-      transcript = raw.transcript ?? '';
-    } catch {
-      // ignore
-    }
-
-    return { ...parsed, transcript, isTruncated };
-  } catch (error) {
-    console.error("Gemini API Error:", error);
-    throw error;
-  } finally {
-    if (fileName) {
-      ai.files.delete({ name: fileName }).catch(e => console.warn('[Gemini Files API] Cleanup failed:', e));
-    }
-  }
-};
-
-// ─── Two-pass orchestrator (main export — unchanged logic) ────────────────────
-export const analyzeConversation = async (audioBlob: Blob): Promise<MeetingAnalysis> => {
-  let transcript: string | null = null;
-
-  try {
-    console.log('[Pass 1/2] Extracting transcript from audio...');
-    transcript = await extractTranscript(audioBlob);
-    console.log(`[Pass 1/2] ✅ Transcript extracted (${transcript.length} characters)`);
-  } catch (pass1Error) {
-    console.error('[Pass 1/2] ❌ Transcript extraction failed:', pass1Error);
-    console.log('[Fallback] Attempting legacy single-pass analysis...');
-    try {
-      return await legacyAnalyzeConversation(audioBlob);
-    } catch {
-      throw pass1Error;
-    }
-  }
-
-  try {
-    console.log('[Pass 2/2] Generating structured analysis...');
-    const analysis = await analyzeTranscript(transcript);
-    console.log('[Pass 2/2] ✅ Analysis complete');
-    return { ...analysis, transcript };
-  } catch (pass2Error: any) {
-    console.error('[Pass 2/2] ❌ Analysis generation failed:', pass2Error);
-    return {
-      transcript,
-      summary: `Analysis generation failed. Raw transcript is available.\n\nError: ${pass2Error.message}`,
-      actionPoints: [],
-      isTruncated: false,
-      meetingType: 'Unknown',
-    };
-  }
-};
-
-// ─── Dictation enhancement — JSON response ────────────────────────────────────
-export const enhanceDictationText = async (text: string): Promise<MeetingAnalysis> => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-  if (!apiKey) throw new Error("API Key is missing.");
-
-  const ai = new GoogleGenAI({ apiKey });
-
-  const systemPrompt = `You are an expert professional editor. Rewrite the raw dictation below into a polished document. Respond with a single valid JSON object — no markdown fences, no extra text.
-
-JSON shape:
-{
-  "meetingType": "Dictation",
-  "detectedLanguages": ["<primary language>"],
-  "actionPoints": ["<plain text action if any>"],
-  "transcript": "<clean version of dictation with punctuation fixed and fillers removed>",
-  "notes": "<professionally rewritten text as a cohesive paragraph or document>"
-}
-
-RULES:
-1. Remove filler words (um, uh, you know)
-2. Fix grammar and punctuation
-3. Improve flow and clarity while preserving original meaning
-4. If Indian regional languages used, preserve meaning and rewrite professionally
-5. actionPoints: empty array [] if no clear tasks were dictated
-
-INPUT DICTATION:
-${text}`;
-
-  try {
-    const response = await retryOperation(
-      () =>
-        ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: { parts: [{ text: systemPrompt }] },
-          config: {
-            responseMimeType: 'application/json',
-          },
-        }),
-      3,
-      1000,
-      'Dictation enhancement'
-    );
-
-    const responseText = response.text;
-    if (!responseText) throw new Error("Empty response from Gemini.");
-
-    const analysis = parseJsonResponse(responseText);
-
-    // Extract transcript field from the JSON (dictation returns it inside the object)
-    let transcript = text; // fallback to original
-    try {
-      const raw = JSON.parse(responseText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim());
-      if (raw.transcript) transcript = raw.transcript;
-    } catch {
-      // ignore, use fallback
-    }
-
-    return { ...analysis, transcript };
-  } catch (error) {
-    console.error("Gemini Dictation Error:", error);
-    return {
-      transcript: text,
-      summary: text,
-      actionPoints: [],
-      meetingType: 'Dictation',
-    };
-  }
-};

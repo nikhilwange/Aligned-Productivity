@@ -35,7 +35,6 @@ export enum AppState {
   RECORDING = 'RECORDING',
   PAUSED = 'PAUSED',
   PROCESSING = 'PROCESSING',
-  LIVE = 'LIVE',
 }
 
 export interface AudioRecording {

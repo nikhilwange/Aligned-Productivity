@@ -11,7 +11,6 @@ interface HomeViewProps {
   isLoading?: boolean;
   onSelectSession: (id: string) => void;
   onStartNew: () => void;
-  onStartLive: () => void;
 }
 
 // Legacy localStorage fallback
@@ -45,7 +44,7 @@ const getSourceColor = (source: string) => {
 };
 
 const HomeView: React.FC<HomeViewProps> = ({
-  user, recordings, actionItems, isLoading, onSelectSession, onStartNew, onStartLive
+  user, recordings, actionItems, isLoading, onSelectSession, onStartNew
 }) => {
   const doneIds = useMemo(() => loadDoneIds(), []);
 
@@ -191,13 +190,6 @@ const HomeView: React.FC<HomeViewProps> = ({
                 Start Recording
               </button>
               <div className="flex items-center gap-4 text-xs font-medium">
-                <button
-                  onClick={onStartLive}
-                  className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"
-                >
-                  Dictate
-                </button>
-                <span className="text-[var(--text-muted)] opacity-40">·</span>
                 <button
                   onClick={() => onSelectSession('manual-entry')}
                   className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"

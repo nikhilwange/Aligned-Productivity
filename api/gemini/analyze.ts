@@ -16,95 +16,105 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ error: 'Server misconfiguration: GEMINI_API_KEY not set' });
   }
 
-  const { transcript } = req.body;
-  if (!transcript) {
-    return res.status(400).json({ error: 'Missing transcript' });
+  const { transcript, recordingDate } = req.body;
+  if (!transcript || typeof transcript !== 'string') {
+    return res.status(400).json({ error: 'Missing or invalid transcript' });
   }
 
-  try {
-    const ai = new GoogleGenAI({ apiKey });
+  const ai = new GoogleGenAI({ apiKey });
 
-    const analysisPrompt = `You are an expert meeting assistant that creates comprehensive, well-structured meeting notes.
+  const dateStr = new Date(recordingDate ?? Date.now()).toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  });
 
-Analyze this meeting transcript and provide detailed notes in the following format:
+  const analysisPrompt = `You are an expert meeting assistant. Analyze the transcript below and respond with a single valid JSON object — no markdown fences, no extra text outside the JSON.
+
+The JSON must match this exact shape:
+{
+  "meetingType": "<inferred type: standup | planning | brainstorm | review | 1on1 | all-hands | other>",
+  "detectedLanguages": ["<language1>", "<language2>"],
+  "actionPoints": ["<plain text action item>", "..."],
+  "notes": "<full rich-markdown meeting notes document — see format below>"
+}
+
+RULES FOR actionPoints:
+- Plain strings only — no "- [ ]" checkbox prefix
+- Each item must be a clear, actionable task
+- Empty array [] if no action items
+
+RULES FOR notes (the full markdown document to show users):
+Write a comprehensive meeting notes document in this exact format. The notes value must be a valid JSON string (escape newlines as \\n, quotes as \\"):
 
 📋 Meeting Overview
-Date: [Extract or use today's date]
-Duration: [Estimate from transcript length/timestamps]
-Attendees: [List all speakers mentioned]
-Meeting Type: [Infer: standup, planning, brainstorm, review, etc.]
+**Date:** ${dateStr}
+**Duration:** [Estimate from transcript]
+**Attendees:** [All speakers]
+**Meeting Type:** [Same as meetingType field above]
 
 🎯 Key Takeaways
-Provide 3-5 concise bullet points highlighting the most important outcomes.
+- [3-5 bullet points of most important outcomes]
 
 📝 Summary
-Write a comprehensive 2-3 paragraph narrative summary.
+[2-3 paragraph narrative summary]
 
 💬 Discussion Points
-Organize by themes. For each theme, use these sub-headers on SEPARATE lines (not inline):
+[Organized by theme. For each theme:]
 ### [Theme Title]
-**Context:** [description on its own line]
+**Context:** [description]
 **Key Points:**
-- bullet point 1
-- bullet point 2
+- point 1
+- point 2
 **Participants' Views:**
 - **[Name]:** their view
 
 ✅ Action Items
-List all tasks with checkboxes:
-- [ ] [Clear, actionable task description]
+- [ ] [Same items as actionPoints array above]
 
 🔲 Decisions Made
 | Decision Title | What was decided | Why | Impact |
+| --- | --- | --- | --- |
 
 ❓ Open Questions
-Capture unresolved questions or items needing discussion.
+[Unresolved questions]
 
 📊 Data & Metrics Mentioned
 | Metric | Value | Context |
+| --- | --- | --- |
 
 📅 Important Dates & Deadlines
-Extract all dates mentioned.
+[All dates mentioned]
 
 🔗 References & Resources
-List documents, links, tools, or resources mentioned.
+[Documents, links, tools mentioned]
 
 💡 Ideas & Suggestions
-Capture brainstormed ideas or proposals.
+[Brainstormed ideas]
 
 🧱 Blockers & Risks
-Identify obstacles, concerns, or risks discussed.
+[Obstacles and risks]
 
 📍 Next Steps
-Summarize what should happen next in priority order.
+[Priority-ordered next steps]
 
 📌 Additional Notes
-Any other relevant information.
+[Any other relevant info]
 
-FORMATTING INSTRUCTIONS:
-- Use emoji headers (📋, 🎯, etc.) for each section — always followed by a space and the section title
-- Use **bold** only for primary labels at the start of a line (e.g., **Date:** value, **Duration:** value, **Owner:** value)
-- Every label MUST be followed by a colon and a space (e.g., **Attendees:** John, Sarah)
-- CRITICAL: **Context:**, **Key Points:**, and **Participants' Views:** MUST each start on their OWN new line
-- Use standard Markdown tables with header rows and separator rows (| --- |)
-- Use - for bullet points and - [ ] for action item checkboxes
-- Write ALL notes, summaries, and analysis ENTIRELY in English. Do NOT include any Hindi, Marathi, or other non-English words — translate everything to English.
-- Use ### for sub-section headers within a section
-- Do NOT use bold for emphasis within sentences — only for labels at the start of lines
+IMPORTANT:
+- Write ALL notes entirely in English — translate any Hindi, Marathi, or other non-English content
 - Professional tone throughout
-- DO NOT include the full transcript in output - it is stored separately
+- Do NOT include the full transcript in the notes field
 
-TRANSCRIPT TO ANALYZE:
+TRANSCRIPT:
 ${transcript}`;
 
+  try {
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
-      contents: {
-        parts: [{ text: analysisPrompt }],
-      },
+      contents: { parts: [{ text: analysisPrompt }] },
       config: {
         maxOutputTokens: 65536,
         temperature: 0.1,
+        responseMimeType: 'application/json',
       },
     });
 
@@ -115,7 +125,7 @@ ${transcript}`;
 
     const isTruncated = response.candidates?.[0]?.finishReason === 'MAX_TOKENS';
 
-    return res.status(200).json({ analysisText: responseText, isTruncated });
+    return res.status(200).json({ responseText, isTruncated });
   } catch (error: any) {
     console.error('[API] Gemini analyze error:', error);
     return res.status(500).json({ error: error.message || 'Analysis failed' });

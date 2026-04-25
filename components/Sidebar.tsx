@@ -8,8 +8,6 @@ interface SidebarProps {
   activeId: string | null;
   onSelect: (id: string) => void;
   onNew: () => void;
-  onStartLive: () => void;
-  isLiveActive: boolean;
   onDelete: (id: string) => void;
   onLogout: () => void;
   theme: 'light' | 'dark';
@@ -19,8 +17,8 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
-  user, recordings, activeId, onSelect, onNew, onStartLive,
-  isLiveActive, onDelete, onLogout, theme, onToggleTheme, onClose, actionItems,
+  user, recordings, activeId, onSelect, onNew,
+  onDelete, onLogout, theme, onToggleTheme, onClose, actionItems,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -142,7 +140,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         {/* Primary nav */}
         <nav className="space-y-0.5">
           {navItems.map(item => {
-            const isActive = (activeId === item.id || (item.id === 'intelligence' && (activeId === 'strategist' || activeId === 'chatbot'))) && !isLiveActive;
+            const isActive = activeId === item.id || (item.id === 'intelligence' && (activeId === 'strategist' || activeId === 'chatbot'));
             return (
               <button
                 key={item.id}
@@ -168,7 +166,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           <button
             onClick={() => onSelect('manual-entry')}
             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-              activeId === 'manual-entry' && !isLiveActive
+              activeId === 'manual-entry'
                 ? 'bg-amber-500/10 text-amber-400'
                 : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-white/[0.04]'
             }`}
@@ -177,27 +175,11 @@ const Sidebar: React.FC<SidebarProps> = ({
             <span className="flex-1 text-left">Manual Entry</span>
           </button>
 
-          {/* Dictate — secondary action */}
-          <button
-            onClick={onStartLive}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-              isLiveActive
-                ? 'bg-teal-500/10 text-teal-400'
-                : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-white/[0.04]'
-            }`}
-          >
-            <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-            </svg>
-            <span className="flex-1 text-left">Dictate</span>
-            {isLiveActive && <div className="w-1.5 h-1.5 bg-teal-400 rounded-full animate-pulse" />}
-          </button>
-
           {/* Settings — secondary action */}
           <button
             onClick={() => onSelect('settings')}
             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-              activeId === 'settings' && !isLiveActive
+              activeId === 'settings'
                 ? 'bg-white/[0.06] text-[var(--text-primary)]'
                 : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-white/[0.04]'
             }`}
@@ -255,7 +237,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               <div
                 onClick={() => onSelect(rec.id)}
                 className={`w-full px-3 py-2.5 rounded-xl border transition-all cursor-pointer ${
-                  activeId === rec.id && !isLiveActive
+                  activeId === rec.id
                     ? 'bg-purple-500/8 border-purple-500/20'
                     : 'bg-transparent border-transparent hover:bg-white/[0.03] hover:border-white/[0.05]'
                 }`}

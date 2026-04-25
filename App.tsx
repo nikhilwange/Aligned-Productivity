@@ -4,7 +4,6 @@ import { v4 as uuidv4 } from 'uuid';
 import AudioRecorder from './components/AudioRecorder';
 import ResultsView from './components/ResultsView';
 import Sidebar from './components/Sidebar';
-import DictationView from './components/DictationView';
 import DictationLogView from './components/DictationLogView';
 import SessionsLogView from './components/SessionsLogView';
 import ActionItemsView from './components/ActionItemsView';
@@ -16,7 +15,7 @@ import AuthView from './components/AuthView';
 import ResetPassword from './components/ResetPassword';
 import LandingPage from './components/LandingPage';
 import { AppState, RecordingSession, AudioRecording, User, ChatMessage, RecordingSource, TrackedActionItem } from './types';
-import { analyzeConversation, extractTranscript, analyzeTranscript, enhanceDictationText } from './services/geminiService';
+import { extractTranscript, analyzeTranscript } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { uploadAudioToStorage } from './services/storageService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems, syncActionItemsFromRecording, updateActionItem, deleteActionItem } from './services/supabaseService';
@@ -42,7 +41,6 @@ const App: React.FC = () => {
   const [recordings, setRecordings] = useState<RecordingSession[]>([]);
   const [activeRecordingId, setActiveRecordingId] = useState<string | null>('home');
   const [isRecordingMode, setIsRecordingMode] = useState<boolean>(false);
-  const [isLiveMode, setIsLiveMode] = useState<boolean>(false);
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [showAuthView, setShowAuthView] = useState(false);
@@ -99,7 +97,6 @@ const App: React.FC = () => {
             actionLabel: 'View session',
             onAction: () => {
               setIsRecordingMode(false);
-              setIsLiveMode(false);
               setActiveRecordingId(processingSessionId);
             },
           }
@@ -116,7 +113,6 @@ const App: React.FC = () => {
             actionLabel: 'View & retry',
             onAction: () => {
               setIsRecordingMode(false);
-              setIsLiveMode(false);
               setActiveRecordingId(processingSessionId);
             },
           } : undefined
@@ -352,7 +348,6 @@ const App: React.FC = () => {
 
   const handleStartNew = () => {
     setActiveRecordingId(null);
-    setIsLiveMode(false);
     setIsRecordingMode(true);
     setAppState(AppState.IDLE);
   };
@@ -360,20 +355,6 @@ const App: React.FC = () => {
   const handleGoHome = () => {
     setActiveRecordingId('home');
     setIsRecordingMode(false);
-    setIsLiveMode(false);
-    setAppState(AppState.IDLE);
-  };
-
-  const handleStartLive = () => {
-    setActiveRecordingId(null);
-    setIsRecordingMode(false);
-    setIsLiveMode(true);
-    setAppState(AppState.LIVE);
-  };
-
-  const handleEndLive = () => {
-    setIsLiveMode(false);
-    setIsRecordingMode(true);
     setAppState(AppState.IDLE);
   };
 
@@ -383,7 +364,6 @@ const App: React.FC = () => {
       return;
     }
     setIsRecordingMode(false);
-    setIsLiveMode(false);
     setActiveRecordingId(id);
   };
 
@@ -655,8 +635,6 @@ const App: React.FC = () => {
           activeId={activeRecordingId}
           onSelect={handleSelectRecording}
           onNew={handleStartNew}
-          onStartLive={handleStartLive}
-          isLiveActive={isLiveMode}
           onDelete={handleDeleteRecording}
           onLogout={handleLogout}
           theme={theme}
@@ -678,8 +656,6 @@ const App: React.FC = () => {
             activeId={activeRecordingId}
             onSelect={(id) => { handleSelectRecording(id); setSidebarOpen(false); }}
             onNew={() => { handleStartNew(); setSidebarOpen(false); }}
-            onStartLive={() => { handleStartLive(); setSidebarOpen(false); }}
-            isLiveActive={isLiveMode}
             onDelete={handleDeleteRecording}
             onLogout={handleLogout}
             theme={theme}
@@ -691,8 +667,7 @@ const App: React.FC = () => {
 
       {/* Main Content - always visible */}
       <main className="flex flex-1 flex-col h-full overflow-hidden bg-[var(--surface-950)] z-10 w-full md:border-l md:border-white/[0.04]">
-        {!isLiveMode && (
-          <header className="h-14 md:h-16 border-b border-white/[0.06] flex items-center px-4 md:px-8 justify-between bg-[var(--surface-900)]/50 backdrop-blur-xl shrink-0">
+        <header className="h-14 md:h-16 border-b border-white/[0.06] flex items-center px-4 md:px-8 justify-between bg-[var(--surface-900)]/50 backdrop-blur-xl shrink-0">
             <div className="flex items-center space-x-3">
               {/* Mobile back button - only when viewing a specific session */}
               {activeSession && (
@@ -733,7 +708,6 @@ const App: React.FC = () => {
               </button>
             </div>
           </header>
-        )}
 
         <div className="flex-1 overflow-hidden relative pb-16 md:pb-0">
           {/* Processing Banner — visible on all views when a session is processing */}
@@ -744,64 +718,12 @@ const App: React.FC = () => {
                 session={ps}
                 onTap={() => {
                   setIsRecordingMode(false);
-                  setIsLiveMode(false);
                   setActiveRecordingId(processingSessionId);
                 }}
               />
             ) : null;
           })()}
-          {isLiveMode ? (
-            <DictationView
-              onCancel={handleEndLive}
-              transcriptionEngine={transcriptionEngine}
-              onRecordingComplete={async (transcript, audioBlob) => {
-                if (!user) return;
-
-                const newSession: RecordingSession = {
-                  id: uuidv4(),
-                  title: `Dictation ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
-                  date: Date.now(),
-                  duration: 0,
-                  analysis: null,
-                  status: 'processing',
-                  source: 'dictation'
-                };
-
-                setRecordings(prev => [newSession, ...prev]);
-                setActiveRecordingId(newSession.id);
-                setIsLiveMode(false);
-                setAppState(AppState.PROCESSING);
-                setProcessingSessionId(newSession.id);
-
-                try {
-                  await saveRecording(newSession, user.id);
-
-                  let finalTranscript = transcript;
-                  if (!finalTranscript && audioBlob) {
-                    console.log("Live transcript missing, falling back to audio blob analysis...");
-                    const fallbackAnalysis = await analyzeConversation(audioBlob);
-                    finalTranscript = fallbackAnalysis.transcript;
-                  }
-
-                  if (!finalTranscript || finalTranscript.trim().length === 0) {
-                    throw new Error("No transcript available from dictation or audio fallback");
-                  }
-
-                  const analysis = await enhanceDictationText(finalTranscript);
-                  const completedSession: RecordingSession = { ...newSession, analysis, status: 'completed' };
-                  setRecordings(prev => prev.map(rec => rec.id === newSession.id ? completedSession : rec));
-                  await saveRecording(completedSession, user.id);
-                  setAppState(AppState.IDLE);
-                } catch (err: any) {
-                  console.error("Dictation processing failed", err);
-                  const errorSession: RecordingSession = { ...newSession, status: 'error', errorMessage: err.message };
-                  setRecordings(prev => prev.map(rec => rec.id === newSession.id ? errorSession : rec));
-                  await saveRecording(errorSession, user.id);
-                  setAppState(AppState.IDLE);
-                }
-              }}
-            />
-          ) : activeRecordingId === 'home' ? (
+          {activeRecordingId === 'home' ? (
             <HomeView
               user={user}
               recordings={recordings}
@@ -809,7 +731,6 @@ const App: React.FC = () => {
               isLoading={recordingsLoading}
               onSelectSession={handleSelectRecording}
               onStartNew={handleStartNew}
-              onStartLive={handleStartLive}
             />
           ) : activeRecordingId === 'sessions' || activeRecordingId === 'dictations' ? (
             <SessionsLogView
@@ -875,15 +796,13 @@ const App: React.FC = () => {
               isLoading={recordingsLoading}
               onSelectSession={handleSelectRecording}
               onStartNew={handleStartNew}
-              onStartLive={handleStartLive}
             />
           )}
         </div>
       </main>
 
       {/* Mobile Bottom Navigation */}
-      {!isLiveMode && (
-        <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[var(--surface-900)]/95 backdrop-blur-xl border-t border-white/[0.06]" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[var(--surface-900)]/95 backdrop-blur-xl border-t border-white/[0.06]" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
           <div className="flex items-end justify-around h-16 px-2">
 
             {/* Home */}
@@ -945,7 +864,6 @@ const App: React.FC = () => {
 
           </div>
         </nav>
-      )}
 
       {/* Toast notifications */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
