@@ -177,7 +177,9 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
         console.warn('[AudioRecorder] Silence detection setup failed:', err);
       }
 
-      const options = { audioBitsPerSecond: 128000 };
+      // 32 kbps Opus — voice-quality stays excellent, file size drops ~75%.
+      // 1h meeting ≈ 14 MB instead of ~58 MB; fits well under Supabase free tier limits.
+      const options = { audioBitsPerSecond: 32000 };
       const mediaRecorder = new MediaRecorder(finalStream, options);
       mediaRecorderRef.current = mediaRecorder;
       chunksRef.current = [];

@@ -17,7 +17,7 @@ import LandingPage from './components/LandingPage';
 import { AppState, RecordingSession, AudioRecording, User, ChatMessage, RecordingSource, TrackedActionItem } from './types';
 import { extractTranscript, analyzeTranscript } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
-import { uploadAudioToStorage } from './services/storageService';
+import { uploadAudioToStorage, deleteAudioPaths } from './services/storageService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems, syncActionItemsFromRecording, updateActionItem, deleteActionItem } from './services/supabaseService';
 import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery } from './services/recordingRecovery';
 import ProcessingBanner from './components/ProcessingBanner';
@@ -387,12 +387,15 @@ const App: React.FC = () => {
 
     setConfirmRequest({
       title: 'Delete this recording?',
-      message: 'The session, transcript, and notes will be removed. This cannot be undone.',
+      message: 'The session, transcript, notes, and audio archive will be removed. This cannot be undone.',
       confirmLabel: 'Delete',
       cancelLabel: 'Keep',
       variant: 'destructive',
       onConfirm: async () => {
         const previousRecordings = [...recordings];
+        const sessionToDelete = recordings.find(rec => rec.id === id);
+        const audioPathToRemove = sessionToDelete?.audioPath;
+
         setRecordings(prev => prev.filter(rec => rec.id !== id));
 
         if (activeRecordingId === id) {
@@ -406,6 +409,11 @@ const App: React.FC = () => {
         } catch (err) {
           setRecordings(previousRecordings);
           addToast('Delete failed — check your connection and try again.', 'error');
+          return;
+        }
+
+        if (audioPathToRemove) {
+          deleteAudioPaths([audioPathToRemove]).catch(() => {});
         }
       },
     });
