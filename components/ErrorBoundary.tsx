@@ -68,9 +68,9 @@ class ErrorBoundary extends Component<Props, State> {
             )}
             <button
               onClick={this.handleReset}
-              className="w-full py-3 bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-white font-bold rounded-xl shadow-lg transition-all active:scale-[0.98]"
+              className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-black font-bold rounded-xl shadow-lg transition-all active:scale-[0.98]"
             >
-              Try again
+              Retry
             </button>
           </div>
         </div>

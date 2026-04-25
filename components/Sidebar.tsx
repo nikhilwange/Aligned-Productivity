@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { RecordingSession, User, TrackedActionItem } from '../types';
+import { formatDateShort } from '../utils/formatters';
 
 interface SidebarProps {
   user: User | null;
@@ -100,12 +101,12 @@ const Sidebar: React.FC<SidebarProps> = ({
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <div className="relative">
-              <div className="w-10 h-10 bg-gradient-to-br from-amber-500 via-orange-500 to-yellow-600 rounded-xl shadow-lg flex items-center justify-center text-white font-bold text-lg">
+              <div className="w-10 h-10 bg-amber-500 rounded-xl shadow-lg flex items-center justify-center text-black font-bold text-lg">
                 A
               </div>
             </div>
             <div>
-              <h1 className="text-base font-bold tracking-tight leading-none text-[var(--text-primary)]">Aligned</h1>
+              <h1 className="font-display-tight text-lg font-semibold leading-none text-[var(--text-primary)]">Aligned</h1>
               <span className="text-[9px] font-semibold opacity-30 tracking-wider uppercase mt-0.5 block">Workspace Intelligence</span>
             </div>
           </div>
@@ -130,7 +131,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         {/* New Session button */}
         <button
           onClick={onNew}
-          className="w-full py-3 px-4 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 text-white rounded-xl font-semibold shadow-lg shadow-purple-500/20 transition-all flex items-center justify-center gap-2 text-sm active:scale-[0.98] mb-5"
+          className="w-full py-3 px-4 bg-amber-500 hover:bg-amber-400 text-black rounded-xl font-semibold shadow-lg transition-all flex items-center justify-center gap-2 text-sm active:scale-[0.98] mb-5"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
@@ -190,6 +191,19 @@ const Sidebar: React.FC<SidebarProps> = ({
             </svg>
             <span className="flex-1 text-left">Dictate</span>
             {isLiveActive && <div className="w-1.5 h-1.5 bg-teal-400 rounded-full animate-pulse" />}
+          </button>
+
+          {/* Settings — secondary action */}
+          <button
+            onClick={() => onSelect('settings')}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+              activeId === 'settings' && !isLiveActive
+                ? 'bg-white/[0.06] text-[var(--text-primary)]'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-white/[0.04]'
+            }`}
+          >
+            <SettingsIcon className="w-4 h-4 flex-shrink-0" />
+            <span className="flex-1 text-left">Settings</span>
           </button>
         </nav>
       </div>
@@ -253,7 +267,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                       {rec.title}
                     </div>
                     <div className="text-[10px] text-[var(--text-muted)] flex gap-1.5">
-                      <span>{new Date(rec.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+                      <span>{formatDateShort(rec.date)}</span>
                     </div>
                   </div>
                 </div>
@@ -279,7 +293,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         <div className="px-4 pb-4 pt-2 border-t border-white/[0.04] shrink-0">
           <div className="p-3 glass rounded-xl flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-purple-700 text-white flex items-center justify-center font-bold text-xs shadow-lg shadow-purple-500/20">
+              <div className="w-8 h-8 rounded-lg bg-purple-500 text-white flex items-center justify-center font-bold text-xs shadow-lg">
                 {getUserInitials(user.name)}
               </div>
               <div>
@@ -287,7 +301,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <span className="text-[10px] opacity-40 font-medium block truncate max-w-[130px]">{user.email}</span>
               </div>
             </div>
-            <button onClick={onLogout} className="p-1.5 opacity-30 hover:text-red-400 hover:bg-red-500/10 hover:opacity-100 rounded-lg transition-all" title="Logout">
+            <button onClick={onLogout} className="p-1.5 opacity-30 hover:text-red-400 hover:bg-red-500/10 hover:opacity-100 rounded-lg transition-all" title="Sign out">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
               </svg>
@@ -327,6 +341,13 @@ const IntelligenceIcon: React.FC<{ className?: string }> = ({ className }) => (
 const PencilIcon: React.FC<{ className?: string }> = ({ className }) => (
   <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+  </svg>
+);
+
+const SettingsIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
   </svg>
 );
 

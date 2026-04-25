@@ -400,7 +400,7 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
                                 </svg>
                             </div>
                         </div>
-                        <h2 className="text-2xl font-bold text-[var(--text-primary)] mb-2">Dictation</h2>
+                        <h2 className="font-display-tight text-2xl font-semibold text-[var(--text-primary)] mb-2">Dictation</h2>
                         <p className="text-sm text-[var(--text-muted)] mb-2 text-center max-w-sm">Speak naturally and AI will transcribe and refine your text instantly</p>
                         {isSarvam && (
                             <p className="text-[10px] font-semibold text-amber-500/60 uppercase tracking-wider mb-8">Sarvam engine — Hindi / Marathi optimized</p>
@@ -408,7 +408,7 @@ const DictationView: React.FC<DictationViewProps> = ({ onRecordingComplete, onCa
                         {!isSarvam && <div className="mb-10"></div>}
                         <button
                             onClick={handleStart}
-                            className={`px-8 py-4 text-white font-bold rounded-2xl shadow-lg transition-all duration-300 active:scale-[0.97] flex items-center gap-3 text-base ${
+                            className={`px-8 py-4 text-white font-bold rounded-2xl shadow-lg transition-all duration-300 active:scale-[0.98] flex items-center gap-3 text-base ${
                                 isSarvam
                                     ? 'bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 shadow-amber-500/25'
                                     : 'bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 shadow-purple-500/25'

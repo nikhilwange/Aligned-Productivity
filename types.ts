@@ -27,6 +27,7 @@ export interface RecordingSession {
   source: RecordingSource;
   processingStep?: ProcessingStep;
   recoveryId?: string; // IndexedDB key — kept while audio is still recoverable for retry
+  audioPath?: string;  // Supabase Storage path for the archived full recording (for replay/re-analysis)
 }
 
 export enum AppState {

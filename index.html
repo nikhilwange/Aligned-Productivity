@@ -11,7 +11,7 @@
     <!-- Premium Typography -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     
     <style>
       /* ═══════════════════════════════════════════════════════════════════
@@ -100,10 +100,7 @@
         --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.4);
         --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4);
         --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
-        --shadow-glow-purple: 0 0 40px rgba(168, 85, 247, 0.25);
-        --shadow-glow-amber: 0 0 40px rgba(245, 158, 11, 0.25);
-        --shadow-glow-teal: 0 0 40px rgba(20, 184, 166, 0.25);
-        
+
         --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
         --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
         --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -161,41 +158,106 @@
       .font-mono {
         font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
       }
-      
+
+      .font-display {
+        font-family: 'Fraunces', 'Iowan Old Style', 'Palatino', Georgia, serif;
+        font-optical-sizing: auto;
+        letter-spacing: -0.02em;
+      }
+      .font-display-tight {
+        font-family: 'Fraunces', 'Iowan Old Style', 'Palatino', Georgia, serif;
+        font-optical-sizing: auto;
+        letter-spacing: -0.035em;
+      }
+      .tabular-nums {
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* ─── Focus ring (keyboard-only) ───
+         Visible amber ring for keyboard nav; pointer focus stays quiet.
+         Elements that explicitly set `focus:outline-none` (inputs, textareas)
+         still opt-out of the default outline; they render their own focus
+         state via border color changes. */
+      :focus {
+        outline: none;
+      }
+      :focus-visible {
+        outline: 2px solid var(--brand-gold);
+        outline-offset: 2px;
+        border-radius: 6px;
+        transition: outline-offset 120ms ease;
+      }
+      /* Inputs/textareas keep their border-based focus; no ring needed */
+      input:focus-visible,
+      textarea:focus-visible,
+      select:focus-visible {
+        outline: none;
+      }
+
       /* ─── Selection ─── */
       ::selection {
         background: rgba(168, 85, 247, 0.3);
         color: white;
       }
       
-      /* ─── Scrollbar ─── */
-      ::-webkit-scrollbar {
-        width: 6px;
-        height: 6px;
+      /* ─── Scrollbar ───
+         Thin, quiet rail that only shows on scroll-hover. Pill thumb in a
+         muted surface tone so it fades into dark backgrounds until the user
+         interacts with a scroll container. */
+      * {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
       }
-      
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
       ::-webkit-scrollbar-track {
         background: transparent;
       }
-      
       ::-webkit-scrollbar-thumb {
-        background: var(--surface-500);
+        background: rgba(255, 255, 255, 0.08);
         border-radius: var(--radius-full);
+        border: 2px solid transparent;
+        background-clip: content-box;
+        transition: background 160ms ease;
       }
-      
       ::-webkit-scrollbar-thumb:hover {
-        background: var(--surface-400);
+        background: rgba(255, 255, 255, 0.22);
+        background-clip: content-box;
       }
-      
+      ::-webkit-scrollbar-corner {
+        background: transparent;
+      }
+
       .scrollbar-hide::-webkit-scrollbar {
         display: none;
       }
-      
       .scrollbar-hide {
         -ms-overflow-style: none;
         scrollbar-width: none;
       }
-      
+
+      /* ─── Skeleton shimmer ─── */
+      @keyframes skeleton-shimmer {
+        0%   { background-position: -200% 0; }
+        100% { background-position: 200% 0; }
+      }
+      .skeleton {
+        background: linear-gradient(
+          90deg,
+          rgba(255,255,255,0.04) 0%,
+          rgba(255,255,255,0.09) 50%,
+          rgba(255,255,255,0.04) 100%
+        );
+        background-size: 200% 100%;
+        animation: skeleton-shimmer 1.4s ease-in-out infinite;
+        border-radius: 8px;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .skeleton { animation: none; background: rgba(255,255,255,0.05); }
+      }
+
       /* ═══════════════════════════════════════════════════════════════════
          GLASSMORPHISM COMPONENTS
          ═══════════════════════════════════════════════════════════════════ */
@@ -594,18 +656,6 @@
       
       .text-balance {
         text-wrap: balance;
-      }
-      
-      .glow-purple {
-        box-shadow: var(--shadow-glow-purple);
-      }
-      
-      .glow-amber {
-        box-shadow: var(--shadow-glow-amber);
-      }
-      
-      .glow-teal {
-        box-shadow: var(--shadow-glow-teal);
       }
       
       /* Noise texture overlay */

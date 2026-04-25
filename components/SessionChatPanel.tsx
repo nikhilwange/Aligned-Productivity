@@ -140,7 +140,7 @@ const SessionChatPanel: React.FC<SessionChatPanelProps> = ({ session }) => {
         <div className="max-w-2xl mx-auto space-y-5">
           {messages.length === 0 && !isLoading ? (
             <div className="flex flex-col items-center justify-center py-12 text-center animate-fade-in">
-              <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-teal-500/20 to-cyan-500/20 flex items-center justify-center border border-white/[0.08] mb-5">
+              <div className="w-14 h-14 rounded-xl bg-teal-500/15 flex items-center justify-center border border-white/[0.08] mb-5">
                 <svg className="w-7 h-7 text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                 </svg>
@@ -173,7 +173,7 @@ const SessionChatPanel: React.FC<SessionChatPanelProps> = ({ session }) => {
                 <div
                   className={`max-w-[85%] rounded-2xl px-4 py-3 ${
                     msg.role === 'user'
-                      ? 'bg-gradient-to-r from-purple-600 to-purple-700 text-white shadow-lg shadow-purple-500/15'
+                      ? 'bg-purple-500 text-white shadow-lg'
                       : 'glass border border-white/[0.06]'
                   }`}
                 >
@@ -310,7 +310,7 @@ const SessionChatPanel: React.FC<SessionChatPanelProps> = ({ session }) => {
           <button
             onClick={() => handleSend()}
             disabled={!input.trim() || isLoading}
-            className="shrink-0 w-10 h-10 rounded-xl bg-gradient-to-r from-teal-500 to-cyan-600 text-white flex items-center justify-center shadow-lg shadow-teal-500/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+            className="shrink-0 w-10 h-10 rounded-xl bg-teal-500 hover:bg-teal-400 text-white flex items-center justify-center shadow-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />

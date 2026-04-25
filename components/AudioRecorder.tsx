@@ -469,7 +469,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
                 </div>
               ) : (
                 <>
-                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500/20 to-teal-500/20 flex items-center justify-center mb-4 text-purple-600 group-hover:scale-110 transition-transform duration-300">
+                  <div className="w-16 h-16 rounded-2xl bg-amber-500/15 flex items-center justify-center mb-4 text-amber-400 group-hover:scale-110 transition-transform duration-300">
                     <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                     </svg>
@@ -516,7 +516,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
       </div>
 
       <div className="text-center max-w-sm">
-        <h3 className="text-2xl font-bold text-[var(--text-primary)] mb-3 tracking-tight">
+        <h3 className="font-display-tight text-2xl font-semibold text-[var(--text-primary)] mb-3">
           {isRecording ? "Capturing intelligence" : isProcessing ? "Synthesizing insights" : "Structured Intelligence"}
         </h3>
         <p className="text-[var(--text-tertiary)] font-medium text-sm leading-relaxed">

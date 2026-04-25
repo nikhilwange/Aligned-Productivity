@@ -66,6 +66,7 @@ export const saveRecording = async (recording: RecordingSession, userId: string)
       analysis: recording.analysis, // Stores the MeetingAnalysis object (transcript, summary, etc.)
       errorMessage: recording.errorMessage,
       recoveryId: recording.recoveryId ?? null,
+      audioPath: recording.audioPath ?? null,
     });
 
   if (error) {

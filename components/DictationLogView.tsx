@@ -1,6 +1,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { RecordingSession } from '../types';
+import EmptyState from './EmptyState';
 
 interface DictationLogViewProps {
   sessions: RecordingSession[];
@@ -55,12 +56,12 @@ const DictationLogView: React.FC<DictationLogViewProps> = ({ sessions, onDelete 
       <header className="shrink-0 bg-[var(--surface-900)]/80 backdrop-blur-xl border-b border-white/[0.06] sticky top-0 z-40">
         <div className="h-16 flex items-center px-4 md:px-8">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white">
+            <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center text-black">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
               </svg>
             </div>
-            <h1 className="text-xl font-bold tracking-tight text-[var(--text-primary)]">My Dictations</h1>
+            <h1 className="font-display-tight text-2xl font-semibold text-[var(--text-primary)]">My Dictations</h1>
           </div>
         </div>
       </header>
@@ -69,15 +70,16 @@ const DictationLogView: React.FC<DictationLogViewProps> = ({ sessions, onDelete 
       <div className="flex-1 overflow-y-auto pt-8 pb-32 px-4 md:px-8 scrollbar-hide">
         <div className="max-w-3xl mx-auto space-y-12">
           {groupedSessions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-center">
-              <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
-                <svg className="w-8 h-8 opacity-20 text-[var(--text-primary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+            <EmptyState
+              tone="amber"
+              title="No dictations yet"
+              description="Sessions recorded via Dictation Flow will appear here."
+              icon={
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                 </svg>
-              </div>
-              <h3 className="opacity-60 font-semibold text-[var(--text-primary)]">No dictations yet</h3>
-              <p className="opacity-30 text-sm mt-1 text-[var(--text-primary)]">Sessions recorded via Dictation Flow will appear here.</p>
-            </div>
+              }
+            />
           ) : (
             groupedSessions.map(([date, daySessions]) => (
               <div key={date} className="space-y-4">

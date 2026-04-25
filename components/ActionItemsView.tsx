@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { RecordingSession, TrackedActionItem, ActionItemStatus, ActionItemUpdate } from '../types';
 import { updateActionItem, deleteActionItem } from '../services/supabaseService';
+import EmptyState from './EmptyState';
 
 interface ActionItemsViewProps {
   recordings: RecordingSession[];
@@ -280,15 +281,16 @@ const ActionItemsView: React.FC<ActionItemsViewProps> = ({
 
   if (actionItems.length === 0) {
     return (
-      <div className="h-full flex flex-col items-center justify-center p-8 text-center">
-        <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-5">
-          <svg className="w-8 h-8 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+      <EmptyState
+        tone="amber"
+        title="No action items yet"
+        description="Action items from your recorded sessions will appear here automatically once processing is complete."
+        icon={
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
           </svg>
-        </div>
-        <h3 className="text-lg font-bold text-[var(--text-primary)] mb-2">No action items yet</h3>
-        <p className="text-sm text-[var(--text-muted)] max-w-xs">Action items from your recorded sessions will appear here automatically once processing is complete.</p>
-      </div>
+        }
+      />
     );
   }
 
@@ -299,13 +301,13 @@ const ActionItemsView: React.FC<ActionItemsViewProps> = ({
       <div className="px-6 md:px-8 pt-6 pb-4 border-b border-[var(--glass-border)] shrink-0">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500/20 to-orange-500/20 flex items-center justify-center border border-white/[0.08]">
+            <div className="w-9 h-9 rounded-xl bg-amber-500/15 flex items-center justify-center border border-white/[0.08]">
               <svg className="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
               </svg>
             </div>
             <div>
-              <h1 className="text-lg font-bold text-[var(--text-primary)] tracking-tight">Action Tracker</h1>
+              <h1 className="font-display-tight text-xl font-semibold text-[var(--text-primary)]">Action Tracker</h1>
               <p className="text-xs text-[var(--text-muted)]">{actionItems.length} items total</p>
             </div>
           </div>

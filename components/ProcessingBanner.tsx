@@ -16,12 +16,12 @@ const ProcessingBanner: React.FC<ProcessingBannerProps> = ({ session, onTap }) =
   return (
     <button
       onClick={onTap}
-      className="w-full flex items-center gap-3 px-4 py-2.5 bg-gradient-to-r from-purple-500/15 via-teal-500/10 to-amber-500/15 border-b border-white/[0.06] hover:from-purple-500/20 hover:via-teal-500/15 hover:to-amber-500/20 transition-all group cursor-pointer"
+      className="w-full flex items-center gap-3 px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/15 hover:bg-amber-500/15 transition-all group cursor-pointer"
     >
       {/* Spinner */}
       <div className="relative w-5 h-5 shrink-0">
         <div className="absolute inset-0 rounded-full border-2 border-white/10"></div>
-        <div className="absolute inset-0 rounded-full border-2 border-t-purple-400 border-r-teal-400 border-b-amber-400 border-l-transparent animate-spin"></div>
+        <div className="absolute inset-0 rounded-full border-2 border-t-amber-400 border-r-transparent border-b-transparent border-l-transparent animate-spin"></div>
       </div>
 
       {/* Info */}

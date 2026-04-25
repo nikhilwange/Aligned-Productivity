@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { RecordingSession, StrategicAnalysis } from '../types';
 import { generateStrategicAnalysis } from '../services/strategyService';
+import EmptyState from './EmptyState';
 
 interface StrategistViewProps {
   recordings: RecordingSession[];
@@ -166,13 +167,13 @@ const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) =
       <header className="shrink-0 bg-[var(--surface-900)]/80 backdrop-blur-xl border-b border-white/[0.06] sticky top-0 z-40">
         <div className="h-16 flex items-center px-4 md:px-8 justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center text-white shadow-lg">
+            <div className="w-10 h-10 rounded-xl bg-purple-500 flex items-center justify-center text-white shadow-lg">
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
               </svg>
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight text-[var(--text-primary)]">Intelligent Strategist</h1>
+              <h1 className="font-display-tight text-2xl font-semibold text-[var(--text-primary)]">Intelligent Strategist</h1>
               <p className="text-[10px] font-semibold opacity-30 tracking-wider uppercase mt-0.5 text-[var(--text-primary)]">Workspace Intelligence</p>
             </div>
           </div>
@@ -237,40 +238,36 @@ const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) =
 
           {/* No meetings state */}
           {completedMeetingsCount === 0 && (
-            <div className="flex flex-col items-center justify-center py-20 text-center">
-              <div className="w-20 h-20 rounded-2xl bg-white/5 flex items-center justify-center mb-6">
-                <svg className="w-10 h-10 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            <EmptyState
+              tone="purple"
+              title={dateFrom || dateTo ? 'No meetings in selected date range' : 'No meetings to analyze yet'}
+              description={dateFrom || dateTo
+                ? 'Try adjusting the date range or clear the filter.'
+                : 'Record at least 2 meetings to unlock strategic insights across your workspace.'}
+              icon={
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                 </svg>
-              </div>
-              <h3 className="opacity-60 font-semibold text-lg mb-2">
-                {dateFrom || dateTo ? 'No meetings in selected date range' : 'No meetings to analyze yet'}
-              </h3>
-              <p className="opacity-30 text-sm max-w-md">
-                {dateFrom || dateTo
-                  ? 'Try adjusting the date range or clear the filter.'
-                  : 'Record at least 2 meetings to unlock strategic insights across your workspace.'
-                }
-              </p>
-            </div>
+              }
+            />
           )}
 
           {/* Has meetings but no analysis yet */}
           {completedMeetingsCount > 0 && !analysis && !isLoading && !error && (
             <div className="space-y-8">
               <div className="text-center py-12">
-                <div className="w-24 h-24 mx-auto rounded-3xl bg-gradient-to-br from-purple-500/20 to-indigo-600/20 flex items-center justify-center mb-6 border border-white/10">
+                <div className="w-24 h-24 mx-auto rounded-3xl bg-purple-500/15 flex items-center justify-center mb-6 border border-white/10">
                   <svg className="w-12 h-12 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                   </svg>
                 </div>
-                <h2 className="text-2xl font-bold mb-3 text-[var(--text-primary)]">Ready for Strategic Analysis</h2>
+                <h2 className="font-display-tight text-2xl font-semibold mb-3 text-[var(--text-primary)]">Ready for Strategic Analysis</h2>
                 <p className="text-[var(--text-secondary)] mb-8 max-w-lg mx-auto opacity-60">
                   Analyze {completedMeetingsCount} meeting{completedMeetingsCount !== 1 ? 's' : ''} to identify process gaps, strategic actions, and recurring issues across your workspace.
                 </p>
                 <button
                   onClick={handleGenerateAnalysis}
-                  className="px-8 py-4 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl font-semibold shadow-lg shadow-purple-500/30 transition-all duration-300 inline-flex items-center gap-3 text-base"
+                  className="px-8 py-4 bg-purple-500 hover:bg-purple-400 text-white rounded-xl font-semibold shadow-lg transition-all duration-300 inline-flex items-center gap-3 text-base"
                 >
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
@@ -282,17 +279,26 @@ const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) =
               {/* Preview cards */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="glass p-6 rounded-xl border border-white/10">
-                  <div className="text-3xl mb-2">🔍</div>
+                  <svg className="w-6 h-6 mb-3 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <circle cx="11" cy="11" r="7" />
+                    <path strokeLinecap="round" d="M21 21l-5-5" />
+                  </svg>
                   <h3 className="font-bold mb-1 text-[var(--text-primary)]">Process Gaps</h3>
                   <p className="text-xs opacity-50 text-[var(--text-primary)]">Repeated bottlenecks across meetings</p>
                 </div>
                 <div className="glass p-6 rounded-xl border border-white/10">
-                  <div className="text-3xl mb-2">🎯</div>
+                  <svg className="w-6 h-6 mb-3 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <circle cx="12" cy="12" r="10" />
+                    <circle cx="12" cy="12" r="6" />
+                    <circle cx="12" cy="12" r="2" />
+                  </svg>
                   <h3 className="font-bold mb-1 text-[var(--text-primary)]">Strategic Actions</h3>
                   <p className="text-xs opacity-50 text-[var(--text-primary)]">High-level operational improvements</p>
                 </div>
                 <div className="glass p-6 rounded-xl border border-white/10">
-                  <div className="text-3xl mb-2">⚠️</div>
+                  <svg className="w-6 h-6 mb-3 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0zM12 9v4M12 17h.01" />
+                  </svg>
                   <h3 className="font-bold mb-1 text-[var(--text-primary)]">Issue Patterns</h3>
                   <p className="text-xs opacity-50 text-[var(--text-primary)]">Recurring unresolved problems</p>
                 </div>
@@ -305,8 +311,8 @@ const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) =
             <div className="flex flex-col items-center justify-center py-20">
               <div className="relative w-24 h-24 mb-8">
                 <div className="absolute inset-0 rounded-full border-4 border-white/10"></div>
-                <div className="absolute inset-0 rounded-full border-4 border-t-purple-500 border-r-indigo-500 border-b-purple-600 border-l-transparent animate-spin"></div>
-                <div className="absolute inset-4 rounded-full bg-gradient-to-br from-purple-500/20 to-indigo-500/20 animate-pulse"></div>
+                <div className="absolute inset-0 rounded-full border-4 border-t-purple-500 border-r-transparent border-b-transparent border-l-transparent animate-spin"></div>
+                <div className="absolute inset-4 rounded-full bg-purple-500/15 animate-pulse"></div>
               </div>
               <h3 className="text-xl font-bold mb-2">Analyzing workspace intelligence...</h3>
               <p className="text-sm opacity-40">Processing {completedMeetingsCount} meetings across your workspace</p>
@@ -338,8 +344,10 @@ const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) =
               {/* Executive Summary */}
               <div className="glass p-8 rounded-2xl border border-white/10 group">
                 <div className="flex items-center gap-3 mb-6">
-                  <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500/20 to-indigo-500/20 flex items-center justify-center border border-white/[0.08]">
-                    <span className="text-2xl">📊</span>
+                  <div className="w-12 h-12 rounded-xl bg-purple-500/15 flex items-center justify-center border border-white/[0.08]">
+                    <svg className="w-6 h-6 text-purple-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 3v18h18M7 17V9M12 17V5M17 17v-7" />
+                    </svg>
                   </div>
                   <div className="flex-1">
                     <h2 className="text-xl font-bold text-[var(--text-primary)]">Executive Summary</h2>

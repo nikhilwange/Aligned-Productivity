@@ -11,16 +11,19 @@ import ActionItemsView from './components/ActionItemsView';
 import HomeView from './components/HomeView';
 import IntelligenceView from './components/IntelligenceView';
 import ManualEntryView from './components/ManualEntryView';
+import SettingsView from './components/SettingsView';
 import AuthView from './components/AuthView';
 import ResetPassword from './components/ResetPassword';
 import LandingPage from './components/LandingPage';
 import { AppState, RecordingSession, AudioRecording, User, ChatMessage, RecordingSource, TrackedActionItem } from './types';
 import { analyzeConversation, extractTranscript, analyzeTranscript, enhanceDictationText } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
+import { uploadAudioToStorage } from './services/storageService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems, syncActionItemsFromRecording, updateActionItem, deleteActionItem } from './services/supabaseService';
 import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery } from './services/recordingRecovery';
 import ProcessingBanner from './components/ProcessingBanner';
 import RecoveryModal from './components/RecoveryModal';
+import ConfirmModal, { ConfirmRequest } from './components/ConfirmModal';
 import { ToastContainer, ToastData } from './components/Toast';
 
 declare global {
@@ -51,6 +54,7 @@ const App: React.FC = () => {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isManualProcessing, setIsManualProcessing] = useState(false);
   const [actionItems, setActionItems] = useState<TrackedActionItem[]>([]);
+  const [recordingsLoading, setRecordingsLoading] = useState<boolean>(true);
   const [transcriptionEngine, setTranscriptionEngine] = useState<'gemini' | 'sarvam'>(() => {
     return (localStorage.getItem('aligned-engine') as 'gemini' | 'sarvam') || 'gemini';
   });
@@ -65,6 +69,7 @@ const App: React.FC = () => {
     source: RecordingSource;
     recoveryId: string;
   } | null>(null);
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
 
   // ─── Toast helper ─────────────────────────────────────────────────────────
   const addToast = useCallback((message: string, type: ToastData['type'] = 'success', opts?: { actionLabel?: string; onAction?: () => void }) => {
@@ -186,6 +191,7 @@ const App: React.FC = () => {
     if (user) {
       const loadData = async () => {
         console.log('[App] Loading recordings for user:', user.id);
+        setRecordingsLoading(true);
 
         // Fetch recordings and action items in parallel
         const [data, trackedItems] = await Promise.all([
@@ -264,15 +270,23 @@ const App: React.FC = () => {
         } catch (err) {
           console.warn('[App] Recovery check failed:', err);
         }
+
+        setRecordingsLoading(false);
       };
       loadData();
+    } else {
+      setRecordingsLoading(false);
     }
   }, [user]);
 
-  const handleLogout = async () => {
-    if (window.confirm("Are you sure you want to logout?")) {
-      await supabase.auth.signOut();
-    }
+  const handleLogout = () => {
+    setConfirmRequest({
+      title: 'Sign out?',
+      message: 'You can sign back in any time from the same email.',
+      confirmLabel: 'Sign out',
+      cancelLabel: 'Stay',
+      onConfirm: () => { supabase.auth.signOut(); },
+    });
   };
 
   const handleManualEntry = async (data: {
@@ -388,28 +402,33 @@ const App: React.FC = () => {
     }
   };
 
-  const handleDeleteRecording = async (id: string) => {
+  const handleDeleteRecording = (id: string) => {
     if (!user) return;
 
-    if (window.confirm("Are you sure you want to delete this recording? This action cannot be undone.")) {
-      const previousRecordings = [...recordings];
+    setConfirmRequest({
+      title: 'Delete this recording?',
+      message: 'The session, transcript, and notes will be removed. This cannot be undone.',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Keep',
+      variant: 'destructive',
+      onConfirm: async () => {
+        const previousRecordings = [...recordings];
+        setRecordings(prev => prev.filter(rec => rec.id !== id));
 
-      setRecordings(prev => prev.filter(rec => rec.id !== id));
+        if (activeRecordingId === id) {
+          handleGoHome();
+        }
 
-      if (activeRecordingId === id) {
-        handleGoHome();
-      }
+        setActionItems(prev => prev.filter(i => i.recordingId !== id));
 
-      // Remove action items locally immediately (DB handles cascade via on delete set null)
-      setActionItems(prev => prev.filter(i => i.recordingId !== id));
-
-      try {
-        await deleteRecordingFromDb(id, user.id);
-      } catch (err) {
-        setRecordings(previousRecordings);
-        alert("Delete failed. Please check your internet connection and try again.");
-      }
-    }
+        try {
+          await deleteRecordingFromDb(id, user.id);
+        } catch (err) {
+          setRecordings(previousRecordings);
+          addToast('Delete failed — check your connection and try again.', 'error');
+        }
+      },
+    });
   };
 
   // Shared pipeline: transcribe → analyze → save. Works for both fresh recordings and
@@ -431,6 +450,20 @@ const App: React.FC = () => {
       } catch (saveErr) {
         console.warn("Initial save failed, continuing with processing:", saveErr);
       }
+
+      // Background: archive the full audio to Supabase Storage in parallel with processing.
+      // Doesn't block transcription — the audioPath gets saved when (and if) the upload finishes.
+      const ext = (blob.type || 'audio/webm').split(';')[0].split('/')[1] || 'webm';
+      uploadAudioToStorage(blob, `recordings/${session.id}.${ext}`)
+        .then(async (path) => {
+          updateSession({ audioPath: path });
+          try {
+            await saveRecording({ ...session, audioPath: path }, user.id);
+          } catch (saveErr) {
+            console.warn('[App] Failed to persist audioPath:', saveErr);
+          }
+        })
+        .catch((err) => console.warn('[App] Audio archive upload failed (non-critical):', err?.message));
 
       // Phase 1: Transcription
       let transcript: string;
@@ -535,14 +568,14 @@ const App: React.FC = () => {
     const session = recordings.find(r => r.id === sessionId);
     if (!session) return;
     if (!session.recoveryId) {
-      alert('No recoverable audio for this session. Retry is only available right after a failed recording on the same device.');
+      addToast('No recoverable audio for this session. Retry is only available right after a failed recording on the same device.', 'error');
       return;
     }
 
     const recoverable = await getRecoverableRecordings();
     const match = recoverable.find(r => r.meta.id === session.recoveryId);
     if (!match) {
-      alert('The recorded audio is no longer available in this browser. Retry is not possible.');
+      addToast('The recorded audio is no longer available in this browser. Retry is not possible.', 'error');
       return;
     }
 
@@ -585,7 +618,7 @@ const App: React.FC = () => {
     <div className="h-screen w-screen flex items-center justify-center bg-[var(--surface-950)]">
       <div className="relative">
         <div className="w-12 h-12 rounded-full border-4 border-white/10"></div>
-        <div className="absolute inset-0 w-12 h-12 rounded-full border-4 border-t-purple-500 border-r-teal-500 border-b-amber-500 border-l-transparent animate-spin"></div>
+        <div className="absolute inset-0 w-12 h-12 rounded-full border-4 border-t-amber-500 border-r-transparent border-b-transparent border-l-transparent animate-spin"></div>
       </div>
     </div>
   );
@@ -675,10 +708,10 @@ const App: React.FC = () => {
 
               {/* Logo */}
               <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 bg-gradient-to-br from-amber-500 via-orange-500 to-yellow-600 rounded-lg shadow-lg flex items-center justify-center text-white font-bold text-sm">
+                <div className="w-8 h-8 bg-amber-500 rounded-lg shadow-lg flex items-center justify-center text-black font-bold text-sm">
                   A
                 </div>
-                <h1 className="text-base md:text-lg font-bold tracking-tight text-[var(--text-primary)]">Aligned</h1>
+                <h1 className="font-display-tight text-lg md:text-xl font-semibold text-[var(--text-primary)]">Aligned</h1>
               </div>
             </div>
 
@@ -773,6 +806,7 @@ const App: React.FC = () => {
               user={user}
               recordings={recordings}
               actionItems={actionItems}
+              isLoading={recordingsLoading}
               onSelectSession={handleSelectRecording}
               onStartNew={handleStartNew}
               onStartLive={handleStartLive}
@@ -780,6 +814,7 @@ const App: React.FC = () => {
           ) : activeRecordingId === 'sessions' || activeRecordingId === 'dictations' ? (
             <SessionsLogView
               sessions={recordings}
+              isLoading={recordingsLoading}
               onSelect={handleSelectRecording}
               onDelete={handleDeleteRecording}
               onRetry={handleRetryProcessing}
@@ -797,6 +832,16 @@ const App: React.FC = () => {
               onSubmit={handleManualEntry}
               onCancel={handleGoHome}
               isProcessing={isManualProcessing}
+            />
+          ) : activeRecordingId === 'settings' ? (
+            <SettingsView
+              user={user}
+              theme={theme}
+              onToggleTheme={toggleTheme}
+              transcriptionEngine={transcriptionEngine}
+              onEngineChange={handleEngineChange}
+              hasSarvamKey={hasSarvamKey}
+              onLogout={handleLogout}
             />
           ) : activeRecordingId === 'intelligence' || activeRecordingId === 'strategist' || activeRecordingId === 'chatbot' ? (
             <IntelligenceView
@@ -827,6 +872,7 @@ const App: React.FC = () => {
               user={user}
               recordings={recordings}
               actionItems={actionItems}
+              isLoading={recordingsLoading}
               onSelectSession={handleSelectRecording}
               onStartNew={handleStartNew}
               onStartLive={handleStartLive}
@@ -867,7 +913,7 @@ const App: React.FC = () => {
               onClick={() => { handleStartNew(); setSidebarOpen(false); }}
               className="flex flex-col items-center justify-center -mt-5 active:scale-90 transition-all"
             >
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center shadow-lg shadow-amber-500/30">
+              <div className="w-14 h-14 rounded-2xl bg-amber-500 flex items-center justify-center shadow-lg">
                 <svg className="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                 </svg>
@@ -911,6 +957,14 @@ const App: React.FC = () => {
           timeAgo={recoveryData.timeAgo}
           onRecover={handleRecoverRecording}
           onDiscard={handleDiscardRecovery}
+        />
+      )}
+
+      {/* Themed confirm modal (replaces window.confirm) */}
+      {confirmRequest && (
+        <ConfirmModal
+          request={confirmRequest}
+          onClose={() => setConfirmRequest(null)}
         />
       )}
     </div>

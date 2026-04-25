@@ -1,5 +1,6 @@
 import { retryOperation } from "./geminiService";
 import { supabase } from "./supabaseService";
+import { uploadAudioToStorage, deleteAudioPaths } from "./storageService";
 
 const CHUNK_DURATION_MS = 25000; // 25 seconds per chunk (Sarvam REST API limit is 30s)
 
@@ -25,10 +26,10 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
   });
 };
 
-// Transcribe a single audio chunk via the secure API route
-const transcribeChunk = async (audioBlob: Blob, token: string): Promise<string> => {
+// Single-chunk path: small audio sent as base64 (no storage round-trip needed)
+const transcribeChunkInline = async (audioBlob: Blob, token: string): Promise<string> => {
   const audioBase64 = await blobToBase64(audioBlob);
-  const mimeType = audioBlob.type || "audio/webm";
+  const mimeType = audioBlob.type || "audio/wav";
 
   const res = await fetch("/api/sarvam/transcribe", {
     method: "POST",
@@ -52,8 +53,38 @@ const transcribeChunk = async (audioBlob: Blob, token: string): Promise<string> 
   return data.transcript || "";
 };
 
-// Split an audio blob into time-based chunks using OfflineAudioContext
-// (This runs entirely client-side — no change from original)
+// Multi-chunk path: each chunk uploaded to Supabase Storage, then referenced by path.
+// This bypasses Vercel's body size limit (4.5 MB hard cap on Hobby) which would otherwise
+// constrain very long recordings.
+const transcribeChunkViaStorage = async (
+  audioBlob: Blob,
+  token: string,
+  pathSuffix: string,
+): Promise<{ transcript: string; storagePath: string }> => {
+  const storagePath = await uploadAudioToStorage(audioBlob, pathSuffix);
+
+  const res = await fetch("/api/sarvam/transcribe", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      audioPath: storagePath,
+      mimeType: audioBlob.type || "audio/wav",
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || `Sarvam proxy error ${res.status}`);
+  }
+
+  const data = await res.json();
+  return { transcript: data.transcript || "", storagePath };
+};
+
+// Split an audio blob into time-based WAV chunks using OfflineAudioContext.
 const splitAudioBlob = async (audioBlob: Blob, chunkDurationMs: number): Promise<Blob[]> => {
   const durationEstimateMs = (audioBlob.size / 16000) * 1000;
   if (durationEstimateMs <= 30000 || audioBlob.size < 500000) {
@@ -130,38 +161,56 @@ export const transcribeAudioWithSarvam = async (audioBlob: Blob): Promise<string
   const chunks = await splitAudioBlob(audioBlob, CHUNK_DURATION_MS);
   console.log(`[Sarvam] Split into ${chunks.length} chunk(s)`);
 
+  // Single-chunk fast path: send inline as base64 — no storage needed
   if (chunks.length === 1) {
     return retryOperation(
-      () => transcribeChunk(chunks[0], token),
+      () => transcribeChunkInline(chunks[0], token),
       2,
       1000,
-      "Sarvam STT"
+      "Sarvam STT",
     );
   }
 
+  // Multi-chunk path: upload each chunk to Supabase Storage, transcribe by path,
+  // then clean up. This avoids hitting Vercel's request body size cap on long recordings.
+  const sessionId = `sarvam-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const results: string[] = new Array(chunks.length).fill("");
+  const uploadedPaths: string[] = [];
   const concurrency = 3;
 
-  for (let i = 0; i < chunks.length; i += concurrency) {
-    const batch = chunks.slice(i, i + concurrency);
-    const batchResults = await Promise.allSettled(
-      batch.map((chunk, j) =>
-        retryOperation(
-          () => transcribeChunk(chunk, token),
-          2,
-          1000,
-          `Sarvam STT chunk ${i + j + 1}/${chunks.length}`
-        )
-      )
-    );
-    batchResults.forEach((result, j) => {
-      if (result.status === 'fulfilled') {
-        results[i + j] = result.value;
-      } else {
-        console.warn(`[Sarvam] Chunk ${i + j + 1} failed: ${result.reason?.message}`);
-        results[i + j] = `[chunk ${i + j + 1} failed]`;
-      }
-    });
+  try {
+    for (let i = 0; i < chunks.length; i += concurrency) {
+      const batch = chunks.slice(i, i + concurrency);
+      const batchResults = await Promise.allSettled(
+        batch.map((chunk, j) => {
+          const idx = i + j;
+          const pathSuffix = `chunks/${sessionId}-${String(idx).padStart(4, "0")}.wav`;
+          return retryOperation(
+            () => transcribeChunkViaStorage(chunk, token, pathSuffix),
+            2,
+            1000,
+            `Sarvam STT chunk ${idx + 1}/${chunks.length}`,
+          );
+        }),
+      );
+      batchResults.forEach((result, j) => {
+        const idx = i + j;
+        if (result.status === "fulfilled") {
+          results[idx] = result.value.transcript;
+          uploadedPaths.push(result.value.storagePath);
+        } else {
+          console.warn(`[Sarvam] Chunk ${idx + 1} failed: ${result.reason?.message}`);
+          results[idx] = `[chunk ${idx + 1} failed]`;
+        }
+      });
+    }
+  } finally {
+    // Best-effort cleanup of transient chunk files (don't block on failures)
+    if (uploadedPaths.length > 0) {
+      deleteAudioPaths(uploadedPaths).catch((err) =>
+        console.warn(`[Sarvam] Cleanup failed: ${err?.message}`),
+      );
+    }
   }
 
   const fullTranscript = results.join(" ").trim();

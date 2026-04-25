@@ -56,22 +56,22 @@ const ResetPassword: React.FC<ResetPasswordProps> = ({ onComplete }) => {
         <div className="relative max-w-md w-full glass-card rounded-3xl p-10 text-center animate-scale-in">
           {/* Success Icon */}
           <div className="relative w-20 h-20 mx-auto mb-8">
-            <div className="absolute inset-0 rounded-full bg-gradient-to-br from-teal-400 to-teal-600 opacity-20 blur-xl animate-pulse-glow"></div>
-            <div className="relative w-full h-full rounded-full bg-gradient-to-br from-teal-400 to-teal-600 flex items-center justify-center shadow-lg">
+            <div className="absolute inset-0 rounded-full bg-teal-500 opacity-20 blur-xl animate-pulse-glow"></div>
+            <div className="relative w-full h-full rounded-full bg-teal-500 flex items-center justify-center shadow-lg">
               <svg className="w-10 h-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
               </svg>
             </div>
           </div>
 
-          <h2 className="text-2xl font-bold text-[var(--text-primary)] mb-3">Password updated</h2>
+          <h2 className="font-display-tight text-2xl font-semibold text-[var(--text-primary)] mb-3">Password updated</h2>
           <p className="text-[var(--text-secondary)] mb-8 leading-relaxed">
             Your password has been reset successfully. You can now sign in with your new password.
           </p>
 
           <button
             onClick={onComplete}
-            className="px-8 py-3 bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-400 hover:via-orange-400 hover:to-amber-500 text-white font-bold rounded-xl shadow-lg shadow-amber-500/25 transition-all duration-300 active:scale-[0.98]"
+            className="px-8 py-3 bg-amber-500 hover:bg-amber-400 text-black font-bold rounded-xl shadow-lg transition-all duration-300 active:scale-[0.98]"
           >
             Continue to Aligned
           </button>
@@ -99,20 +99,20 @@ const ResetPassword: React.FC<ResetPasswordProps> = ({ onComplete }) => {
         {/* Brand Header */}
         <div className="flex flex-col items-center mb-10">
           <div className="relative mb-6 group">
-            <div className="absolute -inset-4 rounded-3xl bg-gradient-to-br from-amber-500 via-orange-500 to-yellow-500 opacity-30 blur-2xl group-hover:opacity-50 transition-opacity duration-500"></div>
-            <div className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-500 via-orange-500 to-yellow-600 shadow-2xl flex items-center justify-center transform rotate-3 group-hover:rotate-6 transition-transform duration-500">
-              <span className="text-white font-bold text-3xl tracking-tight">A</span>
+            <div className="absolute -inset-4 rounded-3xl bg-amber-500 opacity-25 blur-2xl group-hover:opacity-40 transition-opacity duration-500"></div>
+            <div className="relative w-16 h-16 rounded-2xl bg-amber-500 shadow-2xl flex items-center justify-center transform rotate-3 group-hover:rotate-6 transition-transform duration-500">
+              <span className="text-black font-bold text-3xl tracking-tight">A</span>
             </div>
           </div>
 
-          <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)] mb-2">Aligned</h1>
+          <h1 className="font-display-tight text-4xl font-semibold text-[var(--text-primary)] mb-2">Aligned</h1>
           <p className="text-[var(--text-muted)] text-sm font-medium tracking-wide">Workspace Intelligence</p>
         </div>
 
         {/* Reset Card */}
         <div className="glass-card rounded-3xl p-8 shadow-2xl">
           <div className="text-center mb-8">
-            <h2 className="text-xl font-bold text-[var(--text-primary)] mb-2">Set a new password</h2>
+            <h2 className="font-display-tight text-xl font-semibold text-[var(--text-primary)] mb-2">Set a new password</h2>
             <p className="text-[var(--text-muted)] text-sm">Choose a strong password for your account.</p>
           </div>
 
@@ -159,7 +159,7 @@ const ResetPassword: React.FC<ResetPasswordProps> = ({ onComplete }) => {
             <button
               disabled={isLoading}
               type="submit"
-              className="w-full py-4 mt-2 bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-400 hover:via-orange-400 hover:to-amber-500 text-white font-bold rounded-xl shadow-lg shadow-amber-500/25 transition-all duration-300 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className="w-full py-4 mt-2 bg-amber-500 hover:bg-amber-400 text-black font-bold rounded-xl shadow-lg transition-all duration-300 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {isLoading ? (
                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>

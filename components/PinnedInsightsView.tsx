@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PinnedInsight } from '../types';
 import { unpinInsight } from '../services/pinService';
+import EmptyState from './EmptyState';
 
 interface PinnedInsightsViewProps {
   pins: PinnedInsight[];
@@ -45,17 +46,16 @@ const PinnedInsightsView: React.FC<PinnedInsightsViewProps> = ({ pins, onPinsCha
 
   if (pins.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-20 text-center animate-fade-in">
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-500/20 to-orange-500/20 flex items-center justify-center border border-white/[0.08] mb-5">
-          <svg className="w-8 h-8 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+      <EmptyState
+        tone="amber"
+        title="No saved insights yet"
+        description="Pin responses from your chat conversations to save them here for quick reference."
+        icon={
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
           </svg>
-        </div>
-        <h3 className="text-base font-bold text-[var(--text-primary)] mb-2">No saved insights yet</h3>
-        <p className="text-xs text-[var(--text-muted)] max-w-sm">
-          Pin responses from your chat conversations to save them here for quick reference.
-        </p>
-      </div>
+        }
+      />
     );
   }
 

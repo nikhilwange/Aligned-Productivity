@@ -32,3 +32,4 @@ ios/App/Pods
 *.njsproj
 *.sln
 *.sw?
+.env.production

@@ -13,10 +13,28 @@ interface ManualEntryViewProps {
   isProcessing: boolean;
 }
 
-const SOURCE_OPTIONS: { value: RecordingSource; label: string; icon: string; desc: string }[] = [
-  { value: 'virtual-meeting', label: 'Virtual Meeting', icon: '💻', desc: 'Zoom, Teams, Meet' },
-  { value: 'in-person',       label: 'In-Person',       icon: '🏢', desc: 'Room meeting' },
-  { value: 'phone-call',      label: 'Phone / Call',    icon: '📱', desc: 'Audio call' },
+const IconMonitor = (
+  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <rect x="2" y="4" width="20" height="13" rx="2" />
+    <path strokeLinecap="round" d="M8 21h8M12 17v4" />
+  </svg>
+);
+const IconBuilding = (
+  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 21h18M6 21V5a2 2 0 012-2h8a2 2 0 012 2v16M10 7h1M13 7h1M10 11h1M13 11h1M10 15h1M13 15h1" />
+  </svg>
+);
+const IconPhone = (
+  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <rect x="6" y="2" width="12" height="20" rx="2" />
+    <path strokeLinecap="round" d="M11 18h2" />
+  </svg>
+);
+
+const SOURCE_OPTIONS: { value: RecordingSource; label: string; icon: React.ReactNode; desc: string }[] = [
+  { value: 'virtual-meeting', label: 'Virtual Meeting', icon: IconMonitor,  desc: 'Zoom, Teams, Meet' },
+  { value: 'in-person',       label: 'In-Person',       icon: IconBuilding, desc: 'Room meeting' },
+  { value: 'phone-call',      label: 'Phone / Call',    icon: IconPhone,    desc: 'Audio call' },
 ];
 
 const ManualEntryView: React.FC<ManualEntryViewProps> = ({ onSubmit, onCancel, isProcessing }) => {
@@ -56,13 +74,13 @@ const ManualEntryView: React.FC<ManualEntryViewProps> = ({ onSubmit, onCancel, i
       {/* Header */}
       <div className="sticky top-0 z-40 bg-[var(--surface-900)]/80 backdrop-blur-xl border-b border-white/[0.06] px-6 md:px-10 h-16 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-white">
+          <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center text-black">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
             </svg>
           </div>
           <div>
-            <h1 className="text-base font-bold tracking-tight">Manual Entry</h1>
+            <h1 className="font-display-tight text-lg font-semibold">Manual Entry</h1>
             <p className="text-[10px] text-[var(--text-muted)]">Paste transcript — get full notes &amp; insights</p>
           </div>
         </div>
@@ -78,7 +96,9 @@ const ManualEntryView: React.FC<ManualEntryViewProps> = ({ onSubmit, onCancel, i
 
         {/* How it works banner */}
         <div className="flex items-start gap-3 p-4 rounded-xl bg-purple-500/[0.07] border border-purple-500/15">
-          <div className="text-lg mt-0.5">💡</div>
+          <svg className="w-5 h-5 mt-0.5 text-purple-300 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 18h6M10 22h4M12 2a7 7 0 00-4 12c1 1 2 2 2 4h4c0-2 1-3 2-4a7 7 0 00-4-12z" />
+          </svg>
           <div>
             <div className="text-xs font-bold text-purple-300 mb-1">How this works</div>
             <div className="text-xs text-[var(--text-muted)] leading-relaxed">
@@ -117,7 +137,7 @@ const ManualEntryView: React.FC<ManualEntryViewProps> = ({ onSubmit, onCancel, i
                     : 'bg-[var(--surface-800)] border-white/[0.07] text-[var(--text-muted)] hover:border-white/[0.12]'
                 }`}
               >
-                <span className="text-xl">{opt.icon}</span>
+                <span className="shrink-0">{opt.icon}</span>
                 <span className="text-[11px] font-bold">{opt.label}</span>
                 <span className="text-[10px] opacity-60">{opt.desc}</span>
               </button>
@@ -203,7 +223,7 @@ const ManualEntryView: React.FC<ManualEntryViewProps> = ({ onSubmit, onCancel, i
           disabled={!isReady || isProcessing}
           className={`w-full py-4 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-3 ${
             isReady && !isProcessing
-              ? 'bg-gradient-to-r from-amber-500 to-orange-600 text-black shadow-lg shadow-amber-500/25 hover:shadow-amber-500/40 hover:scale-[1.01] active:scale-[0.99]'
+              ? 'bg-amber-500 hover:bg-amber-400 text-black shadow-lg hover:scale-[1.01] active:scale-[0.98]'
               : 'bg-white/[0.04] text-[var(--text-muted)] cursor-not-allowed'
           }`}
         >

@@ -1,14 +1,18 @@
 import React, { useMemo, useState } from 'react';
 import { RecordingSession } from '../types';
+import { SessionRowSkeleton } from './Skeleton';
+import EmptyState from './EmptyState';
+import { formatDateLong, formatTime } from '../utils/formatters';
 
 interface SessionsLogViewProps {
   sessions: RecordingSession[];
+  isLoading?: boolean;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onRetry?: (id: string) => void;
 }
 
-const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, onSelect, onDelete, onRetry }) => {
+const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, isLoading, onSelect, onDelete, onRetry }) => {
   const [searchQuery, setSearchQuery] = useState('');
 
   const groupedSessions = useMemo(() => {
@@ -28,26 +32,13 @@ const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, onSelect, o
     const groups: { [key: string]: RecordingSession[] } = {};
 
     filtered.forEach(session => {
-      const date = new Date(session.date).toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric'
-      }).toUpperCase();
-
+      const date = formatDateLong(session.date).toUpperCase();
       if (!groups[date]) groups[date] = [];
       groups[date].push(session);
     });
 
     return Object.entries(groups);
   }, [sessions, searchQuery]);
-
-  const formatTime = (timestamp: number) => {
-    return new Date(timestamp).toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
-  };
 
   const getCleanSummary = (summary: string, max = 180): string => {
     if (!summary) return '';
@@ -106,12 +97,12 @@ const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, onSelect, o
       <header className="shrink-0 bg-[var(--surface-900)]/80 backdrop-blur-xl border-b border-white/[0.06] sticky top-0 z-40">
         <div className="h-16 flex items-center px-4 md:px-8">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-teal-500 to-cyan-600 flex items-center justify-center text-white">
+            <div className="w-8 h-8 rounded-lg bg-teal-500 flex items-center justify-center text-white">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
               </svg>
             </div>
-            <h1 className="text-xl font-bold tracking-tight text-[var(--text-primary)]">My Sessions</h1>
+            <h1 className="font-display-tight text-2xl font-semibold text-[var(--text-primary)]">My Sessions</h1>
           </div>
         </div>
 
@@ -145,20 +136,37 @@ const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, onSelect, o
       {/* Content */}
       <div className="flex-1 overflow-y-auto pt-8 pb-32 px-4 md:px-8 scrollbar-hide">
         <div className="max-w-3xl mx-auto space-y-12">
-          {groupedSessions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-center">
-              <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
-                <svg className="w-8 h-8 opacity-20 text-[var(--text-primary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                </svg>
+          {isLoading && sessions.length === 0 ? (
+            <div className="space-y-6">
+              <div className="h-2.5 w-24 skeleton" />
+              <div className="glass-card rounded-2xl border border-white/[0.06] overflow-hidden">
+                <SessionRowSkeleton />
+                <SessionRowSkeleton />
+                <SessionRowSkeleton />
               </div>
-              <h3 className="opacity-60 font-semibold text-[var(--text-primary)]">
-                {searchQuery ? `No results for "${searchQuery}"` : 'No sessions yet'}
-              </h3>
-              <p className="opacity-30 text-sm mt-1 text-[var(--text-primary)]">
-                {searchQuery ? 'Try a different search term.' : 'Your recorded sessions will appear here.'}
-              </p>
+              <div className="h-2.5 w-28 skeleton" />
+              <div className="glass-card rounded-2xl border border-white/[0.06] overflow-hidden">
+                <SessionRowSkeleton />
+                <SessionRowSkeleton />
+              </div>
             </div>
+          ) : groupedSessions.length === 0 ? (
+            <EmptyState
+              tone={searchQuery ? 'neutral' : 'teal'}
+              title={searchQuery ? `No results for "${searchQuery}"` : 'No sessions yet'}
+              description={searchQuery ? 'Try a different search term.' : 'Your recorded sessions will appear here.'}
+              icon={
+                searchQuery ? (
+                  <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                ) : (
+                  <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                  </svg>
+                )
+              }
+            />
           ) : (
             groupedSessions.map(([date, daySessions]) => (
               <div key={date} className="space-y-4">
