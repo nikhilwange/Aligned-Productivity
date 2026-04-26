@@ -95,12 +95,14 @@ export const deleteRecordingFromDb = async (id: string, userId: string) => {
 
 const mapActionItemRow = (row: any): TrackedActionItem => ({
   id: row.id,
+  displayId: row.display_id,
   userId: row.user_id,
   recordingId: row.recording_id ?? null,
   text: row.text,
   status: row.status as ActionItemStatus,
   functionTag: row.function_tag ?? null,
   assignee: row.assignee ?? null,
+  dueDate: row.due_date ? new Date(row.due_date).getTime() : null,
   sourceIndex: row.source_index ?? null,
   createdAt: new Date(row.created_at).getTime(),
   updatedAt: new Date(row.updated_at).getTime(),
@@ -175,7 +177,37 @@ export const syncActionItemsFromRecording = async (
 };
 
 /**
- * Updates an action item's status, functionTag, assignee, or text.
+ * Creates a single ad-hoc action item not tied to a recording sync.
+ * The display_id is assigned server-side by the BEFORE INSERT trigger.
+ */
+export const createActionItem = async (
+  userId: string,
+  text: string,
+  opts: { recordingId?: string | null; dueDate?: number | null; assignee?: string | null } = {}
+): Promise<TrackedActionItem | null> => {
+  const payload = {
+    user_id: userId,
+    recording_id: opts.recordingId ?? null,
+    text,
+    status: 'not_started',
+    function_tag: null,
+    assignee: opts.assignee ?? null,
+    due_date: opts.dueDate ? new Date(opts.dueDate).toISOString().slice(0, 10) : null,
+  };
+  const { data, error } = await supabase
+    .from('action_items')
+    .insert(payload)
+    .select()
+    .single();
+  if (error) {
+    console.error('[Supabase] Error creating action item:', error);
+    return null;
+  }
+  return mapActionItemRow(data);
+};
+
+/**
+ * Updates an action item's status, functionTag, assignee, dueDate, or text.
  */
 export const updateActionItem = async (
   id: string,
@@ -186,6 +218,9 @@ export const updateActionItem = async (
   if (updates.functionTag !== undefined) payload.function_tag = updates.functionTag;
   if (updates.assignee    !== undefined) payload.assignee     = updates.assignee;
   if (updates.text        !== undefined) payload.text         = updates.text;
+  if (updates.dueDate     !== undefined) {
+    payload.due_date = updates.dueDate ? new Date(updates.dueDate).toISOString().slice(0, 10) : null;
+  }
 
   const { data, error } = await supabase
     .from('action_items')

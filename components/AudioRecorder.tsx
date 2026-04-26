@@ -440,12 +440,12 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
           </svg>
         )}
 
-        {/* Glow effects for recording */}
+        {/* Glow effects for recording — dark mode only; granola uses a quiet terra ring */}
         {isRecording && (
           <>
-            <div className="absolute inset-0 bg-purple-500 rounded-full opacity-20 blur-[60px] animate-pulse-glow scale-150"></div>
-            <div className="absolute inset-4 bg-teal-400 rounded-full opacity-15 blur-[40px] animate-pulse-glow" style={{ animationDelay: '0.5s' }}></div>
-            <div className="absolute -inset-12 border border-purple-500/10 rounded-full animate-rotate-slow"></div>
+            <div className="absolute inset-0 bg-purple-500 rounded-full opacity-20 blur-[60px] animate-pulse-glow scale-150 dark-only"></div>
+            <div className="absolute inset-4 bg-teal-400 rounded-full opacity-15 blur-[40px] animate-pulse-glow dark-only" style={{ animationDelay: '0.5s' }}></div>
+            <div className="absolute -inset-12 border border-purple-500/10 rounded-full animate-rotate-slow dark-only"></div>
           </>
         )}
 
@@ -463,9 +463,10 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
               {isProcessing ? (
                 <div className="flex flex-col items-center">
                   <div className="flex gap-2 mb-4">
-                    <div className="w-3 h-3 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0s' }}></div>
-                    <div className="w-3 h-3 bg-teal-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                    <div className="w-3 h-3 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+                    {[0, 0.2, 0.4].map(d => (
+                      <div key={d} className="w-2.5 h-2.5 rounded-full animate-bounce"
+                           style={{ animationDelay: `${d}s`, background: 'var(--accent)' }} />
+                    ))}
                   </div>
                   <span className="text-xs font-semibold text-[var(--text-muted)]">Processing</span>
                 </div>
@@ -481,7 +482,11 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
               )}
             </button>
           ) : (
-            <div className="w-56 h-56 rounded-full bg-gradient-to-br from-[var(--surface-800)] to-[var(--surface-900)] shadow-2xl flex flex-col items-center justify-center relative overflow-hidden ring-2 ring-purple-500/30">
+            <div className="w-56 h-56 rounded-full shadow-2xl flex flex-col items-center justify-center relative overflow-hidden"
+                 style={{
+                   background: 'var(--bg-elevated)',
+                   border: '2px solid var(--accent-2, var(--accent))',
+                 }}>
               {/* Audio visualizer bars */}
               <div className="absolute inset-0 flex items-center justify-center gap-1.5 opacity-40 px-10">
                 {[...Array(16)].map((_, i) => (

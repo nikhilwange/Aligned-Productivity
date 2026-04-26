@@ -36,43 +36,38 @@ const Toast: React.FC<ToastProps> = ({ toast, onDismiss }) => {
     setTimeout(() => onDismiss(toast.id), 300);
   };
 
-  const colors = {
-    success: {
-      bg: 'from-teal-500/15 to-teal-500/5',
-      border: 'border-teal-500/20',
-      icon: 'text-teal-400',
-      accent: 'bg-teal-500',
-    },
-    error: {
-      bg: 'from-red-500/15 to-red-500/5',
-      border: 'border-red-500/20',
-      icon: 'text-red-400',
-      accent: 'bg-red-500',
-    },
-    info: {
-      bg: 'from-purple-500/15 to-purple-500/5',
-      border: 'border-purple-500/20',
-      icon: 'text-purple-400',
-      accent: 'bg-purple-500',
-    },
-  };
+  // Token-driven colors so Toast looks correct in both dark and granola light.
+  const accent = {
+    success: 'var(--accent-success)',
+    error:   'var(--accent-signal)',
+    info:    'var(--accent)',
+  }[toast.type];
 
-  const c = colors[toast.type];
+  const iconClass = {
+    success: 'text-success',
+    error:   'text-signal',
+    info:    'text-brand',
+  }[toast.type];
 
   return (
     <div
-      className={`w-full max-w-sm rounded-xl bg-gradient-to-r ${c.bg} border ${c.border} backdrop-blur-xl shadow-2xl overflow-hidden transition-all duration-300 ${
+      className={`w-full max-w-sm rounded-2xl overflow-hidden transition-all duration-300 ${
         isVisible && !isExiting
           ? 'opacity-100 translate-y-0 scale-100'
           : 'opacity-0 translate-y-3 scale-95'
       }`}
+      style={{
+        background: 'var(--bg-elevated)',
+        border: '1px solid var(--border)',
+        boxShadow: 'var(--shadow-xl, 0 20px 25px -5px rgba(0,0,0,0.30))',
+      }}
     >
       {/* Top accent bar */}
-      <div className={`h-0.5 ${c.accent}`} />
+      <div className="h-0.5" style={{ background: accent }} />
 
       <div className="flex items-start gap-3 p-3.5">
         {/* Icon */}
-        <div className={`shrink-0 mt-0.5 ${c.icon}`}>
+        <div className={`shrink-0 mt-0.5 ${iconClass}`}>
           {toast.type === 'success' ? (
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
@@ -96,7 +91,7 @@ const Toast: React.FC<ToastProps> = ({ toast, onDismiss }) => {
           {toast.actionLabel && toast.onAction && (
             <button
               onClick={() => { toast.onAction?.(); dismiss(); }}
-              className="mt-1.5 text-xs font-bold text-purple-400 hover:text-purple-300 transition-colors"
+              className="mt-1.5 text-xs font-bold text-brand hover:opacity-80 transition-opacity"
             >
               {toast.actionLabel} →
             </button>

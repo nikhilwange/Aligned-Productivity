@@ -12,6 +12,9 @@ interface EmptyStateProps {
   compact?: boolean;
 }
 
+// In light/granola mode, all tones collapse to olive accent via the .light
+// CSS remap (bg-amber-500/15 → olive-soft, text-amber-400 → olive). The
+// per-tone distinction stays intact in dark mode.
 const TONE_STYLES: Record<Tone, { iconBg: string; iconColor: string; button: string }> = {
   amber:   { iconBg: 'bg-amber-500/15',  iconColor: 'text-amber-400',  button: 'bg-amber-500 hover:bg-amber-400 text-black' },
   teal:    { iconBg: 'bg-teal-500/15',   iconColor: 'text-teal-400',   button: 'bg-teal-500 hover:bg-teal-400 text-black' },
@@ -49,7 +52,8 @@ const EmptyState: React.FC<EmptyStateProps> = ({
           {action && (
             <button
               onClick={action.onClick}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all active:scale-[0.98] ${styles.button}`}
+              className="px-5 py-2.5 rounded-full text-xs font-semibold transition-all active:scale-[0.98] hover:opacity-90"
+              style={{ background: 'var(--cta-bg)', color: 'var(--cta-fg)' }}
             >
               {action.label}
             </button>
@@ -57,7 +61,7 @@ const EmptyState: React.FC<EmptyStateProps> = ({
           {secondaryAction && (
             <button
               onClick={secondaryAction.onClick}
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"
+              className="px-5 py-2.5 rounded-full text-xs font-semibold text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"
             >
               {secondaryAction.label}
             </button>

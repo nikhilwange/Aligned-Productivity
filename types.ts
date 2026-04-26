@@ -77,12 +77,14 @@ export type ActionItemStatus = 'not_started' | 'in_progress' | 'on_hold' | 'comp
 
 export interface TrackedActionItem {
   id: string;
+  displayId: number;            // Per-user sequential, e.g. 128 → "A-128"
   userId: string;
   recordingId: string | null;
   text: string;
   status: ActionItemStatus;
   functionTag: string | null;
   assignee: string | null;
+  dueDate: number | null;       // Unix ms; null = no due date
   sourceIndex: number | null;
   createdAt: number;
   updatedAt: number;
@@ -95,6 +97,7 @@ export interface ActionItemUpdate {
   status?: ActionItemStatus;
   functionTag?: string | null;
   assignee?: string | null;
+  dueDate?: number | null;
   text?: string;
 }
 

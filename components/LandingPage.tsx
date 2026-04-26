@@ -4,58 +4,30 @@ interface LandingPageProps {
   onGetStarted: () => void;
 }
 
-// ─── Colour tokens (no CSS variables — fully self-contained) ───────────────
-// Dark mode keeps its voice (Fraunces italic in amber-400 reads well on near-black).
-// Light mode is warm paper, not slate-on-white. One accent (brass), not three.
-const DARK = {
-  bg:           '#0a0a0f',
-  bgElevated:   '#131320',
-  bgSunken:     '#0f0f17',
-  border:       'rgba(255,255,255,0.08)',
-  borderStrong: 'rgba(255,255,255,0.16)',
-  hairline:     'rgba(255,255,255,0.05)',
-  text1:        '#ffffff',
-  text2:        'rgba(255,255,255,0.72)',
-  text3:        'rgba(255,255,255,0.50)',
-  text4:        'rgba(255,255,255,0.32)',
-  inputBg:      'rgba(255,255,255,0.03)',
-  inputBorder:  'rgba(255,255,255,0.10)',
-  accent:       '#fbbf24',           // amber-400 — readable on near-black
-  accentInk:    '#000',
-  accentTint:   'rgba(251,191,36,0.10)',
-  accentBorder: 'rgba(251,191,36,0.25)',
-};
-const LIGHT = {
-  bg:           '#faf7f2',           // warm paper
-  bgElevated:   '#fdfaf3',           // cards
-  bgSunken:     '#f0e9d8',           // inputs / sticky surfaces
-  border:       'rgba(26,22,18,0.10)',
-  borderStrong: 'rgba(26,22,18,0.20)',
-  hairline:     'rgba(26,22,18,0.06)',
-  text1:        '#1a1612',           // warm ink
-  text2:        '#3a3226',
-  text3:        '#6b5d4a',           // 4.7:1 on bg
-  text4:        '#8a7a64',
-  inputBg:      '#ffffff',
-  inputBorder:  'rgba(26,22,18,0.16)',
-  accent:       '#9a6b1a',           // warm brass · 5.0:1 on bg
-  accentInk:    '#faf7f2',
-  accentTint:   'rgba(154,107,26,0.08)',
-  accentBorder: 'rgba(154,107,26,0.28)',
+// ─── Granola-warm tokens (self-contained, no CSS variables) ──────────────
+// Dark mode is unchanged; this component is light-mode marketing only.
+const C = {
+  bg:           '#f7f5ef',
+  bgAlt:        '#efece3',
+  surface:      '#ffffff',
+  text:         '#1c1d1a',
+  textMuted:    '#6a6c64',
+  textFaint:    '#9b9d93',
+  rule:         'rgba(28, 29, 26, 0.07)',
+  ruleStrong:   'rgba(28, 29, 26, 0.10)',
+  accent:       '#4a6b3a',           // deep olive
+  accent2:      '#d97757',           // terra warm
+  accentSoft:   'rgba(74, 107, 58, 0.10)',
+  accent2Soft:  'rgba(217, 119, 87, 0.12)',
 };
 
-// Typography — Fraunces is loaded by index.html. Plex Mono via Google CDN.
-const SERIF = '"Fraunces", "Iowan Old Style", Palatino, Georgia, serif';
-const SANS  = '"Inter", -apple-system, BlinkMacSystemFont, sans-serif';
-const MONO  = '"JetBrains Mono", "IBM Plex Mono", "SF Mono", Menlo, monospace';
+const DISPLAY = '"DM Sans", "Inter", system-ui, -apple-system, sans-serif';
+const MONO    = '"JetBrains Mono", "IBM Plex Mono", "SF Mono", Menlo, monospace';
 
 const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
-  const [dark, setDark]           = useState(true);
   const [email, setEmail]         = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy]           = useState(false);
-
-  const C = dark ? DARK : LIGHT;
 
   const handleJoin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,497 +41,356 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
     } catch (_) {}
   };
 
-  // Reusable style helpers — honest cards, no glass smudge in light mode.
-  const card = (extra?: React.CSSProperties): React.CSSProperties => ({
-    background: C.bgElevated,
-    border: `1px solid ${C.border}`,
-    borderRadius: 12,
+  // Reusable bits
+  const pill = (extra?: React.CSSProperties): React.CSSProperties => ({
+    borderRadius: 100,
     ...extra,
   });
 
-  const eyebrow: React.CSSProperties = {
-    fontFamily: MONO,
-    fontSize: 11,
-    fontWeight: 500,
-    letterSpacing: '0.18em',
-    textTransform: 'uppercase',
-    color: C.text3,
+  const ctaPrimary: React.CSSProperties = {
+    display: 'inline-flex', alignItems: 'center', gap: 8,
+    padding: '13px 22px', borderRadius: 100,
+    background: C.text, color: 'white',
+    fontFamily: DISPLAY, fontWeight: 500, fontSize: 14.5,
+    border: 'none', cursor: 'pointer',
   };
-
-  const sectionLabel: React.CSSProperties = {
-    ...eyebrow,
-    color: C.accent,
-    marginBottom: 14,
+  const ctaSecondary: React.CSSProperties = {
+    display: 'inline-flex', alignItems: 'center', gap: 8,
+    padding: '13px 22px', borderRadius: 100,
+    background: C.bg, color: C.text,
+    fontFamily: DISPLAY, fontWeight: 500, fontSize: 14.5,
+    border: `1px solid ${C.ruleStrong}`, cursor: 'pointer',
+    textDecoration: 'none',
   };
 
   return (
     <div style={{
       position: 'fixed', inset: 0, overflowY: 'auto',
-      background: C.bg, color: C.text1,
-      fontFamily: SANS,
-      transition: 'background 0.3s, color 0.3s',
+      background: C.bg, color: C.text,
+      fontFamily: DISPLAY,
     }}>
+      <div style={{ maxWidth: 1180, margin: '0 auto', padding: '18px 22px 80px' }}>
 
-      {/* ══════ NAV — plain text, no glass pill ══════ */}
-      <nav style={{
-        position: 'sticky', top: 0, zIndex: 50,
-        background: dark ? 'rgba(10,10,15,0.78)' : 'rgba(250,247,242,0.82)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
-        borderBottom: `1px solid ${C.hairline}`,
-      }}>
-        <div style={{
-          maxWidth: 1120, margin: '0 auto',
+        {/* ══════ Pill nav ══════ */}
+        <nav style={{
+          ...pill(),
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '18px 24px',
+          padding: '14px 22px',
+          background: C.bgAlt,
+          fontSize: 14, marginBottom: 56,
         }}>
-          {/* Wordmark — no logo box, no gradient. The product is named Aligned. */}
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 14 }}>
+          {/* Logo: olive square with bg-color hole */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontWeight: 600, letterSpacing: '-0.01em' }}>
             <span style={{
-              fontFamily: SERIF, fontSize: 19, fontWeight: 600,
-              letterSpacing: '-0.02em', color: C.text1,
+              width: 24, height: 24, borderRadius: 8,
+              background: C.accent, position: 'relative', display: 'inline-block',
             }}>
-              Aligned
+              <span style={{
+                position: 'absolute', inset: 6, borderRadius: '50%', background: C.bgAlt,
+              }} />
             </span>
+            <span>Aligned</span>
           </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 22 }}>
-            <a href="#features" style={{ ...eyebrow, color: C.text3, textDecoration: 'none' }}>Product</a>
-            <a href="#sarvam"   style={{ ...eyebrow, color: C.text3, textDecoration: 'none' }}>Languages</a>
-
-            {/* Theme toggle — quiet, no accent fill */}
-            <button onClick={() => setDark(d => !d)}
-              title={dark ? 'Light mode' : 'Dark mode'}
-              style={{
-                width: 30, height: 30, borderRadius: 6,
-                background: 'transparent', border: `1px solid ${C.border}`,
-                cursor: 'pointer', display: 'flex',
-                alignItems: 'center', justifyContent: 'center', color: C.text3,
-              }}>
-              {dark
-                ? <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
-                : <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
-              }
-            </button>
-
-            <button onClick={onGetStarted}
-              style={{ ...eyebrow, color: C.text3, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-              Sign In
-            </button>
-            <button onClick={onGetStarted}
-              style={{
-                ...eyebrow,
-                color: C.accent,
-                background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-              }}>
-              Get Aligned →
+          {/* Center links */}
+          <div style={{ display: 'flex', gap: 26, color: C.textMuted }}>
+            <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Product</a>
+            <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Pricing</a>
+            <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Customers</a>
+            <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Changelog</a>
+          </div>
+          {/* Right CTAs */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <a onClick={onGetStarted} style={{ color: C.textMuted, cursor: 'pointer' }}>Sign in</a>
+            <button onClick={onGetStarted} style={{
+              ...pill({ padding: '9px 18px', background: C.text, color: 'white',
+                       fontWeight: 500, fontSize: 14, border: 'none', cursor: 'pointer',
+                       fontFamily: DISPLAY }),
+            }}>
+              Download
             </button>
           </div>
-        </div>
-      </nav>
+        </nav>
 
-      {/* ══════ HERO — Fraunces sentence, no bouncing pill, no 3-stop gradient ══════ */}
-      <section style={{ position: 'relative', padding: '96px 24px 72px', zIndex: 10 }}>
-        <div style={{ maxWidth: 880, margin: '0 auto' }}>
-
-          {/* Typeset eyebrow — replaces the bouncing 🚀 emoji pill */}
-          <div style={{ ...sectionLabel, marginBottom: 28 }}>
-            Workspace Intelligence · Now in 10 Indian languages
-          </div>
-
-          {/* Headline — verb-led, Fraunces, italic accent on the payoff word */}
-          <h1 style={{
-            fontFamily: SERIF,
-            fontSize: 'clamp(44px, 7.5vw, 76px)',
-            fontWeight: 500,
-            letterSpacing: '-0.035em',
-            lineHeight: 1.02,
-            marginBottom: 28,
-            color: C.text1,
-            textWrap: 'balance' as React.CSSProperties['textWrap'],
+        {/* ══════ Hero ══════ */}
+        <div style={{ textAlign: 'center', maxWidth: 740, margin: '0 auto', padding: '0 24px' }}>
+          {/* Olive-soft kicker pill */}
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+            padding: '7px 14px', borderRadius: 100,
+            background: C.accentSoft, color: C.accent,
+            fontSize: 12.5, fontWeight: 500, marginBottom: 28,
           }}>
-            Capture the chaos.<br/>
-            Deliver the{' '}
-            <span style={{ fontStyle: 'italic', color: C.accent }}>strategy.</span>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.accent }} />
+            <span>Workspace intelligence · Now in 10 Indian languages</span>
+          </div>
+
+          <h1 style={{
+            fontFamily: DISPLAY,
+            fontSize: 'clamp(48px, 7vw, 80px)',
+            lineHeight: 1.0, letterSpacing: '-0.035em',
+            fontWeight: 600, margin: '0 0 24px', color: C.text,
+          }}>
+            <span style={{ display: 'block' }}>Capture the chaos.</span>
+            <span style={{ display: 'block' }}>
+              Deliver the <em style={{ fontStyle: 'italic', color: C.accent, fontWeight: 500 }}>strategy</em>.
+            </span>
           </h1>
 
-          {/* Subhead — specific, leads with the verb */}
           <p style={{
-            fontFamily: SERIF, fontSize: 'clamp(18px, 2vw, 22px)', fontWeight: 400,
-            fontStyle: 'italic',
-            lineHeight: 1.5, color: C.text2,
-            maxWidth: 620, marginBottom: 14,
+            fontSize: 18, lineHeight: 1.55, color: C.textMuted,
+            maxWidth: 540, margin: '0 auto 30px',
           }}>
-            Walk out of the meeting with the memo already written.
-          </p>
-          <p style={{
-            fontSize: 15, color: C.text3, lineHeight: 1.7,
-            maxWidth: 580, marginBottom: 44,
-          }}>
-            Aligned records, transcribes, and turns the conversation into action items,
-            a one-page summary, and a strategy brief — in 10 Indian languages.
+            Aligned records, transcribes, and turns the conversation into
+            action items, a one-page summary, and a strategy brief.
           </p>
 
-          {/* CTAs — solid ink button, not a gradient */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 40 }}>
-            <button onClick={onGetStarted}
-              style={{
-                padding: '13px 22px', borderRadius: 8,
-                background: C.text1, color: C.bg,
-                fontFamily: SANS, fontWeight: 600, fontSize: 14,
-                border: 'none', cursor: 'pointer',
-                letterSpacing: '-0.01em',
-              }}>
-              Download for Mac →
-            </button>
-            <button onClick={onGetStarted}
-              style={{
-                padding: '13px 22px', borderRadius: 8,
-                background: 'transparent', border: `1px solid ${C.border}`,
-                color: C.text2,
-                fontFamily: SANS, fontWeight: 600, fontSize: 14,
-                cursor: 'pointer', letterSpacing: '-0.01em',
-              }}>
-              Coming to iOS
-            </button>
+          {/* CTA row */}
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
+            <button onClick={onGetStarted} style={ctaPrimary}>Download for Mac</button>
+            <a href="#demo" style={ctaSecondary}>Watch a 90-sec demo →</a>
           </div>
 
-          {/* Trust strip — typeset, no shouty rocket */}
+          {/* Meta */}
           <div style={{
-            paddingTop: 28, borderTop: `1px dashed ${C.border}`,
-            display: 'flex', flexWrap: 'wrap', gap: 22,
-            ...eyebrow,
-            color: C.text4,
+            display: 'flex', justifyContent: 'center', gap: 8, flexWrap: 'wrap',
+            fontSize: 12.5, color: C.textFaint,
           }}>
-            <span>Gemini 2.5</span>
+            <span>macOS 13+ · 28 MB</span>
             <span>·</span>
-            <span>Sarvam AI</span>
+            <span>Free for personal use</span>
             <span>·</span>
-            <span>Privacy-first</span>
-            <span>·</span>
-            <span>Offline recovery</span>
+            <span>SOC 2 Type II</span>
           </div>
         </div>
-      </section>
 
-      {/* ══════ PRODUCT MOCK — honest screenshot of new Home, not a recording placeholder ══════ */}
-      <section style={{ position: 'relative', padding: '20px 24px 80px', zIndex: 10 }}>
-        <div style={{ maxWidth: 880, margin: '0 auto' }}>
+        {/* ══════ Product mock screenshot ══════ */}
+        <div style={{ margin: '56px auto 0', maxWidth: 1080 }}>
           <div style={{
-            ...card({ padding: 0, overflow: 'hidden' }),
-            boxShadow: dark
-              ? '0 30px 80px rgba(0,0,0,0.5)'
-              : '0 30px 80px rgba(26,22,18,0.10)',
+            borderRadius: 20, overflow: 'hidden',
+            background: C.bg, border: `1px solid ${C.ruleStrong}`,
+            boxShadow:
+              '0 30px 60px -28px rgba(28, 29, 26, 0.20), ' +
+              '0 12px 28px -12px rgba(28, 29, 26, 0.12)',
           }}>
-            {/* Mock window chrome */}
+            {/* Mac window chrome */}
             <div style={{
-              padding: '10px 14px',
-              borderBottom: `1px solid ${C.hairline}`,
-              display: 'flex', alignItems: 'center', gap: 6,
-              fontFamily: MONO, fontSize: 11, color: C.text4,
+              padding: '12px 16px',
+              borderBottom: `1px solid ${C.ruleStrong}`,
+              background: C.bgAlt,
+              display: 'flex', alignItems: 'center', gap: 8,
+              fontSize: 12, color: C.textMuted,
             }}>
-              <div style={{ width: 10, height: 10, borderRadius: '50%', background: C.border }} />
-              <div style={{ width: 10, height: 10, borderRadius: '50%', background: C.border }} />
-              <div style={{ width: 10, height: 10, borderRadius: '50%', background: C.border }} />
-              <span style={{ marginLeft: 14 }}>aligned · home</span>
+              <span style={{ width: 11, height: 11, borderRadius: '50%', background: '#ff5f57' }} />
+              <span style={{ width: 11, height: 11, borderRadius: '50%', background: '#febc2e' }} />
+              <span style={{ width: 11, height: 11, borderRadius: '50%', background: '#28c840' }} />
+              <span style={{ marginLeft: 'auto', marginRight: 'auto', fontWeight: 500 }}>
+                Aligned · Strategy Sync · Apr 25
+              </span>
             </div>
 
-            {/* Mock content — mirrors HomeView */}
-            <div style={{ padding: '40px 44px 36px' }}>
-              <div style={{ ...eyebrow, marginBottom: 4 }}>Thursday · 25 Apr</div>
-              <h3 style={{
-                fontFamily: SERIF, fontSize: 30, fontWeight: 500,
-                letterSpacing: '-0.03em', lineHeight: 1.05,
-                color: C.text1, margin: '0 0 4px',
-              }}>
-                Three threads still <span style={{ fontStyle: 'italic', color: C.accent }}>open.</span>
-              </h3>
-              <p style={{ fontSize: 13, color: C.text3, margin: '0 0 28px' }}>
-                From Tuesday's standup and last Friday.
-              </p>
-
-              <div style={{
-                display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 0,
-                borderTop: `1px solid ${C.hairline}`,
-                borderBottom: `1px solid ${C.hairline}`,
-              }}>
+            {/* Body: 2-col */}
+            <div style={{
+              display: 'grid', gridTemplateColumns: 'minmax(280px, 1.1fr) 1fr',
+              background: C.surface,
+            }}>
+              {/* Action items */}
+              <div style={{ padding: '22px 24px', borderRight: `1px solid ${C.rule}` }}>
+                <div style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 8,
+                  padding: '5px 12px', borderRadius: 100,
+                  background: C.accent2Soft, color: '#b85a3c',
+                  fontSize: 11.5, fontWeight: 600, marginBottom: 16,
+                }}>
+                  <span style={{
+                    width: 7, height: 7, borderRadius: '50%', background: C.accent2,
+                    boxShadow: '0 0 0 3px rgba(217, 119, 87, 0.20)',
+                  }} />
+                  Recording · 32:14
+                </div>
+                <div style={{
+                  fontSize: 11, fontFamily: MONO, letterSpacing: '0.14em',
+                  textTransform: 'uppercase', color: C.textFaint, marginBottom: 12,
+                }}>
+                  Action items
+                </div>
                 {[
-                  { num: '03',   label: 'Open' },
-                  { num: '12',   label: 'Sessions · Apr' },
-                  { num: '4:12', label: 'Hours' },
-                ].map((s, i) => (
-                  <div key={s.label} style={{
-                    padding: '20px 16px',
-                    borderLeft: i > 0 ? `1px solid ${C.hairline}` : 'none',
+                  'Send revised pricing model to Priya by Friday',
+                  'Draft Q3 OKR brief — owner: Anika',
+                  'Loop in legal on data residency clause',
+                  'Schedule follow-up with the Chennai team',
+                ].map((t, i, arr) => (
+                  <div key={i} style={{
+                    display: 'flex', gap: 10, alignItems: 'flex-start',
+                    padding: '9px 0', fontSize: 13.5, color: C.text,
+                    borderBottom: i < arr.length - 1 ? `1px solid ${C.rule}` : 'none',
                   }}>
-                    <div style={{
-                      fontFamily: SERIF, fontSize: 32, fontWeight: 500,
-                      letterSpacing: '-0.03em', color: i === 0 ? C.accent : C.text1,
-                      fontVariantNumeric: 'tabular-nums', marginBottom: 4,
-                    }}>{s.num}</div>
-                    <div style={{ ...eyebrow, color: C.text4 }}>{s.label}</div>
+                    <span style={{
+                      width: 16, height: 16, borderRadius: '50%',
+                      border: `1.5px solid ${C.ruleStrong}`,
+                      flexShrink: 0, marginTop: 1,
+                    }} />
+                    <span>{t}</span>
                   </div>
                 ))}
               </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ══════ PAIN / SOLUTION — single accent, not amber+red ══════ */}
-      <section style={{ position: 'relative', padding: '40px 24px', zIndex: 10 }}>
-        <div style={{ maxWidth: 880, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(320px,1fr))', gap: 14 }}>
-          <div style={{ ...card(), padding: '28px 32px' }}>
-            <div style={{ ...eyebrow, color: C.text4, marginBottom: 18 }}>The problem</div>
-            {[
-              'You sit through a 1-hour meeting. You remember 20% by evening.',
-              'Action items live in your head. Half forgotten by morning.',
-              'Attended 4 meetings today. Notes from none of them.',
-              'Your team speaks Hindi. Your tool understands nothing.',
-            ].map((t, i) => (
-              <div key={i} style={{ display: 'flex', gap: 12, marginBottom: i < 3 ? 12 : 0 }}>
-                <span style={{ color: C.text4, fontFamily: MONO, fontSize: 12, marginTop: 2, width: 18, flexShrink: 0 }}>0{i + 1}</span>
-                <span style={{ fontSize: 13, color: C.text2, lineHeight: 1.6 }}>{t}</span>
-              </div>
-            ))}
-          </div>
-          <div style={{ ...card({ borderColor: C.accentBorder, background: C.accentTint }), padding: '28px 32px' }}>
-            <div style={{ ...eyebrow, color: C.accent, marginBottom: 18 }}>Aligned changes this</div>
-            {[
-              'Every meeting captured, transcribed, and summarised automatically.',
-              'Action items extracted and tracked — nothing falls through.',
-              'Patterns and insights surface across all your sessions.',
-              'Native support for Hindi, Marathi, Tamil + 10 more languages.',
-            ].map((t, i) => (
-              <div key={i} style={{ display: 'flex', gap: 12, marginBottom: i < 3 ? 12 : 0 }}>
-                <span style={{ color: C.accent, fontFamily: MONO, fontSize: 12, marginTop: 2, width: 18, flexShrink: 0 }}>→</span>
-                <span style={{ fontSize: 13, color: C.text2, lineHeight: 1.6 }}>{t}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ══════ SARVAM AI ══════ */}
-      <section id="sarvam" style={{ position: 'relative', padding: '80px 24px', zIndex: 10 }}>
-        <div style={{ maxWidth: 960, margin: '0 auto' }}>
-
-          <div style={{ marginBottom: 44 }}>
-            <div style={sectionLabel}>§ 02 · Built for Bharat</div>
-            <h2 style={{
-              fontFamily: SERIF, fontSize: 'clamp(30px, 5vw, 48px)', fontWeight: 500,
-              letterSpacing: '-0.035em', color: C.text1,
-              margin: '0 0 14px', lineHeight: 1.05,
-              textWrap: 'balance' as React.CSSProperties['textWrap'],
-            }}>
-              Your team speaks Hindi.<br/>
-              Aligned <span style={{ fontStyle: 'italic', color: C.accent }}>understands.</span>
-            </h2>
-            <p style={{ fontSize: 15, color: C.text2, maxWidth: 600, lineHeight: 1.65, fontFamily: SERIF, fontStyle: 'italic' }}>
-              Powered by Sarvam AI's Saaras v3 — India's most accurate multilingual speech engine.
-              Hindi, Marathi, Tamil or Gujarati meetings are captured with the same precision as English.
-            </p>
-          </div>
-
-          <div style={{ ...card(), padding: '40px 44px', marginBottom: 16 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 40, alignItems: 'start' }}>
-              <div>
-                <div style={{ ...eyebrow, color: C.accent, marginBottom: 14 }}>Sarvam AI · Saaras v3</div>
-                <p style={{ fontSize: 14, color: C.text2, lineHeight: 1.7, marginBottom: 20 }}>
-                  Most meeting tools are built for English-only workplaces. Aligned integrates Sarvam AI's <strong style={{ color: C.text1 }}>Saaras v3</strong> — so your real meetings, in your real languages, are captured with the same precision as English.
+              {/* Summary */}
+              <div style={{ padding: '22px 24px' }}>
+                <div style={{
+                  fontSize: 11, fontFamily: MONO, letterSpacing: '0.14em',
+                  textTransform: 'uppercase', color: C.textFaint, marginBottom: 12,
+                }}>
+                  Summary
+                </div>
+                <p style={{ fontSize: 13.5, lineHeight: 1.55, color: C.text, margin: '0 0 14px' }}>
+                  The team agreed to ship the pricing v2 by EOQ, contingent on
+                  legal sign-off on data residency. Anika owns the OKR draft;
+                  Priya delivers the model on Friday.
                 </p>
                 <div style={{
-                  padding: '14px 16px', borderRadius: 10,
-                  background: C.bgSunken, border: `1px solid ${C.hairline}`,
-                  fontSize: 12, color: C.text3, lineHeight: 1.55,
+                  display: 'inline-block', marginRight: 8, marginBottom: 6,
+                  padding: '4px 10px', borderRadius: 100,
+                  background: C.accent2Soft, color: '#b85a3c',
+                  fontSize: 11.5, fontWeight: 500,
                 }}>
-                  <div style={{ ...eyebrow, color: C.accent, marginBottom: 4, fontSize: 10 }}>Made in India · For India</div>
-                  Sarvam AI builds foundational language models for Bharat.
+                  Decision · pricing v2 timeline
                 </div>
-              </div>
-
-              {/* Language grid */}
-              <div>
-                <div style={{ ...eyebrow, color: C.text4, marginBottom: 14 }}>Supported languages</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                  {[
-                    { lang: 'Hindi',     script: 'हिन्दी'   },
-                    { lang: 'Marathi',   script: 'मराठी'    },
-                    { lang: 'Tamil',     script: 'தமிழ்'    },
-                    { lang: 'Telugu',    script: 'తెలుగు'   },
-                    { lang: 'Gujarati',  script: 'ગુજરાતી'  },
-                    { lang: 'Kannada',   script: 'ಕನ್ನಡ'    },
-                    { lang: 'Bengali',   script: 'বাংলা'    },
-                    { lang: 'Malayalam', script: 'മലയാളം'   },
-                    { lang: 'Punjabi',   script: 'ਪੰਜਾਬੀ'   },
-                    { lang: 'English',   script: 'English'  },
-                  ].map(l => (
-                    <div key={l.lang} style={{
-                      padding: '10px 12px', borderRadius: 8,
-                      background: C.bgSunken, border: `1px solid ${C.hairline}`,
-                    }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: C.text1 }}>{l.lang}</div>
-                      <div style={{ fontSize: 10, color: C.text4 }}>{l.script}</div>
-                    </div>
-                  ))}
+                <div style={{
+                  display: 'inline-block', marginRight: 8, marginBottom: 6,
+                  padding: '4px 10px', borderRadius: 100,
+                  background: C.accentSoft, color: C.accent,
+                  fontSize: 11.5, fontWeight: 500,
+                }}>
+                  Risk · legal review window
                 </div>
               </div>
             </div>
           </div>
         </div>
-      </section>
 
-      {/* ══════ FEATURES — numbered 01/02/03, single accent ══════ */}
-      <section id="features" style={{ position: 'relative', padding: '60px 24px', zIndex: 10 }}>
-        <div style={{ maxWidth: 960, margin: '0 auto' }}>
-          <div style={{ marginBottom: 44 }}>
-            <div style={sectionLabel}>§ 03 · The product</div>
-            <h2 style={{
-              fontFamily: SERIF, fontSize: 'clamp(28px, 4.5vw, 42px)', fontWeight: 500,
-              letterSpacing: '-0.03em', color: C.text1,
-              margin: '0 0 14px', lineHeight: 1.1,
-              textWrap: 'balance' as React.CSSProperties['textWrap'],
-            }}>
-              Three things that make Aligned <span style={{ fontStyle: 'italic', color: C.accent }}>different.</span>
-            </h2>
-            <p style={{ fontSize: 14, color: C.text3, maxWidth: 540, lineHeight: 1.7 }}>
-              Not just a meeting recorder — the intelligence layer across everything you discuss.
-            </p>
+        {/* ══════ Languages strip (Sarvam) ══════ */}
+        <section id="languages" style={{ margin: '96px auto 0', maxWidth: 880 }}>
+          <div style={{
+            ...pill({ background: C.accent2Soft, color: '#b85a3c' }),
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+            padding: '6px 14px', fontSize: 11.5, fontWeight: 600, marginBottom: 20,
+          }}>
+            <span>Built for Bharat</span>
           </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: 14 }}>
+          <h2 style={{
+            fontFamily: DISPLAY, fontSize: 'clamp(30px, 4.5vw, 44px)',
+            fontWeight: 600, letterSpacing: '-0.03em', lineHeight: 1.1,
+            margin: '0 0 14px', color: C.text,
+          }}>
+            Your team speaks Hindi.{' '}
+            <em style={{ fontStyle: 'italic', color: C.accent, fontWeight: 500 }}>Aligned understands.</em>
+          </h2>
+          <p style={{ fontSize: 16, color: C.textMuted, lineHeight: 1.65, maxWidth: 620, margin: '0 0 28px' }}>
+            Powered by Sarvam AI's Saaras v3 — India's most accurate multilingual speech engine.
+            Hindi, Marathi, Tamil or Gujarati meetings are captured with the same precision as English.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 }}>
             {[
-              {
-                num: '01',
-                title: 'Multilingual meetings',
-                tagline: 'The only tool that speaks India\'s languages',
-                desc: 'Switch between Hindi and English mid-sentence. Discuss in Marathi, Tamil, or Gujarati. Aligned captures every word with the same precision as English.',
-                points: ['10+ Indian languages', 'Hinglish code-switching aware', 'Native script + English summaries'],
-              },
-              {
-                num: '02',
-                title: 'Strategic insights',
-                tagline: 'Patterns your team would never notice manually',
-                desc: 'Aligned doesn\'t just summarise — it thinks across all your meetings. Surface recurring blockers, track unresolved decisions, and get a strategic view of your work over time.',
-                points: ['Cross-session pattern detection', 'Recurring issues flagged', 'Strategic gaps & recommended actions'],
-              },
-              {
-                num: '03',
-                title: 'AI-powered chat',
-                tagline: 'Ask anything. Get answers from your own meetings.',
-                desc: 'Ask Aligned questions across your entire history — "What did we decide about the Chakan timeline?" or "What action items are open from last week?" Instant answers, cited from your own sessions.',
-                points: ['Natural language queries', 'Answers cited from your meetings', 'Works across all sessions at once'],
-              },
-            ].map(f => (
-              <div key={f.num} style={{ ...card(), padding: '26px 28px', position: 'relative' }}>
-                <div style={{ ...eyebrow, color: C.accent, marginBottom: 14 }}>{f.num}</div>
-                <h3 style={{
-                  fontFamily: SERIF, fontSize: 22, fontWeight: 500,
-                  letterSpacing: '-0.02em', color: C.text1,
-                  margin: '0 0 8px', lineHeight: 1.15,
-                }}>
-                  {f.title}
-                </h3>
-                <div style={{ fontSize: 12, color: C.text3, fontStyle: 'italic', fontFamily: SERIF, marginBottom: 16, lineHeight: 1.5 }}>
-                  {f.tagline}
-                </div>
-                <p style={{ fontSize: 13, color: C.text2, lineHeight: 1.65, marginBottom: 18 }}>{f.desc}</p>
-                {f.points.map(p => (
-                  <div key={p} style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-                    <span style={{ color: C.accent, fontSize: 11 }}>·</span>
-                    <span style={{ fontSize: 12, color: C.text3, lineHeight: 1.55 }}>{p}</span>
-                  </div>
-                ))}
+              { lang: 'Hindi',     script: 'हिन्दी'   },
+              { lang: 'Marathi',   script: 'मराठी'    },
+              { lang: 'Tamil',     script: 'தமிழ்'    },
+              { lang: 'Telugu',    script: 'తెలుగు'   },
+              { lang: 'Gujarati',  script: 'ગુજરાતી'  },
+              { lang: 'Kannada',   script: 'ಕನ್ನಡ'    },
+              { lang: 'Bengali',   script: 'বাংলা'    },
+              { lang: 'Malayalam', script: 'മലയാളം'   },
+              { lang: 'Punjabi',   script: 'ਪੰਜਾਬੀ'   },
+              { lang: 'English',   script: 'English'  },
+            ].map(l => (
+              <div key={l.lang} style={{
+                padding: '10px 12px', borderRadius: 12,
+                background: C.surface, border: `1px solid ${C.rule}`,
+              }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{l.lang}</div>
+                <div style={{ fontSize: 10.5, color: C.textFaint }}>{l.script}</div>
               </div>
             ))}
           </div>
+        </section>
 
-          {/* Manual entry callout — quieter */}
-          <div style={{ ...card(), marginTop: 14, padding: '18px 24px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 16 }}>
-            <div style={{ ...eyebrow, color: C.text4 }}>Or</div>
-            <div style={{ flex: 1, minWidth: 200 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: C.text1, marginBottom: 3 }}>Missed the recording? Paste your transcript.</div>
-              <div style={{ fontSize: 12, color: C.text3 }}>Copy from Teams, Zoom or Google Meet — same structured notes and insights as a live recording.</div>
-            </div>
-            <button onClick={onGetStarted} style={{
-              ...eyebrow, color: C.accent, background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-            }}>Try it →</button>
-          </div>
-        </div>
-      </section>
-
-      {/* ══════ HOW IT WORKS ══════ */}
-      <section style={{ position: 'relative', padding: '60px 24px', zIndex: 10 }}>
-        <div style={{ maxWidth: 800, margin: '0 auto' }}>
-          <div style={{ marginBottom: 36 }}>
-            <div style={sectionLabel}>§ 04 · How it works</div>
-            <h2 style={{
-              fontFamily: SERIF, fontSize: 'clamp(24px, 4vw, 34px)', fontWeight: 500,
-              letterSpacing: '-0.03em', color: C.text1,
-              margin: '0 0 8px', lineHeight: 1.1,
-            }}>
-              From meeting to insights in <span style={{ fontStyle: 'italic', color: C.accent }}>three steps.</span>
-            </h2>
-            <p style={{ fontSize: 13, color: C.text3 }}>No setup. No integrations. Open Aligned and go.</p>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 14 }}>
+        {/* ══════ How it works — 3 steps ══════ */}
+        <section style={{ margin: '80px auto 0', maxWidth: 880 }}>
+          <h2 style={{
+            fontFamily: DISPLAY, fontSize: 'clamp(26px, 4vw, 36px)',
+            fontWeight: 600, letterSpacing: '-0.03em', lineHeight: 1.1,
+            margin: '0 0 8px', color: C.text,
+          }}>
+            From meeting to insights in <em style={{ fontStyle: 'italic', color: C.accent, fontWeight: 500 }}>three steps</em>.
+          </h2>
+          <p style={{ fontSize: 13.5, color: C.textMuted, marginBottom: 28 }}>
+            No setup. No integrations. Open Aligned and go.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
             {[
               { title: 'Record or paste',  desc: 'Hit record before your meeting, or paste a transcript you already have. Sarvam handles Hindi, English, or both.' },
               { title: 'Aligned analyses', desc: 'Gemini 2.5 Pro extracts structured notes, action items, key decisions, and follow-ups.' },
               { title: 'Act on insights',  desc: 'Your Home screen shows what needs attention. Ask Intelligence questions across all your meetings.' },
             ].map((s, i) => (
-              <div key={s.title} style={{ ...card(), padding: '22px 24px' }}>
-                <div style={{ ...eyebrow, color: C.accent, marginBottom: 10 }}>0{i + 1}</div>
+              <div key={s.title} style={{
+                padding: '22px 24px', borderRadius: 16,
+                background: C.surface, border: `1px solid ${C.rule}`,
+              }}>
                 <div style={{
-                  fontFamily: SERIF, fontSize: 17, fontWeight: 500,
-                  letterSpacing: '-0.02em', color: C.text1, marginBottom: 8,
-                }}>{s.title}</div>
-                <div style={{ fontSize: 12, color: C.text3, lineHeight: 1.6 }}>{s.desc}</div>
+                  fontSize: 11, fontFamily: MONO, letterSpacing: '0.14em',
+                  textTransform: 'uppercase', color: C.accent, marginBottom: 10,
+                }}>
+                  0{i + 1}
+                </div>
+                <div style={{
+                  fontFamily: DISPLAY, fontSize: 17, fontWeight: 600,
+                  letterSpacing: '-0.02em', color: C.text, marginBottom: 8,
+                }}>
+                  {s.title}
+                </div>
+                <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6 }}>
+                  {s.desc}
+                </div>
               </div>
             ))}
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* ══════ WAITLIST ══════ */}
-      <section id="waitlist" style={{ position: 'relative', padding: '80px 24px', zIndex: 10 }}>
-        <div style={{ maxWidth: 600, margin: '0 auto' }}>
-          <div style={sectionLabel}>§ 05 · Early access</div>
+        {/* ══════ Waitlist ══════ */}
+        <section id="waitlist" style={{ margin: '96px auto 0', maxWidth: 580 }}>
           <h2 style={{
-            fontFamily: SERIF, fontSize: 'clamp(30px, 5vw, 46px)', fontWeight: 500,
-            letterSpacing: '-0.035em', color: C.text1,
-            margin: '0 0 16px', lineHeight: 1.05,
-            textWrap: 'balance' as React.CSSProperties['textWrap'],
+            fontFamily: DISPLAY, fontSize: 'clamp(28px, 4.5vw, 42px)',
+            fontWeight: 600, letterSpacing: '-0.035em', lineHeight: 1.05,
+            margin: '0 0 14px', color: C.text,
           }}>
-            Be among the first<br/>
-            to use <span style={{ fontStyle: 'italic', color: C.accent }}>Aligned.</span>
+            Be among the first to use{' '}
+            <em style={{ fontStyle: 'italic', color: C.accent, fontWeight: 500 }}>Aligned</em>.
           </h2>
-          <p style={{ fontSize: 14, color: C.text2, lineHeight: 1.7, marginBottom: 28, maxWidth: 480 }}>
+          <p style={{ fontSize: 14.5, color: C.textMuted, lineHeight: 1.65, marginBottom: 24 }}>
             Join 200+ professionals on the waitlist. Every early-access member gets{' '}
-            <strong style={{ color: C.text1 }}>1 month of free Pro access</strong> — no conditions, automatically applied at sign-up.
+            <strong style={{ color: C.text }}>1 month of free Pro access</strong>.
           </p>
 
           {submitted ? (
-            <div style={{ ...card(), padding: '32px', textAlign: 'left' }}>
-              <div style={{ ...eyebrow, color: C.accent, marginBottom: 8 }}>You're on the list</div>
-              <div style={{ fontFamily: SERIF, fontSize: 22, fontWeight: 500, color: C.text1, marginBottom: 6, letterSpacing: '-0.02em' }}>
+            <div style={{
+              padding: '24px 28px', borderRadius: 16,
+              background: C.surface, border: `1px solid ${C.rule}`,
+            }}>
+              <div style={{
+                fontFamily: MONO, fontSize: 11, letterSpacing: '0.14em',
+                textTransform: 'uppercase', color: C.accent, marginBottom: 8,
+              }}>You're on the list</div>
+              <div style={{
+                fontFamily: DISPLAY, fontSize: 22, fontWeight: 600,
+                letterSpacing: '-0.02em', color: C.text, marginBottom: 6,
+              }}>
                 Thanks for signing up.
               </div>
-              <div style={{ fontSize: 13, color: C.text3, marginBottom: 18 }}>
+              <div style={{ fontSize: 13, color: C.textMuted, marginBottom: 18 }}>
                 We'll reach out with early-access details soon.
               </div>
-              <button onClick={onGetStarted}
-                style={{
-                  padding: '11px 20px', borderRadius: 8,
-                  background: C.text1, color: C.bg,
-                  fontFamily: SANS, fontWeight: 600, fontSize: 13,
-                  border: 'none', cursor: 'pointer',
-                }}>
-                Try it now →
-              </button>
+              <button onClick={onGetStarted} style={ctaPrimary}>Try it now →</button>
             </div>
           ) : (
-            <form onSubmit={handleJoin} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxWidth: 460 }}>
+            <form onSubmit={handleJoin} style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
               <input
                 type="email"
                 required
@@ -567,58 +398,59 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
                 onChange={e => setEmail(e.target.value)}
                 placeholder="your@email.com"
                 style={{
-                  flex: 1, minWidth: 220, padding: '13px 16px', borderRadius: 8,
-                  background: C.inputBg, border: `1px solid ${C.inputBorder}`,
-                  color: C.text1, fontSize: 14, fontFamily: SANS, outline: 'none',
+                  flex: 1, minWidth: 220, padding: '13px 18px', borderRadius: 100,
+                  background: C.surface, border: `1px solid ${C.ruleStrong}`,
+                  color: C.text, fontSize: 14, fontFamily: DISPLAY, outline: 'none',
                 }}
               />
-              <button type="submit" disabled={busy}
-                style={{
-                  padding: '13px 22px', borderRadius: 8,
-                  background: C.text1, color: C.bg,
-                  fontFamily: SANS, fontWeight: 600, fontSize: 14,
-                  border: 'none', cursor: busy ? 'not-allowed' : 'pointer',
-                  opacity: busy ? 0.6 : 1, whiteSpace: 'nowrap',
-                }}>
+              <button type="submit" disabled={busy} style={{
+                ...ctaPrimary,
+                opacity: busy ? 0.6 : 1, cursor: busy ? 'not-allowed' : 'pointer',
+              }}>
                 {busy ? 'Joining…' : 'Get early access'}
               </button>
             </form>
           )}
 
-          <p style={{ fontSize: 12, color: C.text4, marginTop: 14 }}>No spam. No credit card. Unsubscribe anytime.</p>
+          <p style={{ fontSize: 12, color: C.textFaint, marginTop: 14 }}>
+            No spam. No credit card. Unsubscribe anytime.
+          </p>
+        </section>
 
-          <div style={{ marginTop: 36, paddingTop: 24, borderTop: `1px solid ${C.hairline}` }}>
-            <button onClick={onGetStarted} style={{
-              ...eyebrow, color: C.accent, background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+        {/* ══════ Footer ══════ */}
+        <footer style={{
+          marginTop: 80, paddingTop: 28,
+          borderTop: `1px solid ${C.rule}`,
+          display: 'flex', flexWrap: 'wrap', alignItems: 'baseline',
+          justifyContent: 'space-between', gap: 20,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{
+              width: 22, height: 22, borderRadius: 7,
+              background: C.accent, position: 'relative', display: 'inline-block',
             }}>
-              Already have an account · Sign in →
-            </button>
+              <span style={{ position: 'absolute', inset: 6, borderRadius: '50%', background: C.bg }} />
+            </span>
+            <span style={{ fontFamily: DISPLAY, fontSize: 15, fontWeight: 600, color: C.text }}>
+              Aligned
+            </span>
           </div>
-        </div>
-      </section>
-
-      {/* ══════ FOOTER ══════ */}
-      <footer style={{
-        position: 'relative', padding: '32px 24px', borderTop: `1px solid ${C.hairline}`, zIndex: 10,
-      }}>
-        <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', justifyContent: 'space-between', gap: 20 }}>
           <div style={{
-            fontFamily: SERIF, fontSize: 16, fontWeight: 500,
-            letterSpacing: '-0.02em', color: C.text1,
+            display: 'flex', flexWrap: 'wrap', gap: 14,
+            fontSize: 11, fontFamily: MONO, letterSpacing: '0.14em',
+            textTransform: 'uppercase', color: C.textFaint,
           }}>
-            Aligned
-          </div>
-          <div style={{ ...eyebrow, color: C.text4, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
             <span>Gemini 2.5</span>
             <span>·</span>
             <span>Sarvam AI</span>
             <span>·</span>
             <span>Supabase</span>
           </div>
-          <div style={{ fontSize: 12, color: C.text4 }}>© 2026 Aligned · Made in India</div>
-        </div>
-      </footer>
-
+          <div style={{ fontSize: 12, color: C.textFaint }}>
+            © 2026 Aligned · Made in India
+          </div>
+        </footer>
+      </div>
     </div>
   );
 };

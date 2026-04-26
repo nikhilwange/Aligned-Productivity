@@ -42,7 +42,8 @@ const SettingsView: React.FC<SettingsViewProps> = ({
           <section className="mb-10">
             <SectionLabel>Profile</SectionLabel>
             <div className="glass-card rounded-2xl border border-white/[0.06] p-5 flex items-center gap-4">
-              <div className="w-14 h-14 rounded-xl bg-purple-500 text-white flex items-center justify-center font-bold text-lg shadow-lg shrink-0">
+              <div className="w-14 h-14 rounded-full text-white flex items-center justify-center font-bold text-lg shrink-0"
+                   style={{ background: 'var(--accent)' }}>
                 {getInitials(user.name)}
               </div>
               <div className="min-w-0 flex-1">
@@ -173,11 +174,10 @@ const ThemeOption: React.FC<{
 }> = ({ active, onClick, label, icon }) => (
   <button
     onClick={onClick}
-    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-      active
-        ? 'bg-amber-500 text-black shadow-sm'
-        : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
-    }`}
+    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all"
+    style={active
+      ? { background: 'var(--accent)', color: 'var(--accent-fg)' }
+      : { background: 'transparent', color: 'var(--text-muted)' }}
   >
     <span className="w-3.5 h-3.5">{icon}</span>
     {label}

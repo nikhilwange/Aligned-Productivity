@@ -46,7 +46,7 @@ const App: React.FC = () => {
   const [showAuthView, setShowAuthView] = useState(false);
   const [showResetPassword, setShowResetPassword] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    return (localStorage.getItem('aligned-theme') as 'light' | 'dark') || 'dark';
+    return (localStorage.getItem('aligned-theme') as 'light' | 'dark') || 'light';
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -754,6 +754,7 @@ const App: React.FC = () => {
               actionItems={actionItems}
               onActionItemsChange={setActionItems}
               userId={user.id}
+              userName={user.name}
               onSelectSession={handleSelectRecording}
             />
           ) : activeRecordingId === 'manual-entry' ? (

@@ -79,7 +79,7 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
     return (
       <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[var(--surface-950)] overflow-hidden px-6">
         {/* Ambient orbs */}
-        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute inset-0 overflow-hidden pointer-events-none dark-only">
           <div className="absolute top-1/4 left-1/4 w-[500px] h-[500px] rounded-full bg-purple-600/20 blur-[120px] animate-pulse-glow"></div>
           <div className="absolute bottom-1/4 right-1/4 w-[400px] h-[400px] rounded-full bg-teal-500/15 blur-[100px] animate-pulse-glow" style={{ animationDelay: '1s' }}></div>
         </div>
@@ -117,8 +117,8 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[var(--surface-950)] overflow-hidden px-6">
-      {/* Animated ambient background */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+      {/* Animated ambient background — dark mode only */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none dark-only">
         <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full bg-purple-600/20 blur-[150px] animate-soft-pulse"></div>
         <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-teal-500/15 blur-[120px] animate-soft-pulse" style={{ animationDelay: '2s' }}></div>
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] rounded-full bg-amber-500/5 blur-[200px] animate-pulse-glow"></div>
@@ -133,11 +133,12 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
       <div className="relative w-full max-w-md animate-fade-in-up">
         {/* Brand Header */}
         <div className="flex flex-col items-center mb-10">
-          {/* Logo */}
+          {/* Logo — olive square in granola, amber glow in dark */}
           <div className="relative mb-6 group">
-            <div className="absolute -inset-4 rounded-3xl bg-amber-500 opacity-25 blur-2xl group-hover:opacity-40 transition-opacity duration-500"></div>
-            <div className="relative w-16 h-16 rounded-2xl bg-amber-500 shadow-2xl flex items-center justify-center transform rotate-3 group-hover:rotate-6 transition-transform duration-500">
-              <span className="text-black font-bold text-3xl tracking-tight">A</span>
+            <div className="absolute -inset-4 rounded-3xl bg-amber-500 opacity-25 blur-2xl group-hover:opacity-40 transition-opacity duration-500 dark-only"></div>
+            <div className="relative w-16 h-16 rounded-[18px] flex items-center justify-center"
+                 style={{ background: 'var(--accent)' }}>
+              <span className="font-bold text-3xl tracking-tight text-white">A</span>
             </div>
           </div>
 
@@ -234,10 +235,11 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
               )}
             </div>
 
-            <button 
-              disabled={isLoading} 
-              type="submit" 
-              className="w-full py-4 mt-2 bg-amber-500 hover:bg-amber-400 text-black font-bold rounded-xl shadow-lg transition-all duration-300 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            <button
+              disabled={isLoading}
+              type="submit"
+              className="w-full py-3.5 mt-2 font-semibold rounded-full shadow-md transition-all duration-300 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              style={{ background: 'var(--cta-bg)', color: 'var(--cta-fg)' }}
             >
               {isLoading ? (
                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>

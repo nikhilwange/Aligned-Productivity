@@ -99,7 +99,8 @@ const Sidebar: React.FC<SidebarProps> = ({
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <div className="relative">
-              <div className="w-10 h-10 bg-amber-500 rounded-xl shadow-lg flex items-center justify-center text-black font-bold text-lg">
+              <div className="w-10 h-10 rounded-[10px] flex items-center justify-center font-bold text-lg"
+                   style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}>
                 A
               </div>
             </div>
@@ -126,10 +127,11 @@ const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
 
-        {/* New Session button */}
+        {/* New Session button — granola pill */}
         <button
           onClick={onNew}
-          className="w-full py-3 px-4 bg-amber-500 hover:bg-amber-400 text-black rounded-xl font-semibold shadow-lg transition-all flex items-center justify-center gap-2 text-sm active:scale-[0.98] mb-5"
+          className="w-full py-2.5 px-4 rounded-full font-medium shadow-sm transition-all flex items-center justify-center gap-2 text-sm active:scale-[0.98] mb-5 hover:opacity-90"
+          style={{ background: 'var(--cta-bg)', color: 'var(--cta-fg)' }}
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
@@ -275,7 +277,8 @@ const Sidebar: React.FC<SidebarProps> = ({
         <div className="px-4 pb-4 pt-2 border-t border-white/[0.04] shrink-0">
           <div className="p-3 glass rounded-xl flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-purple-500 text-white flex items-center justify-center font-bold text-xs shadow-lg">
+              <div className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs"
+                   style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}>
                 {getUserInitials(user.name)}
               </div>
               <div>

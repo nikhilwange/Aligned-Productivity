@@ -48,7 +48,7 @@ const ResetPassword: React.FC<ResetPasswordProps> = ({ onComplete }) => {
     return (
       <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[var(--surface-950)] overflow-hidden px-6">
         {/* Ambient orbs */}
-        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute inset-0 overflow-hidden pointer-events-none dark-only">
           <div className="absolute top-1/4 left-1/4 w-[500px] h-[500px] rounded-full bg-purple-600/20 blur-[120px] animate-pulse-glow"></div>
           <div className="absolute bottom-1/4 right-1/4 w-[400px] h-[400px] rounded-full bg-teal-500/15 blur-[100px] animate-pulse-glow" style={{ animationDelay: '1s' }}></div>
         </div>
@@ -83,7 +83,7 @@ const ResetPassword: React.FC<ResetPasswordProps> = ({ onComplete }) => {
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[var(--surface-950)] overflow-hidden px-6">
       {/* Animated ambient background */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+      <div className="absolute inset-0 overflow-hidden pointer-events-none dark-only">
         <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full bg-purple-600/20 blur-[150px] animate-soft-pulse"></div>
         <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-teal-500/15 blur-[120px] animate-soft-pulse" style={{ animationDelay: '2s' }}></div>
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] rounded-full bg-amber-500/5 blur-[200px] animate-pulse-glow"></div>

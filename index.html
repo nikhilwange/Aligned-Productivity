@@ -11,7 +11,7 @@
     <!-- Premium Typography -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     
     <style>
       /* ═══════════════════════════════════════════════════════════════════
@@ -120,76 +120,138 @@
         --text:         var(--text-primary);
         --accent:       var(--brand-amber);
         --accent-fg:    #000;
+        --accent-soft:  rgba(251, 191, 36, 0.12);
+        --accent-2:     #b85a3c;        /* terra brick — reads on white & cream */
+        --accent-2-soft: rgba(184, 90, 60, 0.18);
         --accent-signal:  #ef4444;
         --accent-success: #34d399;
+
+        /* Primary CTA pill — high-contrast inverse of the page surface.
+           Dark: white pill with near-black text. Light: dark ink pill with cream text. */
+        --cta-bg:       #ffffff;
+        --cta-fg:       #0a0a0f;
+        --cta-fg-muted: rgba(10, 10, 15, 0.62);
+
+        /* Granola-shaped surface conventions, available in both modes */
+        --radius-surface: 22px;
+        --radius-pill:    100px;
+        --radius-card:    16px;
       }
 
-      /* ─── Light Theme · Warm Paper ───
-         Intentional editorial palette — not an inversion of dark.
-         Every value passes WCAG AA on its target surface. */
+      /* ─── Light Theme · Granola-warm ───
+         Off-white ivory base with deep olive accent and terra-warm secondary.
+         Friendly modern Mac-app feel — generous radii, soft shadows.
+         Single accent system; no purple/teal differentiation in this mode. */
       .light {
-        /* Warm paper foundation (review v3 §02) */
-        --surface-950: #faf7f2;   /* page bg */
-        --surface-900: #f4ecdc;   /* sticky / sunken */
-        --surface-850: #f1e9d6;
-        --surface-800: #fdfaf3;   /* elevated cards */
-        --surface-700: #e8e1d2;   /* visible warm hairline */
-        --surface-600: #c9bea5;
-        --surface-500: #6b5d4a;   /* muted text rank */
-        --surface-400: #4a3f30;
-        --surface-300: #2a2218;
+        /* Ivory paper foundation */
+        --surface-950: #f7f5ef;   /* page bg */
+        --surface-900: #efece3;   /* alt / sunken */
+        --surface-850: #e8e5db;
+        --surface-800: #ffffff;   /* elevated cards (pure white) */
+        --surface-700: rgba(28, 29, 26, 0.10);
+        --surface-600: #9b9d93;
+        --surface-500: #6a6c64;   /* muted text rank */
+        --surface-400: #44463f;
+        --surface-300: #1c1d1a;
 
-        --text-primary:   #1a1612;            /* warm ink */
-        --text-secondary: #3a3226;
-        --text-tertiary:  #5a4f3e;
-        --text-muted:     #6b5d4a;            /* 4.7:1 on #faf7f2 */
+        --text-primary:   #1c1d1a;
+        --text-secondary: #44463f;
+        --text-tertiary:  #6a6c64;
+        --text-muted:     #6a6c64;            /* 4.6:1 on #f7f5ef */
 
-        /* Honest cards (no glass smudge) — 7% warm border on cream */
-        --glass-bg:        #fdfaf3;
-        --glass-bg-hover:  #f4ecdc;
-        --glass-border:    rgba(26, 22, 18, 0.10);
-        --glass-border-hover: rgba(26, 22, 18, 0.18);
-        --glass-glow:      rgba(154, 107, 26, 0.10);
+        /* Honest cards — pure white surfaces, 7% hairline */
+        --glass-bg:        #ffffff;
+        --glass-bg-hover:  #efece3;
+        --glass-border:    rgba(28, 29, 26, 0.07);
+        --glass-border-hover: rgba(28, 29, 26, 0.14);
+        --glass-glow:      rgba(74, 107, 58, 0.10);
 
-        /* Role aliases — overridden so .light cards use cream not slate */
-        --bg:           #faf7f2;
-        --bg-elevated:  #fdfaf3;
-        --bg-sunken:    #f0e9d8;
-        --border:       rgba(26, 22, 18, 0.10);
-        --border-strong: rgba(26, 22, 18, 0.18);
-        --text:         #1a1612;
-        --accent:       #9a6b1a;              /* warm brass · 5.0:1 */
-        --accent-fg:    #faf7f2;
-        --accent-signal:  #9a3a1c;            /* signal red · 5.7:1 */
-        --accent-success: #3f6b3a;            /* idiomatic done · 4.6:1 */
+        /* Role aliases */
+        --bg:           #f7f5ef;
+        --bg-elevated:  #ffffff;
+        --bg-sunken:    #efece3;
+        --border:       rgba(28, 29, 26, 0.07);
+        --border-strong: rgba(28, 29, 26, 0.10);
+        --text:         #1c1d1a;
+        --accent:       #4a6b3a;              /* deep olive · 5.4:1 */
+        --accent-fg:    #ffffff;
+        --accent-soft:  rgba(74, 107, 58, 0.10);   /* highlighted-stat tint */
+        --accent-2:     #d97757;              /* terra warm — secondary */
+        --accent-2-soft: rgba(217, 119, 87, 0.12);
+        --accent-signal:  #b85a3c;            /* recording / live · 4.8:1 */
+        --accent-success: #4a6b3a;            /* olive doubles as done */
 
-        --shadow-sm: 0 1px 2px rgba(26, 22, 18, 0.04);
-        --shadow-md: 0 4px 6px -1px rgba(26, 22, 18, 0.08), 0 2px 4px -1px rgba(26, 22, 18, 0.04);
-        --shadow-lg: 0 10px 15px -3px rgba(26, 22, 18, 0.08), 0 4px 6px -2px rgba(26, 22, 18, 0.04);
-        --shadow-xl: 0 20px 25px -5px rgba(26, 22, 18, 0.08), 0 10px 10px -5px rgba(26, 22, 18, 0.03);
-        --shadow-2xl: 0 25px 50px -12px rgba(26, 22, 18, 0.12);
+        /* Primary CTA pill — granola pattern: dark ink pill on cream */
+        --cta-bg:       #1c1d1a;
+        --cta-fg:       #f7f5ef;
+        --cta-fg-muted: rgba(247, 245, 239, 0.65);
+
+        /* Soft Mac-app shadow stack — inset highlight + drop */
+        --surface-shadow:
+          0 1px 0 rgba(255, 255, 255, 0.8) inset,
+          0 0 0 1px rgba(28, 29, 26, 0.05),
+          0 18px 42px -22px rgba(28, 29, 26, 0.18),
+          0 4px 12px -6px rgba(28, 29, 26, 0.08);
+
+        --shadow-sm: 0 1px 2px rgba(28, 29, 26, 0.04);
+        --shadow-md: 0 4px 6px -1px rgba(28, 29, 26, 0.08), 0 2px 4px -1px rgba(28, 29, 26, 0.04);
+        --shadow-lg: 0 10px 15px -3px rgba(28, 29, 26, 0.08), 0 4px 6px -2px rgba(28, 29, 26, 0.04);
+        --shadow-xl: 0 20px 25px -5px rgba(28, 29, 26, 0.10), 0 10px 10px -5px rgba(28, 29, 26, 0.04);
+        --shadow-2xl: 0 30px 60px -28px rgba(28, 29, 26, 0.20), 0 12px 28px -12px rgba(28, 29, 26, 0.12);
       }
 
-      /* ─── Light Theme · Accent class overrides ───
-         Tailwind's text-amber-400 / teal-400 / purple-400 fail WCAG AA on
-         cream (review v3 §01 · L2). Remap to AA-passing warm equivalents
-         here so component code doesn't need per-mode branches. */
+      /* ─── Light Theme · Accent class remaps ───
+         Granola is single-accent. Collapse Tailwind amber/teal/purple-* refs
+         to olive (with terra reserved for recording/error). */
       .light .text-amber-400,
       .light .text-amber-300,
-      .light .text-amber-500 { color: #9a6b1a; }
+      .light .text-amber-500,
+      .light .text-amber-600,
       .light .text-teal-400,
       .light .text-teal-300,
-      .light .text-teal-500 { color: #2d6b5e; }
+      .light .text-teal-500 { color: #4a6b3a; }
       .light .text-purple-400,
       .light .text-purple-300,
-      .light .text-purple-500 { color: #6b3aaf; }
+      .light .text-purple-500 { color: #6a6c64; }
       .light .text-red-400,
-      .light .text-red-500 { color: #9a3a1c; }
+      .light .text-red-500,
+      .light .text-orange-400,
+      .light .text-orange-500 { color: #b85a3c; }
+
+      /* Background-tint remaps — common alpha variants only.
+         Tailwind's class names contain `/` so they need escaping. */
+      .light .bg-amber-500\/10,
+      .light .bg-amber-500\/15,
+      .light .bg-amber-500\/12,
+      .light .bg-amber-500\/14 { background-color: rgba(74, 107, 58, 0.10); }
+      .light .bg-amber-500\/20,
+      .light .bg-amber-500\/30 { background-color: rgba(74, 107, 58, 0.18); }
+      .light .bg-amber-500,
+      .light .bg-amber-400,
+      .light .hover\:bg-amber-400:hover { background-color: var(--accent); color: var(--accent-fg); }
+      .light .border-amber-500\/20,
+      .light .border-amber-500\/30,
+      .light .border-amber-500\/35 { border-color: rgba(74, 107, 58, 0.22); }
+      .light .bg-teal-500\/10,
+      .light .bg-teal-500\/15 { background-color: rgba(74, 107, 58, 0.10); }
+      .light .bg-purple-500\/10,
+      .light .bg-purple-500\/12,
+      .light .bg-purple-500\/06,
+      .light .bg-purple-500\/\[0\.06\] { background-color: rgba(28, 29, 26, 0.04); }
+      .light .border-purple-500\/12,
+      .light .border-purple-500\/20,
+      .light .border-purple-500\/25,
+      .light .border-purple-500\/30 { border-color: rgba(28, 29, 26, 0.08); }
 
       /* Token-driven brand text */
       .text-brand { color: var(--accent); }
       .text-signal { color: var(--accent-signal); }
       .text-success { color: var(--accent-success); }
+
+      /* Surfaces that only make sense in dark mode (purple/teal orbs,
+         heavy gradient halos). Wrap them in .dark-only and they vanish
+         in granola light. */
+      .light .dark-only { display: none !important; }
       
       /* ─── Base Styles ─── */
       * {
@@ -215,13 +277,15 @@
       }
 
       .font-display {
-        font-family: 'Fraunces', 'Iowan Old Style', 'Palatino', Georgia, serif;
+        font-family: 'DM Sans', 'Inter', system-ui, -apple-system, sans-serif;
         font-optical-sizing: auto;
+        font-feature-settings: "ss01";
         letter-spacing: -0.02em;
       }
       .font-display-tight {
-        font-family: 'Fraunces', 'Iowan Old Style', 'Palatino', Georgia, serif;
+        font-family: 'DM Sans', 'Inter', system-ui, -apple-system, sans-serif;
         font-optical-sizing: auto;
+        font-feature-settings: "ss01";
         letter-spacing: -0.035em;
       }
       .tabular-nums {
