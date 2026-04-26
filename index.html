@@ -107,34 +107,89 @@
         --transition-spring: 500ms cubic-bezier(0.34, 1.56, 0.64, 1);
       }
 
-      /* ─── Light Theme Overrides ─── */
-      .light {
-        --surface-950: #ffffff;
-        --surface-900: #f8fafc;
-        --surface-850: #f1f5f9;
-        --surface-800: #e2e8f0;
-        --surface-700: #cbd5e1;
-        --surface-600: #94a3b8;
-        --surface-500: #64748b;
-        --surface-400: #475569;
-        --surface-300: #334155;
-        
-        --text-primary: #0f172a;
-        --text-secondary: #334155;
-        --text-tertiary: #475569;
-        --text-muted: #64748b;
-        
-        --glass-bg: rgba(15, 23, 42, 0.03);
-        --glass-bg-hover: rgba(15, 23, 42, 0.06);
-        --glass-border: rgba(15, 23, 42, 0.08);
-        --glass-border-hover: rgba(15, 23, 42, 0.12);
-        
-        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-        --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-        --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-        --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-        --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
+      /* ─── Role tokens (mode-agnostic alias layer) ───
+         Consumers should prefer --bg / --text / --accent over --surface-*.
+         The numbered surface ladder remains for legacy callers but is being
+         phased out (see review v3 §02 / Sprint 2). */
+      :root {
+        --bg:           var(--surface-950);
+        --bg-elevated:  var(--surface-800);
+        --bg-sunken:    var(--surface-900);
+        --border:       var(--glass-border);
+        --border-strong: var(--glass-border-hover);
+        --text:         var(--text-primary);
+        --accent:       var(--brand-amber);
+        --accent-fg:    #000;
+        --accent-signal:  #ef4444;
+        --accent-success: #34d399;
       }
+
+      /* ─── Light Theme · Warm Paper ───
+         Intentional editorial palette — not an inversion of dark.
+         Every value passes WCAG AA on its target surface. */
+      .light {
+        /* Warm paper foundation (review v3 §02) */
+        --surface-950: #faf7f2;   /* page bg */
+        --surface-900: #f4ecdc;   /* sticky / sunken */
+        --surface-850: #f1e9d6;
+        --surface-800: #fdfaf3;   /* elevated cards */
+        --surface-700: #e8e1d2;   /* visible warm hairline */
+        --surface-600: #c9bea5;
+        --surface-500: #6b5d4a;   /* muted text rank */
+        --surface-400: #4a3f30;
+        --surface-300: #2a2218;
+
+        --text-primary:   #1a1612;            /* warm ink */
+        --text-secondary: #3a3226;
+        --text-tertiary:  #5a4f3e;
+        --text-muted:     #6b5d4a;            /* 4.7:1 on #faf7f2 */
+
+        /* Honest cards (no glass smudge) — 7% warm border on cream */
+        --glass-bg:        #fdfaf3;
+        --glass-bg-hover:  #f4ecdc;
+        --glass-border:    rgba(26, 22, 18, 0.10);
+        --glass-border-hover: rgba(26, 22, 18, 0.18);
+        --glass-glow:      rgba(154, 107, 26, 0.10);
+
+        /* Role aliases — overridden so .light cards use cream not slate */
+        --bg:           #faf7f2;
+        --bg-elevated:  #fdfaf3;
+        --bg-sunken:    #f0e9d8;
+        --border:       rgba(26, 22, 18, 0.10);
+        --border-strong: rgba(26, 22, 18, 0.18);
+        --text:         #1a1612;
+        --accent:       #9a6b1a;              /* warm brass · 5.0:1 */
+        --accent-fg:    #faf7f2;
+        --accent-signal:  #9a3a1c;            /* signal red · 5.7:1 */
+        --accent-success: #3f6b3a;            /* idiomatic done · 4.6:1 */
+
+        --shadow-sm: 0 1px 2px rgba(26, 22, 18, 0.04);
+        --shadow-md: 0 4px 6px -1px rgba(26, 22, 18, 0.08), 0 2px 4px -1px rgba(26, 22, 18, 0.04);
+        --shadow-lg: 0 10px 15px -3px rgba(26, 22, 18, 0.08), 0 4px 6px -2px rgba(26, 22, 18, 0.04);
+        --shadow-xl: 0 20px 25px -5px rgba(26, 22, 18, 0.08), 0 10px 10px -5px rgba(26, 22, 18, 0.03);
+        --shadow-2xl: 0 25px 50px -12px rgba(26, 22, 18, 0.12);
+      }
+
+      /* ─── Light Theme · Accent class overrides ───
+         Tailwind's text-amber-400 / teal-400 / purple-400 fail WCAG AA on
+         cream (review v3 §01 · L2). Remap to AA-passing warm equivalents
+         here so component code doesn't need per-mode branches. */
+      .light .text-amber-400,
+      .light .text-amber-300,
+      .light .text-amber-500 { color: #9a6b1a; }
+      .light .text-teal-400,
+      .light .text-teal-300,
+      .light .text-teal-500 { color: #2d6b5e; }
+      .light .text-purple-400,
+      .light .text-purple-300,
+      .light .text-purple-500 { color: #6b3aaf; }
+      .light .text-red-400,
+      .light .text-red-500 { color: #9a3a1c; }
+
+      /* Token-driven brand text */
+      .text-brand { color: var(--accent); }
+      .text-signal { color: var(--accent-signal); }
+      .text-success { color: var(--accent-success); }
       
       /* ─── Base Styles ─── */
       * {
@@ -257,6 +312,31 @@
       @media (prefers-reduced-motion: reduce) {
         .skeleton { animation: none; background: rgba(255,255,255,0.05); }
       }
+      .light .skeleton {
+        background: linear-gradient(
+          90deg,
+          rgba(26, 22, 18, 0.04) 0%,
+          rgba(26, 22, 18, 0.09) 50%,
+          rgba(26, 22, 18, 0.04) 100%
+        );
+        background-size: 200% 100%;
+      }
+      .light ::selection {
+        background: rgba(154, 107, 26, 0.22);
+        color: var(--text-primary);
+      }
+      .light * {
+        scrollbar-color: rgba(26, 22, 18, 0.18) transparent;
+      }
+      .light ::-webkit-scrollbar-thumb {
+        background: rgba(26, 22, 18, 0.12);
+        border: 2px solid transparent;
+        background-clip: content-box;
+      }
+      .light ::-webkit-scrollbar-thumb:hover {
+        background: rgba(26, 22, 18, 0.28);
+        background-clip: content-box;
+      }
 
       /* ═══════════════════════════════════════════════════════════════════
          GLASSMORPHISM COMPONENTS
@@ -268,12 +348,12 @@
         -webkit-backdrop-filter: blur(20px);
         border: 1px solid var(--glass-border);
       }
-      
+
       .glass-hover:hover {
         background: var(--glass-bg-hover);
         border-color: var(--glass-border-hover);
       }
-      
+
       .glass-card {
         background: linear-gradient(
           135deg,
@@ -283,9 +363,29 @@
         backdrop-filter: blur(24px);
         -webkit-backdrop-filter: blur(24px);
         border: 1px solid var(--glass-border);
-        box-shadow: 
+        box-shadow:
           0 8px 32px rgba(0, 0, 0, 0.3),
           inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      }
+
+      /* Light-mode honest cards — no blur, no smudge.
+         backdrop-blur is reserved for the sticky top bar (see top-bar styles). */
+      .light .glass {
+        background: var(--bg-elevated);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+        border: 1px solid var(--border);
+      }
+      .light .glass-hover:hover {
+        background: var(--glass-bg-hover);
+        border-color: var(--border-strong);
+      }
+      .light .glass-card {
+        background: var(--bg-elevated);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+        border: 1px solid var(--border);
+        box-shadow: var(--shadow-sm);
       }
       
       .glass-input {
@@ -374,6 +474,29 @@
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
+      }
+
+      /* Light-mode gradient overrides — purple→teal mesh and purple text
+         become invisible on cream. Collapse to solid brass / cream radials. */
+      .light .gradient-text-brand,
+      .light .gradient-text-purple {
+        background: none;
+        -webkit-text-fill-color: var(--accent);
+        color: var(--accent);
+      }
+      .light .gradient-mesh {
+        background:
+          radial-gradient(at 20% 10%, rgba(154, 107, 26, 0.06) 0px, transparent 55%),
+          radial-gradient(at 80% 0%,  rgba(154, 58, 28, 0.04) 0px, transparent 55%),
+          radial-gradient(at 0% 90%,  rgba(154, 107, 26, 0.05) 0px, transparent 55%),
+          var(--bg);
+      }
+      .light .gradient-brand {
+        background: var(--accent);
+      }
+      .light .gradient-purple,
+      .light .gradient-teal {
+        background: var(--accent);
       }
       
       /* ─── Animated Gradient Border ─── */
