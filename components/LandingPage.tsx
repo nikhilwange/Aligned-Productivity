@@ -4,17 +4,17 @@ interface LandingPageProps {
   onGetStarted: () => void;
 }
 
-// ─── Granola-warm tokens (self-contained, no CSS variables) ──────────────
-// Dark mode is unchanged; this component is light-mode marketing only.
+// ─── Olive-editorial tokens (true white, mirrors index.html .light) ─────
+// Self-contained — landing is light-mode marketing only.
 const C = {
-  bg:           '#f7f5ef',
-  bgAlt:        '#efece3',
+  bg:           '#ffffff',           // true white page
+  bgAlt:        '#f5f5f7',           // Apple-grey sunken
   surface:      '#ffffff',
-  text:         '#1c1d1a',
-  textMuted:    '#6a6c64',
-  textFaint:    '#9b9d93',
-  rule:         'rgba(28, 29, 26, 0.07)',
-  ruleStrong:   'rgba(28, 29, 26, 0.10)',
+  text:         '#1c1d20',           // cool ink
+  textMuted:    '#6a6c72',           // 4.6:1 on white
+  textFaint:    '#9b9da3',
+  rule:         'rgba(28, 29, 32, 0.07)',
+  ruleStrong:   'rgba(28, 29, 32, 0.10)',
   accent:       '#4a6b3a',           // deep olive
   accent2:      '#d97757',           // terra warm
   accentSoft:   'rgba(74, 107, 58, 0.10)',
