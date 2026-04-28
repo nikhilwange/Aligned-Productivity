@@ -28,17 +28,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ error: 'Server misconfiguration: GEMINI_API_KEY not set' });
   }
 
-  const { audioBase64, mimeType, audioSizeBytes } = req.body;
-  if (!audioBase64 || !mimeType) {
-    return res.status(400).json({ error: 'Missing audioBase64 or mimeType' });
+  const { audioBase64, audioUrl, mimeType, audioSizeBytes } = req.body;
+  if (!mimeType || (!audioBase64 && !audioUrl)) {
+    return res.status(400).json({ error: 'Missing mimeType or audio payload (audioBase64 or audioUrl)' });
   }
 
   const ai = new GoogleGenAI({ apiKey });
   const cleanMimeType = (mimeType || 'audio/webm').split(';')[0];
-  const sizeBytes = typeof audioSizeBytes === 'number'
-    ? audioSizeBytes
-    : Buffer.byteLength(audioBase64, 'base64');
-  const useFilesApi = sizeBytes > LARGE_AUDIO_THRESHOLD_BYTES;
+
+  // Resolve audio bytes — either inline base64 (small files) or fetched from
+  // a short-lived Supabase Storage signed URL (large files that exceed the
+  // 4.5 MB Vercel request body limit).
+  let audioBuffer: Buffer;
+  if (audioUrl) {
+    try {
+      const resp = await fetch(audioUrl);
+      if (!resp.ok) {
+        return res.status(502).json({ error: `Failed to fetch audio from storage URL (${resp.status})` });
+      }
+      const ab = await resp.arrayBuffer();
+      audioBuffer = Buffer.from(ab);
+    } catch (e: any) {
+      return res.status(502).json({ error: `Storage URL fetch failed: ${e.message ?? 'unknown'}` });
+    }
+  } else {
+    audioBuffer = Buffer.from(audioBase64, 'base64');
+  }
+
+  const sizeBytes = typeof audioSizeBytes === 'number' ? audioSizeBytes : audioBuffer.length;
+  // URL-mode is only used for large files; route through Files API regardless.
+  const useFilesApi = !!audioUrl || sizeBytes > LARGE_AUDIO_THRESHOLD_BYTES;
 
   const transcriptPrompt = `You are a professional transcription service.
 
@@ -62,7 +81,6 @@ Output ONLY the transcript.`;
     let audioPart: any;
 
     if (useFilesApi) {
-      const audioBuffer = Buffer.from(audioBase64, 'base64');
       const blob = new Blob([audioBuffer], { type: cleanMimeType });
 
       console.log(`[API /gemini/transcribe-audio] Uploading ${(audioBuffer.length / 1024 / 1024).toFixed(1)} MB via Files API...`);
@@ -89,7 +107,10 @@ Output ONLY the transcript.`;
       console.log(`[API /gemini/transcribe-audio] ✅ File ACTIVE: ${file.name}`);
       audioPart = { fileData: { fileUri: file.uri, mimeType: file.mimeType || cleanMimeType } };
     } else {
-      audioPart = { inlineData: { mimeType: cleanMimeType, data: audioBase64 } };
+      // Inline base64 — re-encode if we resolved bytes from a URL (uncommon
+      // here since URL mode forces Files API, but keeps the branch honest).
+      const inlineData = audioBase64 ?? audioBuffer.toString('base64');
+      audioPart = { inlineData: { mimeType: cleanMimeType, data: inlineData } };
     }
 
     const response = await ai.models.generateContent({

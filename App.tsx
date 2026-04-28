@@ -439,19 +439,43 @@ const App: React.FC = () => {
         console.warn("Initial save failed, continuing with processing:", saveErr);
       }
 
-      // Background: archive the full audio to Supabase Storage in parallel with processing.
-      // Doesn't block transcription — the audioPath gets saved when (and if) the upload finishes.
+      // Archive the full audio to Supabase Storage. The Vercel function body
+      // limit (4.5 MB) means anything larger than ~3 MB raw can't be sent
+      // inline, so we await the upload first and pass the storage path to
+      // extractTranscript — it'll mint a signed URL the server fetches from.
+      // Small files don't need this and could run in parallel, but waiting
+      // sequentially is simpler and adds only the upload latency.
       const ext = (blob.type || 'audio/webm').split(';')[0].split('/')[1] || 'webm';
-      uploadAudioToStorage(blob, `recordings/${session.id}.${ext}`)
-        .then(async (path) => {
-          updateSession({ audioPath: path });
-          try {
-            await saveRecording({ ...session, audioPath: path }, user.id);
-          } catch (saveErr) {
-            console.warn('[App] Failed to persist audioPath:', saveErr);
-          }
-        })
-        .catch((err) => console.warn('[App] Audio archive upload failed (non-critical):', err?.message));
+      const INLINE_BODY_THRESHOLD_BYTES = 3 * 1024 * 1024;
+      const needsStorageUrl = blob.size > INLINE_BODY_THRESHOLD_BYTES;
+
+      const persistAudioPath = async (path: string) => {
+        updateSession({ audioPath: path });
+        try {
+          await saveRecording({ ...session, audioPath: path }, user.id);
+        } catch (saveErr) {
+          console.warn('[App] Failed to persist audioPath:', saveErr);
+        }
+      };
+
+      // Reuse a previously-archived audio path on retry so we don't re-upload
+      // (and don't trip storage's `upsert: false` constraint).
+      let archivedAudioPath: string | undefined = session.audioPath;
+      if (needsStorageUrl && !archivedAudioPath) {
+        try {
+          archivedAudioPath = await uploadAudioToStorage(blob, `recordings/${session.id}.${ext}`);
+          await persistAudioPath(archivedAudioPath);
+        } catch (err: any) {
+          throw new Error(
+            `Audio archive upload failed (required for files over 3 MB): ${err?.message ?? 'unknown'}`
+          );
+        }
+      } else if (!needsStorageUrl && !archivedAudioPath) {
+        // Small file: archive in the background, don't block transcription.
+        uploadAudioToStorage(blob, `recordings/${session.id}.${ext}`)
+          .then(persistAudioPath)
+          .catch((err) => console.warn('[App] Audio archive upload failed (non-critical):', err?.message));
+      }
 
       // Phase 1: Transcription
       let transcript: string;
@@ -462,10 +486,10 @@ const App: React.FC = () => {
         } catch (sarvamError: any) {
           console.error('[App] ⚠️ Sarvam STT failed — falling back to Gemini transcription.', sarvamError.message);
           updateSession({ processingStep: 'transcribing' });
-          transcript = await extractTranscript(blob);
+          transcript = await extractTranscript(blob, { audioPath: archivedAudioPath });
         }
       } else {
-        transcript = await extractTranscript(blob);
+        transcript = await extractTranscript(blob, { audioPath: archivedAudioPath });
       }
 
       // Intermediate update: show transcript immediately

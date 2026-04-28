@@ -198,7 +198,18 @@ export async function retryOperation<T>(
 }
 
 // ─── Pass 1: Extract verbatim transcript via /api/gemini/transcribe-audio ─────
-export const extractTranscript = async (audioBlob: Blob): Promise<string> => {
+//
+// Vercel serverless functions have a 4.5 MB request body limit. Base64
+// inflation (~33%) means raw audio over ~3 MB hits 413 Request Entity Too
+// Large. For larger files the caller passes `audioPath` (Supabase Storage),
+// we mint a short-lived signed URL, and the server fetches the bytes
+// directly — bypassing the body limit entirely.
+const INLINE_BODY_THRESHOLD_BYTES = 3 * 1024 * 1024; // 3 MB raw → ~4 MB base64 → fits
+
+export const extractTranscript = async (
+  audioBlob: Blob,
+  opts: { audioPath?: string } = {}
+): Promise<string> => {
   if (!audioBlob || audioBlob.size === 0) {
     throw new Error("No audio was captured. Please check your microphone and try again.");
   }
@@ -208,8 +219,28 @@ export const extractTranscript = async (audioBlob: Blob): Promise<string> => {
 
   const token = await getAuthToken();
   const mimeType = (audioBlob.type || 'audio/webm').split(';')[0];
-  const audioBase64 = await blobToBase64(audioBlob);
   const useFilesApi = audioBlob.size > LARGE_AUDIO_THRESHOLD_BYTES;
+  const mustUseStorageUrl = audioBlob.size > INLINE_BODY_THRESHOLD_BYTES;
+
+  // Build payload: signed URL for big files, inline base64 for small ones.
+  let payload: Record<string, unknown>;
+  if (mustUseStorageUrl) {
+    if (!opts.audioPath) {
+      throw new Error(
+        "Audio file too large to upload directly. The recording archive failed — please retry processing."
+      );
+    }
+    const { data: signed, error: signedErr } = await supabase
+      .storage.from('audio-recordings')
+      .createSignedUrl(opts.audioPath, 600);
+    if (signedErr || !signed?.signedUrl) {
+      throw new Error(`Could not create signed URL for audio: ${signedErr?.message ?? 'unknown'}`);
+    }
+    payload = { audioUrl: signed.signedUrl, mimeType, audioSizeBytes: audioBlob.size };
+  } else {
+    const audioBase64 = await blobToBase64(audioBlob);
+    payload = { audioBase64, mimeType, audioSizeBytes: audioBlob.size };
+  }
 
   const data = await retryOperation(
     async () => {
@@ -219,7 +250,7 @@ export const extractTranscript = async (audioBlob: Blob): Promise<string> => {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ audioBase64, mimeType, audioSizeBytes: audioBlob.size }),
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
