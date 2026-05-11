@@ -182,9 +182,34 @@ export const syncActionItemsFromRecording = async (
 
   if (error) {
     console.error('[Supabase] Error syncing action items:', error);
-    return [];
+    // Bubble the real reason up so the UI can show something useful instead
+    // of silently reporting "0 added".
+    throw new Error(error.message || 'Failed to add action items to tracker.');
   }
   return (data ?? []).map(mapActionItemRow);
+};
+
+/**
+ * Returns the current set of source_index values already present in
+ * action_items for a given (user, recording). Used by the session view to
+ * refresh "already tracked" state when the in-memory prop may be stale.
+ */
+export const fetchTrackedSourceIndicesForRecording = async (
+  userId: string,
+  recordingId: string
+): Promise<number[]> => {
+  const { data, error } = await supabase
+    .from('action_items')
+    .select('source_index')
+    .eq('user_id', userId)
+    .eq('recording_id', recordingId);
+  if (error) {
+    console.error('[Supabase] Error fetching tracked indices:', error);
+    return [];
+  }
+  return (data ?? [])
+    .map((r: any) => r.source_index)
+    .filter((v: any): v is number => typeof v === 'number');
 };
 
 /**

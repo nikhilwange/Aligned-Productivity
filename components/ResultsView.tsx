@@ -5,7 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { RecordingSession, StrategicAnalysis, TrackedActionItem } from '../types';
 import { generateStrategicAnalysis } from '../services/strategyService';
-import { syncActionItemsFromRecording } from '../services/supabaseService';
+import { syncActionItemsFromRecording, fetchTrackedSourceIndicesForRecording } from '../services/supabaseService';
 import SessionChatPanel from './SessionChatPanel';
 
 interface ResultsViewProps {
@@ -36,29 +36,64 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
   const [trackerError, setTrackerError] = useState<string | null>(null);
   const [trackerJustAdded, setTrackerJustAdded] = useState(0); // count, for confirmation banner
 
-  const alreadyTrackedIndices = useMemo(() => {
+  // Live "already tracked" indices for this session — seeded from the parent's
+  // action_items prop, but refreshed from the DB every time the modal opens.
+  // This is what guards against the "auto-sync from old code already inserted
+  // these rows but the parent state is stale" case.
+  const propTrackedIndices = useMemo(() => {
     const ids = (actionItems ?? [])
       .filter(i => i.recordingId === session.id && typeof i.sourceIndex === 'number')
       .map(i => i.sourceIndex as number);
     return new Set(ids);
   }, [actionItems, session.id]);
+  const [liveTrackedIndices, setLiveTrackedIndices] = useState<Set<number>>(propTrackedIndices);
 
-  const openTracker = () => {
+  // Keep liveTrackedIndices in sync when the prop changes (e.g. after we add)
+  useEffect(() => {
+    setLiveTrackedIndices(propTrackedIndices);
+  }, [propTrackedIndices]);
+
+  const totalPoints = session.analysis?.actionPoints?.length ?? 0;
+  const newlyTrackableCount = useMemo(() => {
+    let n = 0;
+    for (let i = 0; i < totalPoints; i++) if (!liveTrackedIndices.has(i)) n++;
+    return n;
+  }, [totalPoints, liveTrackedIndices]);
+
+  const openTracker = async () => {
     setTrackerError(null);
-    // Pre-select everything that isn't already tracked
-    const points = session.analysis?.actionPoints ?? [];
-    const preselect = new Set<number>();
-    points.forEach((_, i) => { if (!alreadyTrackedIndices.has(i)) preselect.add(i); });
-    setSelectedTrackerIndices(preselect);
     setTrackerOpen(true);
     setExportOpen(false);
+
+    // Pre-select everything we currently think is untracked (from the prop)
+    const preselect = new Set<number>();
+    for (let i = 0; i < totalPoints; i++) if (!propTrackedIndices.has(i)) preselect.add(i);
+    setSelectedTrackerIndices(preselect);
+
+    // Then refresh from Supabase so the "Already in tracker" badge stays honest
+    // even if the parent state was stale (e.g. auto-synced rows from old code).
+    if (userId) {
+      try {
+        const fresh = await fetchTrackedSourceIndicesForRecording(userId, session.id);
+        const freshSet = new Set(fresh);
+        setLiveTrackedIndices(freshSet);
+        // Remove now-tracked indices from the current selection
+        setSelectedTrackerIndices(prev => {
+          const next = new Set<number>();
+          prev.forEach(i => { if (!freshSet.has(i)) next.add(i); });
+          return next;
+        });
+      } catch (err) {
+        console.warn('[ResultsView] Could not refresh tracker state:', err);
+      }
+    }
   };
   const closeTracker = () => {
     if (isAddingToTracker) return;
     setTrackerOpen(false);
   };
   const toggleTrackerIndex = (i: number) => {
-    if (alreadyTrackedIndices.has(i)) return;
+    if (liveTrackedIndices.has(i)) return;
     setSelectedTrackerIndices(prev => {
       const next = new Set(prev);
       if (next.has(i)) next.delete(i); else next.add(i);
@@ -66,9 +101,8 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
     });
   };
   const selectAllAvailable = () => {
-    const points = session.analysis?.actionPoints ?? [];
     const all = new Set<number>();
-    points.forEach((_, i) => { if (!alreadyTrackedIndices.has(i)) all.add(i); });
+    for (let i = 0; i < totalPoints; i++) if (!liveTrackedIndices.has(i)) all.add(i);
     setSelectedTrackerIndices(all);
   };
   const clearAllSelection = () => setSelectedTrackerIndices(new Set());
@@ -82,10 +116,32 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
       const indices = Array.from(selectedTrackerIndices);
       const inserted = await syncActionItemsFromRecording(session, userId, indices);
       if (inserted.length === 0) {
-        setTrackerError('Nothing was added — these actions may already be in the tracker.');
+        // Server filtered everything out — re-pull truth and update modal so
+        // the user immediately sees what's actually tracked.
+        try {
+          const fresh = await fetchTrackedSourceIndicesForRecording(userId, session.id);
+          const freshSet = new Set(fresh);
+          setLiveTrackedIndices(freshSet);
+          setSelectedTrackerIndices(new Set());
+          const stillNew = indices.filter(i => !freshSet.has(i));
+          if (stillNew.length === 0) {
+            setTrackerError(`These actions are already in your tracker (from a previous session sync). Look in Action Items for session "${session.title}".`);
+          } else {
+            setTrackerError('No new rows were inserted. Try clicking Add again.');
+          }
+        } catch {
+          setTrackerError('No rows were inserted, and we could not re-check the tracker state. Please retry.');
+        }
       } else {
         const withMeta = inserted.map(item => ({ ...item, sessionTitle: session.title, sessionDate: session.date }));
         onActionItemsAdded?.(withMeta);
+        // Locally extend the "tracked" set so the modal reflects the addition
+        setLiveTrackedIndices(prev => {
+          const next = new Set(prev);
+          inserted.forEach(it => { if (typeof it.sourceIndex === 'number') next.add(it.sourceIndex); });
+          return next;
+        });
+        setSelectedTrackerIndices(new Set());
         setTrackerJustAdded(inserted.length);
         setTrackerOpen(false);
         setTimeout(() => setTrackerJustAdded(0), 3000);
@@ -660,9 +716,9 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
               </svg>
               <span className="whitespace-nowrap">
                 Add to tracker
-                {alreadyTrackedIndices.size > 0 && (
+                {liveTrackedIndices.size > 0 && (
                   <span className="ml-1 opacity-60 font-medium">
-                    ({alreadyTrackedIndices.size}/{session.analysis?.actionPoints?.length ?? 0})
+                    ({liveTrackedIndices.size}/{session.analysis?.actionPoints?.length ?? 0})
                   </span>
                 )}
               </span>
@@ -1184,7 +1240,12 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
                 <div>
                   <h3 className="text-lg font-bold text-[var(--text-primary)] tracking-tight">Add to Action Items tracker</h3>
                   <p className="mt-1 text-xs font-medium text-[var(--text-muted)] leading-relaxed">
-                    Pick the actions from this session you want to track globally. Unselected items stay in the notes but won't clutter your tracker.
+                    {newlyTrackableCount === 0 && totalPoints > 0
+                      ? `All ${totalPoints} ${totalPoints === 1 ? 'action is' : 'actions are'} already in your tracker. Open Action Items to find them under this session.`
+                      : liveTrackedIndices.size > 0
+                        ? `${liveTrackedIndices.size} already in tracker · ${newlyTrackableCount} ready to add.`
+                        : "Pick the actions from this session you want to track. Unselected items stay in the notes but won't clutter your tracker."
+                    }
                   </p>
                 </div>
                 <button
@@ -1203,14 +1264,16 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
               <div className="mt-4 flex items-center gap-3 text-xs font-bold">
                 <button
                   onClick={selectAllAvailable}
-                  className="text-amber-400 hover:text-amber-300 transition-colors"
+                  disabled={newlyTrackableCount === 0}
+                  className="text-amber-400 hover:text-amber-300 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 >
-                  Select all
+                  Select all{newlyTrackableCount > 0 ? ` (${newlyTrackableCount})` : ''}
                 </button>
                 <span className="opacity-20">·</span>
                 <button
                   onClick={clearAllSelection}
-                  className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+                  disabled={selectedTrackerIndices.size === 0}
+                  className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                   Clear
                 </button>
@@ -1223,7 +1286,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
             {/* List */}
             <div className="flex-1 overflow-y-auto px-3 py-3 scrollbar-hide">
               {(session.analysis?.actionPoints ?? []).map((text, i) => {
-                const alreadyTracked = alreadyTrackedIndices.has(i);
+                const alreadyTracked = liveTrackedIndices.has(i);
                 const selected = selectedTrackerIndices.has(i);
                 return (
                   <button
