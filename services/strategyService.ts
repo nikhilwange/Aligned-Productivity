@@ -1,13 +1,5 @@
 import { RecordingSession, StrategicAnalysis, ProcessGap, StrategicAction, IssuePattern } from "../types";
-import { retryOperation } from "./geminiService";
-import { supabase } from "./supabaseService";
-
-const getAuthToken = async (): Promise<string> => {
-  const { data } = await supabase.auth.getSession();
-  const token = data?.session?.access_token;
-  if (!token) throw new Error("Not authenticated. Please log in.");
-  return token;
-};
+import { retryOperation, invokeEdgeFunction } from "./geminiService";
 
 /**
  * Aggregates all meeting analysis data for strategic processing.
@@ -165,27 +157,14 @@ export const generateStrategicAnalysis = async (
 
   console.log("[Strategic Analysis] Starting analysis of", completedRecordings.length, "meetings");
 
-  const token = await getAuthToken();
-
+  // Strategic analysis lives on Supabase Edge Function (150s budget) — Vercel
+  // Hobby's 60s ceiling can't fit a 65K-token Gemini response.
   const responseText = await retryOperation(
     async () => {
-      const res = await fetch("/api/gemini/strategic", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ aggregatedData, isSingleMeeting }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        const error = new Error(err.error || `Strategic analysis failed (${res.status})`);
-        (error as any).status = res.status;
-        throw error;
-      }
-
-      const data = (await res.json()) as { responseText: string };
+      const data = await invokeEdgeFunction<{ responseText: string }>(
+        'gemini-strategic',
+        { aggregatedData, isSingleMeeting },
+      );
       if (!data.responseText) throw new Error("Empty strategic analysis response");
       return data.responseText;
     },

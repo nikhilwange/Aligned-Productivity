@@ -17,6 +17,38 @@ const getAuthToken = async (): Promise<string> => {
   return token;
 };
 
+// ─── Supabase Edge Function invoker ───────────────────────────────────────────
+// The heavy Gemini calls (analyze, transcribe-audio, strategic) run as Supabase
+// Edge Functions instead of Vercel serverless functions: Vercel Hobby caps
+// every request at 60s, which the long-output Gemini 2.5 Flash calls routinely
+// exceed. Supabase free tier gives 150s wall, enough for typical meetings.
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+
+export const invokeEdgeFunction = async <T>(
+  name: string,
+  body: unknown,
+): Promise<T> => {
+  const token = await getAuthToken();
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      apikey: SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    const error = new Error(err.error || `${name} failed (${res.status})`);
+    (error as any).status = res.status;
+    throw error;
+  }
+  return res.json() as Promise<T>;
+};
+
 // ─── Blob helper ──────────────────────────────────────────────────────────────
 const blobToBase64 = (blob: Blob): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -217,7 +249,6 @@ export const extractTranscript = async (
     throw new Error("Audio recording is too short. Please record for at least a few seconds.");
   }
 
-  const token = await getAuthToken();
   const mimeType = (audioBlob.type || 'audio/webm').split(';')[0];
   const useFilesApi = audioBlob.size > LARGE_AUDIO_THRESHOLD_BYTES;
   const mustUseStorageUrl = audioBlob.size > INLINE_BODY_THRESHOLD_BYTES;
@@ -243,25 +274,10 @@ export const extractTranscript = async (
   }
 
   const data = await retryOperation(
-    async () => {
-      const res = await fetch('/api/gemini/transcribe-audio', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        const error = new Error(err.error || `Transcription failed (${res.status})`);
-        (error as any).status = res.status;
-        throw error;
-      }
-
-      return res.json() as Promise<{ transcript: string; wasTruncated?: boolean }>;
-    },
+    () => invokeEdgeFunction<{ transcript: string; wasTruncated?: boolean }>(
+      'gemini-transcribe-audio',
+      payload,
+    ),
     3,
     1000,
     'Pass 1: Transcript extraction',
@@ -278,36 +294,22 @@ export const extractTranscript = async (
   return transcript;
 };
 
-// ─── Pass 2: Analyze transcript via /api/gemini/analyze ───────────────────────
+// ─── Pass 2: Analyze transcript via Supabase Edge Function ────────────────────
+// Long transcripts (Zoom/Teams pastes, 60+ minute meetings) routinely exceed
+// Vercel Hobby's 60s timeout. Edge Function on Supabase gets 150s.
 export const analyzeTranscript = async (
   transcript: string,
   recordingDate?: number,
 ): Promise<Omit<MeetingAnalysis, 'transcript'>> => {
-  const token = await getAuthToken();
-
   const data = await retryOperation(
-    async () => {
-      const res = await fetch('/api/gemini/analyze', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ transcript, recordingDate }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        const error = new Error(err.error || `Analysis failed (${res.status})`);
-        (error as any).status = res.status;
-        throw error;
-      }
-
-      return res.json() as Promise<{ responseText: string; isTruncated?: boolean }>;
-    },
+    () => invokeEdgeFunction<{ responseText: string; isTruncated?: boolean }>(
+      'gemini-analyze',
+      { transcript, recordingDate },
+    ),
     3,
     1000,
     'Pass 2: Analysis generation',
+    LARGE_AUDIO_TIMEOUT_MS, // give analysis a generous 10-min client-side timeout
   );
 
   if (!data.responseText) throw new Error("Empty analysis response from Gemini.");
