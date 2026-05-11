@@ -126,12 +126,17 @@ export const fetchActionItems = async (userId: string): Promise<TrackedActionIte
 };
 
 /**
- * Syncs action items from a recording's actionPoints array into the action_items table.
+ * Adds selected action items from a recording's actionPoints array into the action_items table.
  * Idempotent: uses source_index + recording_id to avoid duplicates.
+ *
+ * @param selectedIndices If provided, only items at these indices in actionPoints
+ *                        are inserted. If omitted, ALL points are synced (legacy behavior).
+ *                        Items already in the table for this recording are always skipped.
  */
 export const syncActionItemsFromRecording = async (
   recording: RecordingSession,
-  userId: string
+  userId: string,
+  selectedIndices?: number[]
 ): Promise<TrackedActionItem[]> => {
   const points = recording.analysis?.actionPoints ?? [];
   if (points.length === 0) return [];
@@ -149,9 +154,15 @@ export const syncActionItemsFromRecording = async (
       .filter((v): v is number => typeof v === 'number')
   );
 
+  const selectedSet = selectedIndices ? new Set(selectedIndices) : null;
+
   const toInsert = points
     .map((text, i) => ({ index: i, text }))
-    .filter(({ index }) => !existingIndices.has(index))
+    .filter(({ index }) => {
+      if (existingIndices.has(index)) return false;
+      if (selectedSet && !selectedSet.has(index)) return false;
+      return true;
+    })
     .map(({ index, text }) => ({
       user_id: userId,
       recording_id: recording.id,

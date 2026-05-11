@@ -18,7 +18,7 @@ import { AppState, RecordingSession, AudioRecording, User, ChatMessage, Recordin
 import { extractTranscript, analyzeTranscript } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { uploadAudioToStorage, deleteAudioPaths } from './services/storageService';
-import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems, syncActionItemsFromRecording, updateActionItem, deleteActionItem } from './services/supabaseService';
+import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems } from './services/supabaseService';
 import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery } from './services/recordingRecovery';
 import ProcessingBanner from './components/ProcessingBanner';
 import RecoveryModal from './components/RecoveryModal';
@@ -213,25 +213,10 @@ const App: React.FC = () => {
         });
         setActionItems(itemsWithMeta);
 
-        // Migrate existing completed recordings that have no action_items rows yet
-        const syncedIds = new Set(itemsWithMeta.filter(i => i.recordingId).map(i => i.recordingId!));
-        const unsynced = data.filter(r =>
-          r.status === 'completed' &&
-          (r.analysis?.actionPoints?.length ?? 0) > 0 &&
-          !syncedIds.has(r.id)
-        );
-        if (unsynced.length > 0) {
-          console.log('[App] Migrating action items for', unsynced.length, 'recordings...');
-          for (let i = 0; i < unsynced.length; i += 5) {
-            const batch = unsynced.slice(i, i + 5);
-            const results = await Promise.all(batch.map(r => syncActionItemsFromRecording(r, user.id)));
-            const newItems = results.flat().map(item => {
-              const session = data.find(r => r.id === item.recordingId);
-              return session ? { ...item, sessionTitle: session.title, sessionDate: session.date } : item;
-            });
-            if (newItems.length > 0) setActionItems(prev => [...prev, ...newItems]);
-          }
-        }
+        // Note: action items are no longer auto-synced from recordings. Users
+        // explicitly promote actions to the tracker from the session view via
+        // the "Add to tracker" UI in ResultsView. Existing rows in the
+        // `action_items` table (synced under the old behavior) are preserved.
 
         // Check for recoverable recordings from crashed/closed sessions
         try {
@@ -329,13 +314,8 @@ const App: React.FC = () => {
       updateSession({ analysis: fullAnalysis, status: 'completed', processingStep: undefined });
       await saveRecording(completedSession, user.id);
 
-      try {
-        const newItems = await syncActionItemsFromRecording(completedSession, user.id);
-        const withMeta = newItems.map(i => ({ ...i, sessionTitle: completedSession.title, sessionDate: completedSession.date }));
-        if (withMeta.length > 0) setActionItems(prev => [...prev, ...withMeta]);
-      } catch (syncErr) {
-        console.warn('[App] Action item sync failed:', syncErr);
-      }
+      // Action items are no longer auto-synced. The user can promote selected
+      // actions to the tracker from the session view.
     } catch (err: any) {
       console.error('Manual entry processing failed:', err);
       const errorSession: RecordingSession = { ...newSession, status: 'error', errorMessage: err.message, processingStep: undefined };
@@ -528,14 +508,8 @@ const App: React.FC = () => {
         }
       }
 
-      // Sync action items to the tracker
-      try {
-        const newItems = await syncActionItemsFromRecording(completedSession, user.id);
-        const withMeta = newItems.map(i => ({ ...i, sessionTitle: completedSession.title, sessionDate: completedSession.date }));
-        if (withMeta.length > 0) setActionItems(prev => [...prev, ...withMeta]);
-      } catch (syncErr) {
-        console.warn('[App] Action item sync failed, will migrate on next load:', syncErr);
-      }
+      // Action items are no longer auto-synced. The user can promote selected
+      // actions to the tracker from the session view.
     } catch (err: any) {
       console.error("Recording process failed:", err);
       // Keep recoveryId so the user can retry from the IndexedDB blob
@@ -805,7 +779,13 @@ const App: React.FC = () => {
               onMessagesChange={setChatMessages}
             />
           ) : activeSession ? (
-            <ResultsView session={activeSession} onUpdateTitle={handleUpdateTitle} />
+            <ResultsView
+              session={activeSession}
+              onUpdateTitle={handleUpdateTitle}
+              userId={user?.id}
+              actionItems={actionItems}
+              onActionItemsAdded={(newItems) => setActionItems(prev => [...prev, ...newItems])}
+            />
           ) : isRecordingMode ? (
             <div className="h-full flex flex-col items-center justify-center bg-[var(--surface-950)] p-6 relative">
               <div className="absolute inset-0 overflow-hidden pointer-events-none">

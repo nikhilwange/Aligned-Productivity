@@ -68,7 +68,27 @@ Write a comprehensive meeting notes document in this exact format. The notes val
 - **[Name]:** their view
 
 ✅ Action Items
-- [ ] [Same items as actionPoints array above]
+Group action items by the person responsible. For each owner:
+- Write the owner's name as a bold line on its own: **Name**
+- Below that name, list each of their action items as a checkbox bullet
+- Do NOT repeat the owner's name inside the action text — write "Circulate the action tracker today", NOT "Shailesh to circulate the action tracker today"
+
+For any action item that does not have a clear assignee, list it as a plain checkbox bullet at the very top of this section, with no header above it. Do NOT invent an "Unassigned", "Team", "All", or "Everyone" group — items without an owner just appear as bare bullets.
+
+Use the same set of actions that you list in the actionPoints array, but here rephrased to remove the assignee prefix and grouped under the owner. Each item should be a single, clean action sentence.
+
+Example format:
+✅ Action Items
+- [ ] Schedule a follow-up review next week
+
+**Shailesh**
+- [ ] Circulate the action tracker for pending safety points today
+- [ ] Plan a monthly safety meeting
+
+**Samir**
+- [ ] Create a structured program to check material availability for schedules beyond 8 weeks
+- [ ] Discuss material assessment status (6-9 month window) with Subhasis and Mali
+- [ ] Start tracking BOM readiness
 
 🔲 Decisions Made
 | Decision Title | What was decided | Why | Impact |

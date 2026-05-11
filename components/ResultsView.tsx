@@ -3,16 +3,20 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import ReactDOM from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { RecordingSession, StrategicAnalysis } from '../types';
+import { RecordingSession, StrategicAnalysis, TrackedActionItem } from '../types';
 import { generateStrategicAnalysis } from '../services/strategyService';
+import { syncActionItemsFromRecording } from '../services/supabaseService';
 import SessionChatPanel from './SessionChatPanel';
 
 interface ResultsViewProps {
   session: RecordingSession;
   onUpdateTitle: (id: string, newTitle: string) => void;
+  userId?: string;
+  actionItems?: TrackedActionItem[];
+  onActionItemsAdded?: (items: TrackedActionItem[]) => void;
 }
 
-const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => {
+const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userId, actionItems, onActionItemsAdded }) => {
   const [activeTab, setActiveTab] = useState<'notes' | 'transcript' | 'strategist' | 'chat'>('notes');
   const [title, setTitle] = useState(session.title);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
@@ -24,6 +28,75 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
   const [exportOpen, setExportOpen] = useState(false);
   const exportRef = useRef<HTMLButtonElement>(null);
   const [exportPos, setExportPos] = useState({ top: 0, left: 0 });
+
+  // ─── "Add to tracker" modal state ───────────────────────────────────────────
+  const [trackerOpen, setTrackerOpen] = useState(false);
+  const [selectedTrackerIndices, setSelectedTrackerIndices] = useState<Set<number>>(new Set());
+  const [isAddingToTracker, setIsAddingToTracker] = useState(false);
+  const [trackerError, setTrackerError] = useState<string | null>(null);
+  const [trackerJustAdded, setTrackerJustAdded] = useState(0); // count, for confirmation banner
+
+  const alreadyTrackedIndices = useMemo(() => {
+    const ids = (actionItems ?? [])
+      .filter(i => i.recordingId === session.id && typeof i.sourceIndex === 'number')
+      .map(i => i.sourceIndex as number);
+    return new Set(ids);
+  }, [actionItems, session.id]);
+
+  const openTracker = () => {
+    setTrackerError(null);
+    // Pre-select everything that isn't already tracked
+    const points = session.analysis?.actionPoints ?? [];
+    const preselect = new Set<number>();
+    points.forEach((_, i) => { if (!alreadyTrackedIndices.has(i)) preselect.add(i); });
+    setSelectedTrackerIndices(preselect);
+    setTrackerOpen(true);
+    setExportOpen(false);
+  };
+  const closeTracker = () => {
+    if (isAddingToTracker) return;
+    setTrackerOpen(false);
+  };
+  const toggleTrackerIndex = (i: number) => {
+    if (alreadyTrackedIndices.has(i)) return;
+    setSelectedTrackerIndices(prev => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  };
+  const selectAllAvailable = () => {
+    const points = session.analysis?.actionPoints ?? [];
+    const all = new Set<number>();
+    points.forEach((_, i) => { if (!alreadyTrackedIndices.has(i)) all.add(i); });
+    setSelectedTrackerIndices(all);
+  };
+  const clearAllSelection = () => setSelectedTrackerIndices(new Set());
+
+  const confirmAddToTracker = async () => {
+    if (!userId) { setTrackerError('Not signed in.'); return; }
+    if (selectedTrackerIndices.size === 0) { setTrackerError('Select at least one action to add.'); return; }
+    setIsAddingToTracker(true);
+    setTrackerError(null);
+    try {
+      const indices = Array.from(selectedTrackerIndices);
+      const inserted = await syncActionItemsFromRecording(session, userId, indices);
+      if (inserted.length === 0) {
+        setTrackerError('Nothing was added — these actions may already be in the tracker.');
+      } else {
+        const withMeta = inserted.map(item => ({ ...item, sessionTitle: session.title, sessionDate: session.date }));
+        onActionItemsAdded?.(withMeta);
+        setTrackerJustAdded(inserted.length);
+        setTrackerOpen(false);
+        setTimeout(() => setTrackerJustAdded(0), 3000);
+      }
+    } catch (err: any) {
+      console.error('[ResultsView] Add to tracker failed:', err);
+      setTrackerError(err?.message || 'Could not add actions to tracker. Please try again.');
+    } finally {
+      setIsAddingToTracker(false);
+    }
+  };
 
   const toggleExport = () => {
     if (!exportOpen && exportRef.current) {
@@ -575,6 +648,27 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
             )}
           </div>
 
+          {/* Add to Action Items tracker — only on Notes tab, when actions exist & user is signed in */}
+          {activeTab === 'notes' && userId && (session.analysis?.actionPoints?.length ?? 0) > 0 && (
+            <button
+              onClick={openTracker}
+              title="Add selected actions to the global Action Items tracker"
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 border border-amber-500/20"
+            >
+              <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+              <span className="whitespace-nowrap">
+                Add to tracker
+                {alreadyTrackedIndices.size > 0 && (
+                  <span className="ml-1 opacity-60 font-medium">
+                    ({alreadyTrackedIndices.size}/{session.analysis?.actionPoints?.length ?? 0})
+                  </span>
+                )}
+              </span>
+            </button>
+          )}
+
           <div className="flex glass p-1 rounded-xl ml-auto">
             <button
               onClick={() => !hasTranscript && setActiveTab('notes')}
@@ -1062,6 +1156,144 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle }) => 
           </div>
         </article>
       </div>
+      )}
+
+      {/* "Added to tracker" toast */}
+      {trackerJustAdded > 0 && ReactDOM.createPortal(
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-3 px-5 py-3 rounded-2xl bg-teal-500/95 text-white shadow-2xl backdrop-blur-xl border border-white/10 animate-fade-in">
+          <svg className="w-5 h-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+          </svg>
+          <span className="text-sm font-bold">
+            Added {trackerJustAdded} {trackerJustAdded === 1 ? 'action' : 'actions'} to your tracker
+          </span>
+        </div>,
+        document.body
+      )}
+
+      {/* Add-to-tracker modal */}
+      {trackerOpen && ReactDOM.createPortal(
+        <div className="fixed inset-0 z-[55] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={closeTracker}>
+          <div
+            className="w-full max-w-xl max-h-[85vh] flex flex-col bg-[var(--surface-900)] border border-white/[0.08] rounded-2xl shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="shrink-0 px-6 py-5 border-b border-white/[0.06]">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-[var(--text-primary)] tracking-tight">Add to Action Items tracker</h3>
+                  <p className="mt-1 text-xs font-medium text-[var(--text-muted)] leading-relaxed">
+                    Pick the actions from this session you want to track globally. Unselected items stay in the notes but won't clutter your tracker.
+                  </p>
+                </div>
+                <button
+                  onClick={closeTracker}
+                  disabled={isAddingToTracker}
+                  className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-[var(--text-muted)] hover:bg-white/[0.06] hover:text-[var(--text-primary)] transition-colors disabled:opacity-30"
+                  aria-label="Close"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Quick actions */}
+              <div className="mt-4 flex items-center gap-3 text-xs font-bold">
+                <button
+                  onClick={selectAllAvailable}
+                  className="text-amber-400 hover:text-amber-300 transition-colors"
+                >
+                  Select all
+                </button>
+                <span className="opacity-20">·</span>
+                <button
+                  onClick={clearAllSelection}
+                  className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  Clear
+                </button>
+                <span className="ml-auto opacity-50 font-semibold">
+                  {selectedTrackerIndices.size} selected
+                </span>
+              </div>
+            </div>
+
+            {/* List */}
+            <div className="flex-1 overflow-y-auto px-3 py-3 scrollbar-hide">
+              {(session.analysis?.actionPoints ?? []).map((text, i) => {
+                const alreadyTracked = alreadyTrackedIndices.has(i);
+                const selected = selectedTrackerIndices.has(i);
+                return (
+                  <button
+                    key={i}
+                    onClick={() => toggleTrackerIndex(i)}
+                    disabled={alreadyTracked}
+                    className={`w-full flex items-start gap-3 px-3 py-3 rounded-xl text-left transition-all ${
+                      alreadyTracked
+                        ? 'opacity-50 cursor-not-allowed'
+                        : selected
+                          ? 'bg-amber-500/10 hover:bg-amber-500/15'
+                          : 'hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    <div className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-all ${
+                      alreadyTracked
+                        ? 'bg-teal-500/30 border-teal-500/50'
+                        : selected
+                          ? 'bg-amber-500 border-amber-500'
+                          : 'border-[var(--text-muted)]/40'
+                    }`}>
+                      {(selected || alreadyTracked) && (
+                        <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-[var(--text-secondary)] leading-relaxed">{text}</p>
+                      {alreadyTracked && (
+                        <span className="mt-1 inline-block text-[10px] font-bold uppercase tracking-wider text-teal-400">
+                          Already in tracker
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Footer */}
+            <div className="shrink-0 px-6 py-4 border-t border-white/[0.06] flex flex-col gap-3">
+              {trackerError && (
+                <div className="text-xs font-semibold text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                  {trackerError}
+                </div>
+              )}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={closeTracker}
+                  disabled={isAddingToTracker}
+                  className="px-4 py-2.5 rounded-xl text-xs font-bold glass glass-hover opacity-60 hover:opacity-100 disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmAddToTracker}
+                  disabled={isAddingToTracker || selectedTrackerIndices.size === 0}
+                  className="ml-auto px-5 py-2.5 rounded-xl text-xs font-bold bg-amber-500 text-black hover:bg-amber-400 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {isAddingToTracker && (
+                    <span className="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin"></span>
+                  )}
+                  {isAddingToTracker ? 'Adding...' : `Add ${selectedTrackerIndices.size} to tracker`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );
