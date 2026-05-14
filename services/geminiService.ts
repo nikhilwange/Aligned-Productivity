@@ -252,6 +252,11 @@ export const extractTranscript = async (
   const mimeType = (audioBlob.type || 'audio/webm').split(';')[0];
   const useFilesApi = audioBlob.size > LARGE_AUDIO_THRESHOLD_BYTES;
   const mustUseStorageUrl = audioBlob.size > INLINE_BODY_THRESHOLD_BYTES;
+  // Whenever the server has to go through the Files API path (either because
+  // we sent a Storage URL or because the raw size crosses the threshold),
+  // the round trip can take 60-150s. The short timeout is only safe for
+  // small inline-base64 calls.
+  const serverWillUseFilesApi = mustUseStorageUrl || useFilesApi;
 
   // Build payload: signed URL for big files, inline base64 for small ones.
   let payload: Record<string, unknown>;
@@ -281,7 +286,7 @@ export const extractTranscript = async (
     3,
     1000,
     'Pass 1: Transcript extraction',
-    useFilesApi ? LARGE_AUDIO_TIMEOUT_MS : SMALL_AUDIO_TIMEOUT_MS,
+    serverWillUseFilesApi ? LARGE_AUDIO_TIMEOUT_MS : SMALL_AUDIO_TIMEOUT_MS,
   );
 
   const transcript = (data.transcript ?? '').trim();
