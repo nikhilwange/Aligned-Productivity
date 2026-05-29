@@ -449,17 +449,28 @@ const App: React.FC = () => {
       ));
     };
 
-    // Recognise the wall-time / worker-limit / timeout class of failures
-    // coming back from gemini-transcribe-audio. Supabase Edge free tier
-    // kills workers at 150s and returns HTTP 546; an older gateway path
-    // also surfaces some of these as 504. The client-side withTimeout
-    // helper rejects with a "timed out" message. Any of those three means
-    // "this audio is too long for Gemini on this runtime — try Sarvam
-    // instead" rather than a real user-fixable error.
-    const isWallTimeFailure = (err: any): boolean => {
+    // Recognise the classes of gemini-transcribe-audio failures where
+    // retrying via Sarvam is genuinely worth trying:
+    //   - Wall-time / worker-limit (546, 504, client-side "timed out")
+    //     means Supabase killed the worker — Sarvam's 25s chunks survive
+    //     any wall.
+    //   - Files API rejection / generateContent failure means Gemini
+    //     itself couldn't process the file (unsupported codec, transient
+    //     5xx, MIME edge cases). Sarvam decodes locally via the browser's
+    //     audio stack, so it handles WEBM/Opus and other containers Gemini
+    //     can be picky about.
+    // We deliberately do NOT include 4xx semantics-level errors here
+    // (empty payload, repetitive output 422) — those mean the input is
+    // genuinely bad and Sarvam would also fail. Letting them propagate
+    // surfaces the real problem to the user.
+    const isGeminiFallbackTrigger = (err: any): boolean => {
       const status = err?.status;
       const message = typeof err?.message === 'string' ? err.message : '';
-      return status === 546 || status === 504 || message.includes('timed out');
+      if (status === 546 || status === 504) return true;
+      if (message.includes('timed out')) return true;
+      if (message.includes('Gemini Files API')) return true;
+      if (message.includes('Gemini generateContent failed')) return true;
+      return false;
     };
 
     try {
@@ -530,9 +541,9 @@ const App: React.FC = () => {
         try {
           transcript = await extractTranscript(blob, { audioPath: archivedAudioPath });
         } catch (geminiErr: any) {
-          if (isWallTimeFailure(geminiErr) && hasSarvamKey) {
+          if (isGeminiFallbackTrigger(geminiErr) && hasSarvamKey) {
             console.warn(
-              '[App] Gemini transcription hit wall time / worker limit — falling back to Sarvam:',
+              '[App] Gemini transcription failed — falling back to Sarvam:',
               geminiErr.message,
             );
             updateSession({ processingStep: 'transcribing' });

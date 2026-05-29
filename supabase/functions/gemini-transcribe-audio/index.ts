@@ -230,7 +230,17 @@ Deno.serve(async (req) => {
     );
   }
 
-  const cleanMimeType = mimeType.split(';')[0] || 'audio/webm';
+  // Browsers' MediaRecorder writes audio-only .webm and .mp4 files, but the
+  // OS often labels them with the container's default video MIME. Gemini's
+  // Files API accepts audio/webm and audio/mp4 (proven by our recording
+  // flow) but REJECTS video/webm / video/mp4 during preprocessing — the
+  // file flips to FAILED state and we throw "Gemini Files API rejected the
+  // audio file". Coerce here so user-uploaded files match what Gemini wants.
+  const rawMime = (mimeType.split(';')[0] || 'audio/webm').toLowerCase();
+  const cleanMimeType =
+    rawMime === 'video/webm' ? 'audio/webm' :
+    rawMime === 'video/mp4'  ? 'audio/mp4' :
+    rawMime;
 
   // Resolve audio bytes — either inline base64 (small files) or fetched
   // from a short-lived Supabase Storage signed URL (large files that would
