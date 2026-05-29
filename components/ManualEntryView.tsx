@@ -47,7 +47,29 @@ const SOURCE_OPTIONS: { value: RecordingSource; label: string; icon: React.React
   { value: 'phone-call',      label: 'Phone / Call',    icon: IconPhone,    desc: 'Audio call' },
 ];
 
-const ACCEPTED_AUDIO = 'audio/mpeg,audio/mp3,audio/mp4,audio/m4a,audio/wav,audio/webm,audio/ogg,audio/flac,audio/x-m4a,audio/x-wav,audio/aac';
+// Browsers' MediaRecorder writes .webm and .mp4 containers that carry an
+// audio-only track, but the OS frequently labels these as video/webm or
+// video/mp4 (the container's "default" MIME). We accept those too, and
+// when the MIME type is ambiguous or missing we fall back to a known
+// audio extension. The `accept` attribute lists both MIME hints and bare
+// extensions so the file picker doesn't grey out legitimate files.
+const ACCEPTED_AUDIO = [
+  'audio/*',
+  'video/webm', 'video/mp4',
+  '.mp3', '.m4a', '.wav', '.webm', '.ogg', '.oga', '.flac', '.opus', '.aac', '.mp4', '.weba',
+].join(',');
+
+const AUDIO_EXTENSION_RE = /\.(mp3|m4a|wav|webm|ogg|oga|flac|opus|aac|mp4|weba)$/i;
+
+const isProbablyAudio = (file: File): boolean => {
+  const mime = (file.type || '').toLowerCase();
+  if (mime.startsWith('audio/')) return true;
+  // .webm and .mp4 from MediaRecorder commonly arrive as video/* even
+  // when they're audio-only. Trust the extension for those containers.
+  if (mime === 'video/webm' || mime === 'video/mp4') return true;
+  if (AUDIO_EXTENSION_RE.test(file.name)) return true;
+  return false;
+};
 
 const formatBytes = (bytes: number): string => {
   if (bytes < 1024) return `${bytes} B`;
@@ -110,7 +132,7 @@ const ManualEntryView: React.FC<ManualEntryViewProps> = ({ onSubmit, onCancel, i
   const handleFilePick = (file: File | null) => {
     setError('');
     if (!file) { setAudioFile(null); setAudioDurationS(null); return; }
-    if (!file.type.startsWith('audio/')) {
+    if (!isProbablyAudio(file)) {
       setError(`"${file.name}" doesn't look like an audio file (MIME type: ${file.type || 'unknown'}).`);
       return;
     }
