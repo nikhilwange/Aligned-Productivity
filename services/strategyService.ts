@@ -1,5 +1,6 @@
 import { RecordingSession, StrategicAnalysis, ProcessGap, StrategicAction, IssuePattern } from "../types";
 import { retryOperation, invokeEdgeFunction } from "./geminiService";
+import { saveStrategistAnalysis } from "./supabaseService";
 
 /**
  * Aggregates all meeting analysis data for strategic processing.
@@ -300,9 +301,13 @@ const parseStrategicResponse = (
 
 /**
  * Main function: Analyze all meetings for strategic insights via Gemini directly.
+ *
+ * `userId` is required so the result can be persisted to the
+ * `strategist_analyses` Supabase table (cross-device cache).
  */
 export const generateStrategicAnalysis = async (
-  recordings: RecordingSession[]
+  recordings: RecordingSession[],
+  userId: string,
 ): Promise<StrategicAnalysis> => {
   const aggregatedData = aggregateMeetingData(recordings);
   const completedRecordings = recordings.filter(
@@ -344,6 +349,10 @@ export const generateStrategicAnalysis = async (
     issuePatterns: analysis.issuePatterns.length,
     keyThemes: analysis.keyThemes.length,
   });
+
+  // Persist for cross-device cache. Best-effort: a failure here shouldn't
+  // block the caller — they already have the analysis in hand.
+  await saveStrategistAnalysis(userId, analysis);
 
   return analysis;
 };

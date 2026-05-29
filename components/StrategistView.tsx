@@ -1,6 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { RecordingSession, StrategicAnalysis } from '../types';
 import { generateStrategicAnalysis } from '../services/strategyService';
+import { loadStrategistAnalysis } from '../services/supabaseService';
 import EmptyState from './EmptyState';
 
 interface StrategistViewProps {
@@ -8,9 +9,26 @@ interface StrategistViewProps {
   userId: string;
 }
 
+/** Cheap relative-time formatter for the "Generated X ago" hint. */
+const formatRelativeTime = (ts: number): string => {
+  const diffMs = Date.now() - ts;
+  if (diffMs < 0) return 'just now';
+  const mins = Math.round(diffMs / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString();
+};
+
 const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) => {
   const [analysis, setAnalysis] = useState<StrategicAnalysis | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  // Separate flag for cache hydration so the Generate empty-state doesn't
+  // flash during the initial Supabase round-trip on mount / filter change.
+  const [isLoadingCache, setIsLoadingCache] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<'gaps' | 'actions' | 'issues'>('actions');
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
@@ -33,12 +51,57 @@ const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) =
 
   const completedMeetingsCount = filteredRecordings.length;
 
+  // The (start, end, count) tuple that strategyService uses as its cache key.
+  // Stable derivation — same as aggregateMeetingData computes server-side.
+  const cacheKey = useMemo(() => {
+    if (filteredRecordings.length === 0) return null;
+    const dates = filteredRecordings.map(r => r.date);
+    return {
+      start: Math.min(...dates),
+      end: Math.max(...dates),
+      count: filteredRecordings.length,
+    };
+  }, [filteredRecordings]);
+
+  // Hydrate from Supabase on mount and whenever the cache key changes.
+  // The component is unmounted on every tab switch, so this is what makes
+  // a previously-generated analysis "stick" across navigation, page reloads,
+  // and devices.
+  useEffect(() => {
+    if (!cacheKey) {
+      setAnalysis(null);
+      return;
+    }
+    // Already showing the matching analysis — skip the round-trip to avoid
+    // spinner flicker when filteredRecordings re-derives without scope change.
+    if (
+      analysis &&
+      analysis.dateRange.start === cacheKey.start &&
+      analysis.dateRange.end === cacheKey.end &&
+      analysis.analyzedMeetingsCount === cacheKey.count
+    ) {
+      return;
+    }
+    let cancelled = false;
+    setIsLoadingCache(true);
+    loadStrategistAnalysis(userId, cacheKey.start, cacheKey.end, cacheKey.count)
+      .then(cached => {
+        if (cancelled) return;
+        setAnalysis(cached);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingCache(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheKey, userId]);
+
   const handleGenerateAnalysis = async () => {
     setIsLoading(true);
     setError(null);
 
     try {
-      const result = await generateStrategicAnalysis(filteredRecordings);
+      const result = await generateStrategicAnalysis(filteredRecordings, userId);
       setAnalysis(result);
     } catch (err: any) {
       setError(err.message || 'Failed to generate strategic analysis');
@@ -196,7 +259,7 @@ const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) =
                 <input
                   type="date"
                   value={dateFrom}
-                  onChange={(e) => { setDateFrom(e.target.value); setAnalysis(null); }}
+                  onChange={(e) => { setDateFrom(e.target.value); setAnalysis(null); setIsLoadingCache(true); }}
                   onClick={(e) => (e.target as HTMLInputElement).showPicker?.()}
                   className="glass-input rounded-lg pl-8 pr-3 py-2 text-sm text-[var(--text-primary)] cursor-pointer"
                 />
@@ -211,7 +274,7 @@ const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) =
                 <input
                   type="date"
                   value={dateTo}
-                  onChange={(e) => { setDateTo(e.target.value); setAnalysis(null); }}
+                  onChange={(e) => { setDateTo(e.target.value); setAnalysis(null); setIsLoadingCache(true); }}
                   onClick={(e) => (e.target as HTMLInputElement).showPicker?.()}
                   className="glass-input rounded-lg pl-8 pr-3 py-2 text-sm text-[var(--text-primary)] cursor-pointer"
                 />
@@ -219,7 +282,7 @@ const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) =
             </div>
             {(dateFrom || dateTo) && (
               <button
-                onClick={() => { setDateFrom(''); setDateTo(''); setAnalysis(null); }}
+                onClick={() => { setDateFrom(''); setDateTo(''); setAnalysis(null); setIsLoadingCache(true); }}
                 className="text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors flex items-center gap-1"
               >
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -252,8 +315,17 @@ const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) =
             />
           )}
 
+          {/* Cache hydration in flight — show a subtle spinner instead of
+              flashing the Generate empty-state. */}
+          {completedMeetingsCount > 0 && !analysis && !isLoading && !error && isLoadingCache && (
+            <div className="flex flex-col items-center justify-center py-20">
+              <div className="w-10 h-10 rounded-full border-2 border-white/10 border-t-purple-400 animate-spin mb-3" />
+              <p className="text-xs opacity-40">Checking for a recent analysis…</p>
+            </div>
+          )}
+
           {/* Has meetings but no analysis yet */}
-          {completedMeetingsCount > 0 && !analysis && !isLoading && !error && (
+          {completedMeetingsCount > 0 && !analysis && !isLoading && !error && !isLoadingCache && (
             <div className="space-y-8">
               <div className="text-center py-12">
                 <div className="w-24 h-24 mx-auto rounded-3xl bg-purple-500/15 flex items-center justify-center mb-6 border border-white/10">
@@ -353,6 +425,8 @@ const StrategistView: React.FC<StrategistViewProps> = ({ recordings, userId }) =
                     <h2 className="text-xl font-bold text-[var(--text-primary)]">Executive Summary</h2>
                     <p className="text-xs opacity-40 text-[var(--text-primary)]">
                       {new Date(analysis.dateRange.start).toLocaleDateString()} - {new Date(analysis.dateRange.end).toLocaleDateString()}
+                      <span className="mx-1.5">·</span>
+                      Generated {formatRelativeTime(analysis.generatedAt)}
                     </p>
                   </div>
                   <CopyShareButtons

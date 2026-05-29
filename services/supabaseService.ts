@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { Capacitor } from '@capacitor/core';
-import { RecordingSession, TrackedActionItem, ActionItemStatus, ActionItemUpdate } from '../types';
+import { RecordingSession, TrackedActionItem, ActionItemStatus, ActionItemUpdate, StrategicAnalysis } from '../types';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -89,6 +89,76 @@ export const deleteRecordingFromDb = async (id: string, userId: string) => {
     console.error('Error deleting recording from Supabase:', error);
     throw error;
   }
+};
+
+// ─── Strategist Analysis Cache ────────────────────────────────────────────────
+//
+// Keyed by (user_id, date_range_start, date_range_end). One row per unique
+// date range; regenerating for the same range upserts in place. Staleness
+// on "new meeting added" is detected at load time by comparing
+// analyzed_meetings_count to the current filtered set — the row stays in
+// the table but is treated as a cache miss until regenerated.
+
+/**
+ * Upserts the strategist analysis for the current user + date range.
+ * Best-effort: errors are logged but not thrown so a persistence hiccup
+ * doesn't block the user from seeing the result that just generated.
+ */
+export const saveStrategistAnalysis = async (
+  userId: string,
+  analysis: StrategicAnalysis,
+): Promise<void> => {
+  const { error } = await supabase
+    .from('strategist_analyses')
+    .upsert(
+      {
+        user_id: userId,
+        date_range_start: analysis.dateRange.start,
+        date_range_end: analysis.dateRange.end,
+        analyzed_meetings_count: analysis.analyzedMeetingsCount,
+        analysis_data: analysis,
+        generated_at: analysis.generatedAt,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id,date_range_start,date_range_end' },
+    );
+
+  if (error) {
+    console.error('[Supabase] Error saving strategist analysis:', error);
+  }
+};
+
+/**
+ * Loads the cached strategist analysis for a given (user, date range).
+ * Returns null on cache miss, error, or staleness — the cached row's
+ * analyzed_meetings_count must match `expectedCount`, otherwise the
+ * caller should regenerate.
+ */
+export const loadStrategistAnalysis = async (
+  userId: string,
+  dateRangeStart: number,
+  dateRangeEnd: number,
+  expectedCount: number,
+): Promise<StrategicAnalysis | null> => {
+  const { data, error } = await supabase
+    .from('strategist_analyses')
+    .select('analysis_data, analyzed_meetings_count, generated_at')
+    .eq('user_id', userId)
+    .eq('date_range_start', dateRangeStart)
+    .eq('date_range_end', dateRangeEnd)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[Supabase] Error loading strategist analysis:', error);
+    return null;
+  }
+  if (!data) return null;
+  if (data.analyzed_meetings_count !== expectedCount) return null;
+
+  const cached = data.analysis_data as StrategicAnalysis;
+  // generated_at on the row is authoritative — overlay in case the jsonb
+  // copy ever drifts (e.g. older schema).
+  return { ...cached, generatedAt: Number(data.generated_at) };
 };
 
 // ─── Action Tracker CRUD ──────────────────────────────────────────────────────

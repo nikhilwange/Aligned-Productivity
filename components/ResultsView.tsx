@@ -327,10 +327,11 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
   };
 
   const handleSessionAnalysis = async () => {
+    if (!userId) { setAnalysisError('Not signed in.'); return; }
     setIsAnalyzing(true);
     setAnalysisError(null);
     try {
-      const result = await generateStrategicAnalysis([session]);
+      const result = await generateStrategicAnalysis([session], userId);
       setSessionAnalysis(result);
     } catch (err: any) {
       setAnalysisError(err.message || 'Analysis failed');
