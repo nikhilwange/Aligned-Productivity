@@ -201,6 +201,13 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'Unauthorized' }, 401);
   }
 
+  // NOTE: per-user Portkey usage tracking is NOT available for this
+  // function because transcription bypasses Portkey entirely (Gemini is
+  // the only provider in our stack that handles audio→text, so there's
+  // no fallback chain to put behind a gateway). The analyze and
+  // strategic functions, which DO go through Portkey, attach the
+  // user_id from the JWT as `x-portkey-metadata` for the dashboard.
+
   const apiKey = Deno.env.get('GEMINI_API_KEY');
   if (!apiKey) {
     return jsonResponse(

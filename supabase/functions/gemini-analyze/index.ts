@@ -16,7 +16,7 @@
 // the higher-capability model lineup.
 
 import { corsHeaders } from '../_shared/cors.ts';
-import { callPortkey } from '../_shared/portkey.ts';
+import { callPortkey, extractUserIdFromAuthHeader } from '../_shared/portkey.ts';
 
 Deno.serve(async (req) => {
   // Preflight — browsers send OPTIONS before the actual POST because of
@@ -42,6 +42,11 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
+
+  // Decode-only (no signature verification — Supabase already did that).
+  // We pass the resulting user_id to Portkey as metadata so per-user AI
+  // consumption shows up in the Portkey logs/analytics dashboard.
+  const userId = extractUserIdFromAuthHeader(authHeader);
 
   let transcript: unknown;
   let recordingDate: unknown;
@@ -204,6 +209,7 @@ ${transcript}`;
         temperature: 0.1,
         response_format: { type: 'json_object' },
       },
+      { user_id: userId, app: 'aligned' },
     );
 
     // We no longer have access to provider-specific `finishReason`, so we
