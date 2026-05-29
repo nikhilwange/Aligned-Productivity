@@ -173,12 +173,28 @@ export const transcribeAudioWithSarvam = async (audioBlob: Blob): Promise<string
 
   // Multi-chunk path: upload each chunk to Supabase Storage, transcribe by path,
   // then clean up. This avoids hitting Vercel's request body size cap on long recordings.
+  //
+  // Reliability profile (a 50-min recording = ~120 chunks):
+  //   - concurrency=2: lower rate-limit pressure on Sarvam/Vercel than 3
+  //     concurrent batches; ~50% more wall time but materially fewer chunk
+  //     failures.
+  //   - First-pass retry: 4 attempts per chunk (initial + 3 retries) with
+  //     exponential backoff 1s → 2s → 4s → 8s.
+  //   - Final-pass retry: any chunk still missing after the main loop is
+  //     retried SERIALLY with a longer 3s → 6s → 12s backoff. This sidesteps
+  //     transient rate-limit / cold-start issues that batch retries can't.
+  //   - Last resort: chunks that fail BOTH passes are replaced with a
+  //     friendly `[…audio unclear…]` placeholder (visible to the user but
+  //     not alarming like `[chunk 51 failed]`).
   const sessionId = `sarvam-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const results: string[] = new Array(chunks.length).fill("");
   const uploadedPaths: string[] = [];
-  const concurrency = 3;
+  const failedIndices: number[] = [];
+  const concurrency = 2;
+  const UNRECOGNISED_PLACEHOLDER = "[…audio unclear…]";
 
   try {
+    // ── First pass: parallel batches, 4 attempts per chunk ─────────────
     for (let i = 0; i < chunks.length; i += concurrency) {
       const batch = chunks.slice(i, i + concurrency);
       const batchResults = await Promise.allSettled(
@@ -187,7 +203,7 @@ export const transcribeAudioWithSarvam = async (audioBlob: Blob): Promise<string
           const pathSuffix = `chunks/${sessionId}-${String(idx).padStart(4, "0")}.wav`;
           return retryOperation(
             () => transcribeChunkViaStorage(chunk, token, pathSuffix),
-            2,
+            3,
             1000,
             `Sarvam STT chunk ${idx + 1}/${chunks.length}`,
           );
@@ -199,10 +215,33 @@ export const transcribeAudioWithSarvam = async (audioBlob: Blob): Promise<string
           results[idx] = result.value.transcript;
           uploadedPaths.push(result.value.storagePath);
         } else {
-          console.warn(`[Sarvam] Chunk ${idx + 1} failed: ${result.reason?.message}`);
-          results[idx] = `[chunk ${idx + 1} failed]`;
+          console.warn(`[Sarvam] Chunk ${idx + 1} failed (pass 1): ${result.reason?.message}`);
+          failedIndices.push(idx);
         }
       });
+    }
+
+    // ── Final pass: serial retry of stragglers ─────────────────────────
+    if (failedIndices.length > 0) {
+      console.warn(
+        `[Sarvam] ${failedIndices.length} of ${chunks.length} chunks failed first pass — retrying serially…`,
+      );
+      for (const idx of failedIndices) {
+        const pathSuffix = `chunks/${sessionId}-${String(idx).padStart(4, "0")}-retry.wav`;
+        try {
+          const result = await retryOperation(
+            () => transcribeChunkViaStorage(chunks[idx], token, pathSuffix),
+            3,
+            3000,
+            `Sarvam STT chunk ${idx + 1} (final pass)`,
+          );
+          results[idx] = result.transcript;
+          uploadedPaths.push(result.storagePath);
+        } catch (err: any) {
+          console.warn(`[Sarvam] Chunk ${idx + 1} failed (final pass): ${err?.message}`);
+          results[idx] = UNRECOGNISED_PLACEHOLDER;
+        }
+      }
     }
   } finally {
     // Best-effort cleanup of transient chunk files (don't block on failures)
@@ -213,7 +252,14 @@ export const transcribeAudioWithSarvam = async (audioBlob: Blob): Promise<string
     }
   }
 
+  const unrecognisedCount = results.filter((r) => r === UNRECOGNISED_PLACEHOLDER).length;
   const fullTranscript = results.join(" ").trim();
-  console.log(`[Sarvam] ✅ Transcription complete (${fullTranscript.length} chars)`);
+  if (unrecognisedCount > 0) {
+    console.warn(
+      `[Sarvam] ✅ Transcription complete (${fullTranscript.length} chars) — ${unrecognisedCount}/${chunks.length} chunks unrecognised after retries`,
+    );
+  } else {
+    console.log(`[Sarvam] ✅ Transcription complete (${fullTranscript.length} chars)`);
+  }
   return fullTranscript;
 };
