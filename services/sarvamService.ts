@@ -84,6 +84,60 @@ const transcribeChunkViaStorage = async (
   return { transcript: data.transcript || "", storagePath };
 };
 
+// Probe the file's true duration via a transient <audio> element. Reads the
+// container metadata only — no PCM decode, so it works reliably even on
+// very long files where decodeAudioData runs out of memory.
+const probeBlobDuration = (blob: Blob): Promise<number | null> => {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio();
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => {
+      const d = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : null;
+      URL.revokeObjectURL(url);
+      resolve(d);
+    };
+    audio.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    audio.src = url;
+  });
+};
+
+// Decode an audio file into a PCM AudioBuffer suitable for chunking.
+//
+// For long recordings (e.g. 45 min webm/opus ≈ 1 GB of PCM at 48 kHz
+// stereo), Chrome's `AudioContext.decodeAudioData` is known to SILENTLY
+// TRUNCATE rather than throw under memory pressure — the returned buffer
+// is shorter than the source, with no error. The fix:
+//   1. Decode through an OfflineAudioContext at 16 kHz mono first — that's
+//      what Sarvam consumes anyway, and it cuts memory ~6× vs 48 kHz
+//      stereo. Most browsers respect the context's sample rate during
+//      decode and downsample automatically.
+//   2. If the offline path fails (older Safari, etc.), fall back to a
+//      regular AudioContext.
+async function decodeForChunking(arrayBuffer: ArrayBuffer): Promise<AudioBuffer> {
+  const OfflineCtx: typeof OfflineAudioContext | undefined =
+    (window as any).OfflineAudioContext || (window as any).webkitOfflineAudioContext;
+  if (OfflineCtx) {
+    try {
+      // length=1 sample is a dummy — decodeAudioData ignores it and
+      // returns a buffer sized to the source. sampleRate=16000 asks the
+      // decoder to resample down to 16 kHz inside its own pipeline.
+      const ctx = new OfflineCtx(1, 1, 16000);
+      // slice(0) — some implementations detach the buffer after decode;
+      // copying preserves it for our fallback below.
+      return await ctx.decodeAudioData(arrayBuffer.slice(0));
+    } catch (e) {
+      console.warn("[Sarvam] 16k offline decode failed, trying regular AudioContext:", (e as Error)?.message);
+    }
+  }
+  const ctx2 = new (window.AudioContext || (window as any).webkitAudioContext)();
+  try {
+    return await ctx2.decodeAudioData(arrayBuffer);
+  } finally {
+    try { await ctx2.close(); } catch { /* ignore */ }
+  }
+}
+
 // Split an audio blob into time-based WAV chunks using OfflineAudioContext.
 const splitAudioBlob = async (audioBlob: Blob, chunkDurationMs: number): Promise<Blob[]> => {
   const durationEstimateMs = (audioBlob.size / 16000) * 1000;
@@ -91,19 +145,38 @@ const splitAudioBlob = async (audioBlob: Blob, chunkDurationMs: number): Promise
     return [audioBlob];
   }
 
+  // Probe the source's true duration BEFORE decoding so we can detect
+  // silent truncation afterwards.
+  const probedDurationS = await probeBlobDuration(audioBlob);
   const arrayBuffer = await audioBlob.arrayBuffer();
-  const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
 
   let audioBuffer: AudioBuffer;
   try {
-    audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-  } catch {
-    console.warn("[Sarvam] Could not decode audio for chunking, sending as single request");
-    await audioContext.close();
+    audioBuffer = await decodeForChunking(arrayBuffer);
+  } catch (e) {
+    console.warn("[Sarvam] Could not decode audio for chunking, sending as single request:", (e as Error)?.message);
     return [audioBlob];
   }
 
-  await audioContext.close();
+  // Sanity check: if the browser truncated during decode (typical for
+  // very long webm/opus files), surface a clear error rather than
+  // silently losing the tail. 10% tolerance covers normal rounding /
+  // container vs PCM-length skew.
+  if (probedDurationS !== null) {
+    const decodedDurationS = audioBuffer.duration;
+    const lossPct = (probedDurationS - decodedDurationS) / probedDurationS;
+    console.log(
+      `[Sarvam] Decoded ${decodedDurationS.toFixed(1)}s of ${probedDurationS.toFixed(1)}s ` +
+      `(${audioBuffer.sampleRate} Hz, ${audioBuffer.numberOfChannels}ch, ${(lossPct * 100).toFixed(1)}% loss)`,
+    );
+    if (lossPct > 0.1) {
+      throw new Error(
+        `Audio decode was truncated by the browser: only ${Math.round(decodedDurationS / 60)} of ` +
+        `${Math.round(probedDurationS / 60)} minutes decoded. This file is too long for in-browser ` +
+        `chunking — try splitting the recording into ~30-minute segments and uploading each separately.`,
+      );
+    }
+  }
 
   const sampleRate = audioBuffer.sampleRate;
   const totalSamples = audioBuffer.length;
