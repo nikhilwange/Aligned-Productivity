@@ -86,6 +86,21 @@ const stripCodeFences = (text: string): string => {
 };
 
 /**
+ * Strip leading/trailing markdown emphasis markers (`**`, `*`, `__`, `_`)
+ * from an extracted field. Portkey-fronted providers (especially when
+ * served from semantic cache) often wrap Title/Description/Rationale
+ * values in markdown bold — sometimes with invalid inner spacing like
+ * `** text **` which won't render. StrategistView shows these fields as
+ * plain text, so we'd otherwise leak the literal asterisks into the UI.
+ */
+const stripEmphasis = (s: string): string =>
+  s
+    .trim()
+    .replace(/^[*_]+\s*/, '')
+    .replace(/\s*[*_]+$/, '')
+    .trim();
+
+/**
  * Split the response into sections keyed by lower-cased section name.
  *
  * Header recognition: a line that — after stripping leading whitespace,
@@ -144,36 +159,36 @@ const tryParseJsonFallback = (
     json.summary ?? json.executiveSummary ?? json.executive_summary ?? '';
 
   const processGaps: ProcessGap[] = pickArray('processGaps', 'process_gaps', 'gaps').map((g: any) => ({
-    title: String(g.title ?? g.name ?? '').trim(),
-    description: String(g.description ?? g.desc ?? '').trim(),
+    title: stripEmphasis(String(g.title ?? g.name ?? '')),
+    description: stripEmphasis(String(g.description ?? g.desc ?? '')),
     frequency: Number(g.frequency ?? 1) || 1,
     impact: (String(g.impact ?? 'medium').toLowerCase() as 'high' | 'medium' | 'low'),
     relatedMeetings: [],
   })).filter((g) => g.title);
 
   const strategicActions: StrategicAction[] = pickArray('strategicActions', 'strategic_actions', 'actions').map((a: any) => ({
-    title: String(a.title ?? a.name ?? '').trim(),
-    description: String(a.description ?? a.desc ?? '').trim(),
-    rationale: String(a.rationale ?? a.reason ?? '').trim(),
+    title: stripEmphasis(String(a.title ?? a.name ?? '')),
+    description: stripEmphasis(String(a.description ?? a.desc ?? '')),
+    rationale: stripEmphasis(String(a.rationale ?? a.reason ?? '')),
     priority: (String(a.priority ?? 'medium').toLowerCase() as 'urgent' | 'high' | 'medium' | 'low'),
-    estimatedImpact: String(a.estimatedImpact ?? a.estimated_impact ?? a.impact ?? '').trim(),
+    estimatedImpact: stripEmphasis(String(a.estimatedImpact ?? a.estimated_impact ?? a.impact ?? '')),
   })).filter((a) => a.title);
 
   const issuePatterns: IssuePattern[] = pickArray('issuePatterns', 'issue_patterns', 'issues').map((i: any) => ({
-    issue: String(i.issue ?? i.title ?? i.description ?? '').trim(),
+    issue: stripEmphasis(String(i.issue ?? i.title ?? i.description ?? '')),
     occurrences: Number(i.occurrences ?? 1) || 1,
     firstMentioned: dateRange.start,
     lastMentioned: dateRange.end,
     status: (String(i.status ?? 'recurring').toLowerCase() as 'recurring' | 'escalating' | 'resolved'),
-    context: String(i.context ?? '').trim(),
+    context: stripEmphasis(String(i.context ?? '')),
   })).filter((i) => i.issue);
 
   const keyThemes: string[] = pickArray('keyThemes', 'key_themes', 'themes')
-    .map((t: any) => (typeof t === 'string' ? t.trim() : String(t?.name ?? '').trim()))
+    .map((t: any) => stripEmphasis(typeof t === 'string' ? t : String(t?.name ?? '')))
     .filter(Boolean);
 
   return {
-    summary: String(summary).trim(),
+    summary: stripEmphasis(String(summary)),
     processGaps,
     strategicActions,
     issuePatterns,
@@ -196,7 +211,7 @@ const parseStrategicResponse = (
 
   const sections = splitIntoSections(cleaned);
 
-  const summary = sections[SECTION_NAMES.summary] ?? '';
+  const summary = stripEmphasis(sections[SECTION_NAMES.summary] ?? '');
 
   const parseGapBlocks = (body: string): ProcessGap[] => {
     if (!body) return [];
@@ -207,8 +222,8 @@ const parseStrategicResponse = (
       const impactMatch = block.match(/Impact:\s*(high|medium|low)/i);
       if (!titleMatch) return null;
       return {
-        title: titleMatch[1].trim(),
-        description: descMatch ? descMatch[1].trim() : '',
+        title: stripEmphasis(titleMatch[1]),
+        description: descMatch ? stripEmphasis(descMatch[1]) : '',
         frequency: freqMatch ? parseInt(freqMatch[1]) : 1,
         impact: (impactMatch ? impactMatch[1] : 'medium') as 'high' | 'medium' | 'low',
         relatedMeetings: [],
@@ -225,9 +240,9 @@ const parseStrategicResponse = (
       const priorityMatch = block.match(/Priority:\s*(urgent|high|medium|low)/i);
       if (!titleMatch) return null;
       return {
-        title: titleMatch[1].trim(),
-        description: descMatch ? descMatch[1].trim() : '',
-        rationale: rationaleMatch ? rationaleMatch[1].trim() : '',
+        title: stripEmphasis(titleMatch[1]),
+        description: descMatch ? stripEmphasis(descMatch[1]) : '',
+        rationale: rationaleMatch ? stripEmphasis(rationaleMatch[1]) : '',
         priority: (priorityMatch ? priorityMatch[1] : 'medium') as 'urgent' | 'high' | 'medium' | 'low',
         estimatedImpact: '',
       } satisfies StrategicAction;
@@ -242,7 +257,7 @@ const parseStrategicResponse = (
       const statusMatch = block.match(/Status:\s*(recurring|escalating|resolved)/i);
       if (!issueMatch) return null;
       return {
-        issue: issueMatch[1].trim(),
+        issue: stripEmphasis(issueMatch[1]),
         occurrences: occMatch ? parseInt(occMatch[1]) : 1,
         firstMentioned: dateRange.start,
         lastMentioned: dateRange.end,
@@ -258,7 +273,7 @@ const parseStrategicResponse = (
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.startsWith('-') || line.startsWith('*') || /^\d+\./.test(line))
-      .map((line) => line.replace(/^[-*]\s*|^\d+\.\s*/, '').trim())
+      .map((line) => stripEmphasis(line.replace(/^[-*]\s*|^\d+\.\s*/, '')))
       .filter(Boolean);
   };
 
