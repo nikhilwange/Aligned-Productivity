@@ -10,9 +10,10 @@ interface SessionsLogViewProps {
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onRetry?: (id: string) => void;
+  onDownloadAudio?: (id: string) => void;
 }
 
-const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, isLoading, onSelect, onDelete, onRetry }) => {
+const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, isLoading, onSelect, onDelete, onRetry, onDownloadAudio }) => {
   const [searchQuery, setSearchQuery] = useState('');
 
   const groupedSessions = useMemo(() => {
@@ -221,17 +222,31 @@ const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, isLoading, 
                                 {session.errorMessage}
                               </div>
                             )}
-                            {session.recoveryId && onRetry && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); onRetry(session.id); }}
-                                className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/30 text-purple-300 text-xs font-semibold transition-all"
-                              >
-                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                                </svg>
-                                Retry processing
-                              </button>
-                            )}
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {(session.recoveryId || session.audioPath) && onRetry && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); onRetry(session.id); }}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/30 text-purple-300 text-xs font-semibold transition-all"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                  </svg>
+                                  Retry processing
+                                </button>
+                              )}
+                              {session.audioPath && onDownloadAudio && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); onDownloadAudio(session.id); }}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.05] hover:bg-white/[0.10] border border-white/[0.08] text-[var(--text-primary)]/80 text-xs font-semibold transition-all"
+                                  title="Download the recorded audio for this session"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4" />
+                                  </svg>
+                                  Download audio
+                                </button>
+                              )}
+                            </div>
                           </div>
                         ) : (
                           <>

@@ -28,11 +28,29 @@ export const uploadAudioToStorage = async (
   return fullPath;
 };
 
-// Best-effort cleanup — failures are logged but not thrown so they don't break callers.
+// Throws on failure so callers can surface the problem (orphan-audio risk).
 export const deleteAudioPaths = async (paths: string[]): Promise<void> => {
   if (paths.length === 0) return;
   const { error } = await supabase.storage.from(BUCKET).remove(paths);
   if (error) {
-    console.warn(`[Storage] Failed to delete ${paths.length} path(s): ${error.message}`);
+    throw new Error(`Storage delete failed for ${paths.length} path(s): ${error.message}`);
   }
+};
+
+// Downloads an archived audio Blob from Storage via a short-lived signed URL.
+// Used by cross-device Retry (when the IndexedDB recovery blob is gone) and
+// by the failed-session "Download audio" button.
+export const downloadAudioFromStorage = async (audioPath: string): Promise<Blob> => {
+  const { data, error } = await supabase
+    .storage
+    .from(BUCKET)
+    .createSignedUrl(audioPath, 300);
+  if (error || !data?.signedUrl) {
+    throw new Error(`Could not mint signed URL for ${audioPath}: ${error?.message ?? 'unknown'}`);
+  }
+  const res = await fetch(data.signedUrl);
+  if (!res.ok) {
+    throw new Error(`Audio download failed (HTTP ${res.status}) for ${audioPath}`);
+  }
+  return await res.blob();
 };

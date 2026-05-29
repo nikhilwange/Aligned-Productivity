@@ -327,7 +327,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
             {[
               { title: 'Record or paste',  desc: 'Hit record before your meeting, or paste a transcript you already have. Sarvam handles Hindi, English, or both.' },
-              { title: 'Aligned analyses', desc: 'Gemini 2.5 Pro extracts structured notes, action items, key decisions, and follow-ups.' },
+              { title: 'Aligned analyses', desc: 'Gemini 2.5 Flash extracts structured notes, action items, key decisions, and follow-ups.' },
               { title: 'Act on insights',  desc: 'Your Home screen shows what needs attention. Ask Intelligence questions across all your meetings.' },
             ].map((s, i) => (
               <div key={s.title} style={{
@@ -339,6 +339,60 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
                   textTransform: 'uppercase', color: C.accent, marginBottom: 10,
                 }}>
                   0{i + 1}
+                </div>
+                <div style={{
+                  fontFamily: DISPLAY, fontSize: 17, fontWeight: 600,
+                  letterSpacing: '-0.02em', color: C.text, marginBottom: 8,
+                }}>
+                  {s.title}
+                </div>
+                <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6 }}>
+                  {s.desc}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* ══════ Privacy — how we treat your audio ══════ */}
+        <section style={{ margin: '80px auto 0', maxWidth: 880 }}>
+          <h2 style={{
+            fontFamily: DISPLAY, fontSize: 'clamp(26px, 4vw, 36px)',
+            fontWeight: 600, letterSpacing: '-0.03em', lineHeight: 1.1,
+            margin: '0 0 8px', color: C.text,
+          }}>
+            Your audio <em style={{ fontStyle: 'italic', color: C.accent, fontWeight: 500 }}>doesn't stick around</em>.
+          </h2>
+          <p style={{ fontSize: 13.5, color: C.textMuted, marginBottom: 28 }}>
+            We keep recordings only as long as you actually need them — and not a moment longer.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
+            {[
+              {
+                tag: 'On success',
+                title: 'Deleted the moment your notes are ready',
+                desc: 'Once Aligned has extracted notes, action items, and decisions, the audio file is removed from our servers right away. The transcript and notes stay — the raw audio goes.',
+              },
+              {
+                tag: 'On failure',
+                title: 'Kept for 7 days so Retry just works',
+                desc: 'If processing fails, the audio is held briefly so you can tap Retry from any device, not just the one you recorded on. After 7 days it auto-deletes — even if you forget about it.',
+              },
+              {
+                tag: 'On delete',
+                title: 'Gone the instant you delete the session',
+                desc: 'Delete a session and its audio archive is removed from storage in the same step. If that cleanup ever fails, the app surfaces the error so nothing lingers silently.',
+              },
+            ].map((s) => (
+              <div key={s.title} style={{
+                padding: '22px 24px', borderRadius: 16,
+                background: C.surface, border: `1px solid ${C.rule}`,
+              }}>
+                <div style={{
+                  fontSize: 11, fontFamily: MONO, letterSpacing: '0.14em',
+                  textTransform: 'uppercase', color: C.accent, marginBottom: 10,
+                }}>
+                  {s.tag}
                 </div>
                 <div style={{
                   fontFamily: DISPLAY, fontSize: 17, fontWeight: 600,

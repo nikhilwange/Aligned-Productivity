@@ -17,7 +17,7 @@ import LandingPage from './components/LandingPage';
 import { AppState, RecordingSession, AudioRecording, User, ChatMessage, RecordingSource, TrackedActionItem } from './types';
 import { extractTranscript, analyzeTranscript } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
-import { uploadAudioToStorage, deleteAudioPaths } from './services/storageService';
+import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage } from './services/storageService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems } from './services/supabaseService';
 import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery } from './services/recordingRecovery';
 import ProcessingBanner from './components/ProcessingBanner';
@@ -105,11 +105,12 @@ const App: React.FC = () => {
       setProcessingSessionId(null);
     } else if (session.status === 'error') {
       const isViewingSession = activeRecordingId === processingSessionId;
+      const isRetryable = Boolean(session.recoveryId || session.audioPath);
       if (!isViewingSession) {
         addToast(
-          `Processing failed for "${session.title}"` + (session.recoveryId ? ' — tap to retry' : ''),
+          `Processing failed for "${session.title}"` + (isRetryable ? ' — tap to retry' : ''),
           'error',
-          session.recoveryId ? {
+          isRetryable ? {
             actionLabel: 'View & retry',
             onAction: () => {
               setIsRecordingMode(false);
@@ -430,7 +431,15 @@ const App: React.FC = () => {
         }
 
         if (audioPathToRemove) {
-          deleteAudioPaths([audioPathToRemove]).catch(() => {});
+          try {
+            await deleteAudioPaths([audioPathToRemove]);
+          } catch (err: any) {
+            console.error('[App] Audio cleanup failed during delete:', err);
+            addToast(
+              `Session deleted, but the server audio archive could not be removed (${err?.message ?? 'unknown error'}). Please contact support if this keeps happening.`,
+              'error',
+            );
+          }
         }
       },
     });
@@ -502,6 +511,9 @@ const App: React.FC = () => {
       // Reuse a previously-archived audio path on retry so we don't re-upload
       // (and don't trip storage's `upsert: false` constraint).
       let archivedAudioPath: string | undefined = session.audioPath;
+      // Tracked so the success path can await background uploads before
+      // deleting the archive (privacy: delete-on-success).
+      let archiveUploadPromise: Promise<string | null> | null = null;
       if (needsStorageUrl && !archivedAudioPath) {
         try {
           archivedAudioPath = await uploadAudioToStorage(blob, `recordings/${session.id}.${ext}`);
@@ -513,9 +525,15 @@ const App: React.FC = () => {
         }
       } else if (!needsStorageUrl && !archivedAudioPath) {
         // Small file: archive in the background, don't block transcription.
-        uploadAudioToStorage(blob, `recordings/${session.id}.${ext}`)
-          .then(persistAudioPath)
-          .catch((err) => console.warn('[App] Audio archive upload failed (non-critical):', err?.message));
+        archiveUploadPromise = uploadAudioToStorage(blob, `recordings/${session.id}.${ext}`)
+          .then(async (path) => {
+            await persistAudioPath(path);
+            return path;
+          })
+          .catch((err) => {
+            console.warn('[App] Audio archive upload failed (non-critical):', err?.message);
+            return null;
+          });
       }
 
       // Phase 1: Transcription
@@ -580,6 +598,25 @@ const App: React.FC = () => {
       updateSession({ analysis: fullAnalysis, status: 'completed', processingStep: undefined, errorMessage: undefined, recoveryId: undefined });
       await saveRecording(completedSession, user.id);
 
+      // Privacy: once notes are safely saved the server audio archive is no
+      // longer needed. Delete it to honour the "audio is removed the moment
+      // your notes are ready" promise. Background small-file uploads are
+      // awaited here so we don't leak audio whose upload finishes after the
+      // analysis. Failures are logged but non-fatal — the daily pg_cron
+      // sweep catches any orphans.
+      if (!archivedAudioPath && archiveUploadPromise) {
+        archivedAudioPath = (await archiveUploadPromise) ?? undefined;
+      }
+      if (archivedAudioPath) {
+        try {
+          await deleteAudioPaths([archivedAudioPath]);
+          updateSession({ audioPath: undefined });
+          await saveRecording({ ...completedSession, audioPath: undefined }, user.id);
+        } catch (cleanupErr: any) {
+          console.error('[App] Server audio cleanup-on-success failed:', cleanupErr);
+        }
+      }
+
       // Clear the IndexedDB recovery entry IMMEDIATELY after Supabase save succeeds
       // This prevents the false recovery popup on page reload
       if (session.recoveryId) {
@@ -635,15 +672,26 @@ const App: React.FC = () => {
     if (!user) return;
     const session = recordings.find(r => r.id === sessionId);
     if (!session) return;
-    if (!session.recoveryId) {
-      addToast('No recoverable audio for this session. Retry is only available right after a failed recording on the same device.', 'error');
-      return;
-    }
 
-    const recoverable = await getRecoverableRecordings();
-    const match = recoverable.find(r => r.meta.id === session.recoveryId);
-    if (!match) {
-      addToast('The recorded audio is no longer available in this browser. Retry is not possible.', 'error');
+    // IndexedDB is fastest (available right after a failed recording on the
+    // same browser). If that's gone, fall back to the server audio archive so
+    // Retry works after a reload, on another device, or after IndexedDB has
+    // been evicted. Silent fallback per design — the button behaves the same.
+    let blob: Blob | null = null;
+    if (session.recoveryId) {
+      const recoverable = await getRecoverableRecordings();
+      const match = recoverable.find(r => r.meta.id === session.recoveryId);
+      if (match) blob = match.blob;
+    }
+    if (!blob && session.audioPath) {
+      try {
+        blob = await downloadAudioFromStorage(session.audioPath);
+      } catch (err: any) {
+        console.error('[App] Retry: server audio download failed:', err);
+      }
+    }
+    if (!blob) {
+      addToast('The recorded audio is no longer available. Retry is not possible.', 'error');
       return;
     }
 
@@ -660,8 +708,38 @@ const App: React.FC = () => {
     setAppState(AppState.PROCESSING);
     setProcessingSessionId(sessionId);
 
-    await runProcessingForSession(resetSession, match.blob);
+    await runProcessingForSession(resetSession, blob);
   }, [user, recordings, runProcessingForSession]);
+
+  // Download the archived audio Blob for a failed session and trigger a
+  // browser save dialog. No download limit — convenience for users who want
+  // to keep their own copy of an unprocessable recording.
+  const handleDownloadAudio = useCallback(async (sessionId: string) => {
+    if (!user) return;
+    const session = recordings.find(r => r.id === sessionId);
+    if (!session?.audioPath) {
+      addToast('No audio archive available for this session.', 'error');
+      return;
+    }
+    try {
+      const blob = await downloadAudioFromStorage(session.audioPath);
+      const ext = (blob.type || 'audio/webm').split(';')[0].split('/')[1] || 'webm';
+      const safeTitle = (session.title || 'recording').replace(/[^\w\-]+/g, '_').slice(0, 60);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${safeTitle}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Revoke the object URL after a short delay so the download has time
+      // to start.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err: any) {
+      console.error('[App] Audio download failed:', err);
+      addToast(`Audio download failed: ${err?.message ?? 'unknown error'}`, 'error');
+    }
+  }, [user, recordings, addToast]);
 
   // ─── Recovery modal handlers ──────────────────────────────────────────────
   const handleRecoverRecording = useCallback(() => {
@@ -827,6 +905,7 @@ const App: React.FC = () => {
               onSelect={handleSelectRecording}
               onDelete={handleDeleteRecording}
               onRetry={handleRetryProcessing}
+              onDownloadAudio={handleDownloadAudio}
             />
           ) : activeRecordingId === 'actions' ? (
             <ActionItemsView
