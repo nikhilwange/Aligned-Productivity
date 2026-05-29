@@ -2,10 +2,19 @@ import { MeetingAnalysis } from "../types";
 import { supabase } from "./supabaseService";
 
 // ─── Large-audio threshold (kept for client-side timeout selection) ────────────
-// 15 MB ≈ 15 min at 128 kbps. Crossing this threshold means the server route
-// will use the Gemini Files API path internally (slower upload + preprocessing),
-// so we extend the client timeout accordingly.
-const LARGE_AUDIO_THRESHOLD_BYTES = 15 * 1024 * 1024;
+// 6 MB ≈ 25 min at our 32 kbps recording bitrate. Crossing this threshold
+// means the server route will use the Gemini Files API path internally
+// (slower upload + preprocessing) instead of inline base64, so we extend the
+// client timeout accordingly.
+//
+// Why 6 MB and not 15 MB any more: on Supabase Edge (free tier, 150s wall
+// clock), inline-base64 of audio over ~25 min routinely hits the wall and
+// the gateway returns HTTP 546 ("worker limit exceeded"). The Files API
+// path is more reliable in that band because Gemini preprocesses the audio
+// up front rather than processing it inside a single generateContent call.
+// For files long enough to defeat Files API too, App.tsx has a silent
+// Sarvam fallback wired in runProcessingForSession.
+const LARGE_AUDIO_THRESHOLD_BYTES = 6 * 1024 * 1024;
 const LARGE_AUDIO_TIMEOUT_MS = 10 * 60_000;
 const SMALL_AUDIO_TIMEOUT_MS = 2 * 60_000;
 

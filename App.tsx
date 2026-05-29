@@ -412,6 +412,19 @@ const App: React.FC = () => {
       ));
     };
 
+    // Recognise the wall-time / worker-limit / timeout class of failures
+    // coming back from gemini-transcribe-audio. Supabase Edge free tier
+    // kills workers at 150s and returns HTTP 546; an older gateway path
+    // also surfaces some of these as 504. The client-side withTimeout
+    // helper rejects with a "timed out" message. Any of those three means
+    // "this audio is too long for Gemini on this runtime — try Sarvam
+    // instead" rather than a real user-fixable error.
+    const isWallTimeFailure = (err: any): boolean => {
+      const status = err?.status;
+      const message = typeof err?.message === 'string' ? err.message : '';
+      return status === 546 || status === 504 || message.includes('timed out');
+    };
+
     try {
       try {
         await saveRecording(session, user.id);
@@ -469,7 +482,28 @@ const App: React.FC = () => {
           transcript = await extractTranscript(blob, { audioPath: archivedAudioPath });
         }
       } else {
-        transcript = await extractTranscript(blob, { audioPath: archivedAudioPath });
+        // Gemini primary path with a silent Sarvam safety net for long audio.
+        // Supabase Edge free tier kills workers at 150s; a 50-min recording
+        // routinely exceeds that on the inline-base64 path AND on the Files
+        // API path. When that wall is hit we silently retry via Sarvam,
+        // which uses 25-second client-side chunks (one short request each)
+        // and therefore survives any wall. Other failures (4xx, empty
+        // transcript, etc.) propagate to the outer catch and surface as
+        // 'Processing failed' so the user knows something real broke.
+        try {
+          transcript = await extractTranscript(blob, { audioPath: archivedAudioPath });
+        } catch (geminiErr: any) {
+          if (isWallTimeFailure(geminiErr) && hasSarvamKey) {
+            console.warn(
+              '[App] Gemini transcription hit wall time / worker limit — falling back to Sarvam:',
+              geminiErr.message,
+            );
+            updateSession({ processingStep: 'transcribing' });
+            transcript = await transcribeAudioWithSarvam(blob);
+          } else {
+            throw geminiErr;
+          }
+        }
       }
 
       // Intermediate update: show transcript immediately
