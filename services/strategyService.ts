@@ -86,16 +86,25 @@ const stripCodeFences = (text: string): string => {
 };
 
 /**
- * Strip leading/trailing markdown emphasis markers (`**`, `*`, `__`, `_`)
- * from an extracted field. Portkey-fronted providers (especially when
- * served from semantic cache) often wrap Title/Description/Rationale
- * values in markdown bold — sometimes with invalid inner spacing like
- * `** text **` which won't render. StrategistView shows these fields as
- * plain text, so we'd otherwise leak the literal asterisks into the UI.
+ * Strip markdown emphasis markers from an extracted field. Portkey-fronted
+ * providers (especially when served from semantic cache) commonly wrap or
+ * embed bold markers in field values:
+ *   - leading/trailing: `**Title**`, `** text **`
+ *   - inline: `**Bold label:** rest of sentence` (very common in Key Themes
+ *     bullets, where each item is a `**Theme:** description` pair)
+ * StrategistView renders these fields as plain text, so any unstripped
+ * `**` / `__` leaks into the UI as literal asterisks.
+ *
+ * We remove ALL paired bold markers (`**`, `__`) anywhere in the string,
+ * plus any single `*` / `_` at the very start or end. Standalone inline
+ * single `*` / `_` are left alone — they're unlikely in this output and
+ * could be legitimate punctuation.
  */
 const stripEmphasis = (s: string): string =>
   s
     .trim()
+    .replace(/\*\*/g, '')
+    .replace(/__/g, '')
     .replace(/^[*_]+\s*/, '')
     .replace(/\s*[*_]+$/, '')
     .trim();
