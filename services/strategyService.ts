@@ -45,96 +45,229 @@ const aggregateMeetingData = (recordings: RecordingSession[]): string => {
 };
 
 /**
- * Parse Gemini's strategic analysis response into structured data.
- * (Unchanged from original — keeps your parsing logic intact.)
+ * Parse the strategic analysis response into structured data.
+ *
+ * History: originally this matched five rigid emoji-prefixed headers
+ * (e.g. `/📊\s*Executive Summary/`). That worked when the response came
+ * directly from Gemini, because Gemini reproduced the emojis faithfully.
+ * Now that the request flows through Portkey, the active provider may be
+ * Gemini, OpenAI, or Krutrim — and any of them can render the headers as
+ * `**Executive Summary**`, `## Executive Summary`, plain text, or even
+ * wrap the whole document in ```markdown fences. The old regex returned
+ * null for every section, leaving the StrategistView blank with just the
+ * "Regenerate Analysis" button.
+ *
+ * This rewrite:
+ *   1. Strips leading/trailing markdown code fences.
+ *   2. Tries a JSON fallback first — some Portkey configs / providers
+ *      return `{ summary: ..., processGaps: [...] }` instead of prose.
+ *   3. Splits the text into sections by header recognition (matches the
+ *      header on its OWN LINE, with or without emoji / `**` / `##` /
+ *      `###` decoration), then routes each section to its parser.
+ *   4. Section blocks inside (Title:, Description:, etc.) still use the
+ *      same field-label regexes — those are stable across providers.
  */
+const SECTION_NAMES = {
+  summary: 'executive summary',
+  gaps: 'process gaps',
+  actions: 'strategic actions',
+  issues: 'issue patterns',
+  themes: 'key themes',
+} as const;
+
+const ALL_SECTION_KEYS = Object.values(SECTION_NAMES);
+
+/** Strip ``` fences and any leading "markdown"/"json" language tag. */
+const stripCodeFences = (text: string): string => {
+  let t = text.trim();
+  t = t.replace(/^```(?:markdown|md|json|text|plaintext)?\s*\n?/i, '');
+  t = t.replace(/\n?```\s*$/, '');
+  return t.trim();
+};
+
+/**
+ * Split the response into sections keyed by lower-cased section name.
+ *
+ * Header recognition: a line that — after stripping leading whitespace,
+ * up to two leading emojis, optional `#` or `*` markers — equals one of
+ * the known section names (case-insensitive). The body of a section is
+ * everything between its header line and the next header line (or EOF).
+ */
+const splitIntoSections = (text: string): Record<string, string> => {
+  const lines = text.split('\n');
+  const headerIndices: Array<{ name: string; idx: number }> = [];
+
+  const headerRegex =
+    /^\s*(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}️]\s*){0,3}(?:#{1,6}\s+|\*{1,3}\s*)?([A-Za-z][A-Za-z &]+?)(?:\s*\*{1,3}|\s*:)?\s*$/u;
+
+  lines.forEach((line, idx) => {
+    const m = line.match(headerRegex);
+    if (!m) return;
+    const candidate = m[1].toLowerCase().trim();
+    if (ALL_SECTION_KEYS.includes(candidate as typeof ALL_SECTION_KEYS[number])) {
+      headerIndices.push({ name: candidate, idx });
+    }
+  });
+
+  const sections: Record<string, string> = {};
+  for (let i = 0; i < headerIndices.length; i++) {
+    const start = headerIndices[i].idx + 1;
+    const end = i + 1 < headerIndices.length ? headerIndices[i + 1].idx : lines.length;
+    sections[headerIndices[i].name] = lines.slice(start, end).join('\n').trim();
+  }
+  return sections;
+};
+
+/** Try to coerce a JSON-shaped response into a StrategicAnalysis. */
+const tryParseJsonFallback = (
+  text: string,
+  recordingsCount: number,
+  dateRange: { start: number; end: number },
+): StrategicAnalysis | null => {
+  if (!text.startsWith('{')) return null;
+  let json: any;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return null;
+  }
+
+  const pickArray = (...keys: string[]): any[] => {
+    for (const k of keys) {
+      const v = json[k];
+      if (Array.isArray(v)) return v;
+    }
+    return [];
+  };
+
+  const summary: string =
+    json.summary ?? json.executiveSummary ?? json.executive_summary ?? '';
+
+  const processGaps: ProcessGap[] = pickArray('processGaps', 'process_gaps', 'gaps').map((g: any) => ({
+    title: String(g.title ?? g.name ?? '').trim(),
+    description: String(g.description ?? g.desc ?? '').trim(),
+    frequency: Number(g.frequency ?? 1) || 1,
+    impact: (String(g.impact ?? 'medium').toLowerCase() as 'high' | 'medium' | 'low'),
+    relatedMeetings: [],
+  })).filter((g) => g.title);
+
+  const strategicActions: StrategicAction[] = pickArray('strategicActions', 'strategic_actions', 'actions').map((a: any) => ({
+    title: String(a.title ?? a.name ?? '').trim(),
+    description: String(a.description ?? a.desc ?? '').trim(),
+    rationale: String(a.rationale ?? a.reason ?? '').trim(),
+    priority: (String(a.priority ?? 'medium').toLowerCase() as 'urgent' | 'high' | 'medium' | 'low'),
+    estimatedImpact: String(a.estimatedImpact ?? a.estimated_impact ?? a.impact ?? '').trim(),
+  })).filter((a) => a.title);
+
+  const issuePatterns: IssuePattern[] = pickArray('issuePatterns', 'issue_patterns', 'issues').map((i: any) => ({
+    issue: String(i.issue ?? i.title ?? i.description ?? '').trim(),
+    occurrences: Number(i.occurrences ?? 1) || 1,
+    firstMentioned: dateRange.start,
+    lastMentioned: dateRange.end,
+    status: (String(i.status ?? 'recurring').toLowerCase() as 'recurring' | 'escalating' | 'resolved'),
+    context: String(i.context ?? '').trim(),
+  })).filter((i) => i.issue);
+
+  const keyThemes: string[] = pickArray('keyThemes', 'key_themes', 'themes')
+    .map((t: any) => (typeof t === 'string' ? t.trim() : String(t?.name ?? '').trim()))
+    .filter(Boolean);
+
+  return {
+    summary: String(summary).trim(),
+    processGaps,
+    strategicActions,
+    issuePatterns,
+    keyThemes,
+    analyzedMeetingsCount: recordingsCount,
+    dateRange,
+    generatedAt: Date.now(),
+  };
+};
+
 const parseStrategicResponse = (
   text: string,
   recordingsCount: number,
   dateRange: { start: number; end: number }
 ): StrategicAnalysis => {
-  const summaryMatch = text.match(/📊\s*Executive Summary\s*([\s\S]*?)(?=🔍|$)/i);
-  const summary = summaryMatch ? summaryMatch[1].trim() : "";
+  const cleaned = stripCodeFences(text);
 
-  const gapsMatch = text.match(/🔍\s*Process Gaps\s*([\s\S]*?)(?=🎯|$)/i);
-  const processGaps: ProcessGap[] = [];
-  if (gapsMatch) {
-    const gapBlocks = gapsMatch[1].split(/\n\n+/);
-    gapBlocks.forEach((block) => {
+  const jsonResult = tryParseJsonFallback(cleaned, recordingsCount, dateRange);
+  if (jsonResult) return jsonResult;
+
+  const sections = splitIntoSections(cleaned);
+
+  const summary = sections[SECTION_NAMES.summary] ?? '';
+
+  const parseGapBlocks = (body: string): ProcessGap[] => {
+    if (!body) return [];
+    return body.split(/\n\n+/).map((block) => {
       const titleMatch = block.match(/Title:\s*(.+)/i);
       const descMatch = block.match(/Description:\s*(.+)/i);
       const freqMatch = block.match(/Frequency:\s*(\d+)/i);
       const impactMatch = block.match(/Impact:\s*(high|medium|low)/i);
-      if (titleMatch) {
-        processGaps.push({
-          title: titleMatch[1].trim(),
-          description: descMatch ? descMatch[1].trim() : "",
-          frequency: freqMatch ? parseInt(freqMatch[1]) : 1,
-          impact: (impactMatch ? impactMatch[1] : "medium") as "high" | "medium" | "low",
-          relatedMeetings: [],
-        });
-      }
-    });
-  }
+      if (!titleMatch) return null;
+      return {
+        title: titleMatch[1].trim(),
+        description: descMatch ? descMatch[1].trim() : '',
+        frequency: freqMatch ? parseInt(freqMatch[1]) : 1,
+        impact: (impactMatch ? impactMatch[1] : 'medium') as 'high' | 'medium' | 'low',
+        relatedMeetings: [],
+      } satisfies ProcessGap;
+    }).filter((g): g is ProcessGap => g !== null);
+  };
 
-  const actionsMatch = text.match(/🎯\s*Strategic Actions\s*([\s\S]*?)(?=⚠️|💡|$)/i);
-  const strategicActions: StrategicAction[] = [];
-  if (actionsMatch) {
-    const actionBlocks = actionsMatch[1].split(/\n\n+/);
-    actionBlocks.forEach((block) => {
+  const parseActionBlocks = (body: string): StrategicAction[] => {
+    if (!body) return [];
+    return body.split(/\n\n+/).map((block) => {
       const titleMatch = block.match(/Title:\s*(.+)/i);
       const descMatch = block.match(/Description:\s*(.+)/i);
       const rationaleMatch = block.match(/Rationale:\s*(.+)/i);
       const priorityMatch = block.match(/Priority:\s*(urgent|high|medium|low)/i);
-      if (titleMatch) {
-        strategicActions.push({
-          title: titleMatch[1].trim(),
-          description: descMatch ? descMatch[1].trim() : "",
-          rationale: rationaleMatch ? rationaleMatch[1].trim() : "",
-          priority: (priorityMatch ? priorityMatch[1] : "medium") as "urgent" | "high" | "medium" | "low",
-          estimatedImpact: "",
-        });
-      }
-    });
-  }
+      if (!titleMatch) return null;
+      return {
+        title: titleMatch[1].trim(),
+        description: descMatch ? descMatch[1].trim() : '',
+        rationale: rationaleMatch ? rationaleMatch[1].trim() : '',
+        priority: (priorityMatch ? priorityMatch[1] : 'medium') as 'urgent' | 'high' | 'medium' | 'low',
+        estimatedImpact: '',
+      } satisfies StrategicAction;
+    }).filter((a): a is StrategicAction => a !== null);
+  };
 
-  const issuesMatch = text.match(/⚠️\s*Issue Patterns\s*([\s\S]*?)(?=💡|$)/i);
-  const issuePatterns: IssuePattern[] = [];
-  if (issuesMatch) {
-    const issueBlocks = issuesMatch[1].split(/\n\n+/);
-    issueBlocks.forEach((block) => {
+  const parseIssueBlocks = (body: string): IssuePattern[] => {
+    if (!body) return [];
+    return body.split(/\n\n+/).map((block) => {
       const issueMatch = block.match(/Issue:\s*(.+)/i);
       const occMatch = block.match(/Occurrences:\s*(\d+)/i);
       const statusMatch = block.match(/Status:\s*(recurring|escalating|resolved)/i);
-      if (issueMatch) {
-        issuePatterns.push({
-          issue: issueMatch[1].trim(),
-          occurrences: occMatch ? parseInt(occMatch[1]) : 1,
-          firstMentioned: dateRange.start,
-          lastMentioned: dateRange.end,
-          status: (statusMatch ? statusMatch[1] : "recurring") as "recurring" | "escalating" | "resolved",
-          context: "",
-        });
-      }
-    });
-  }
+      if (!issueMatch) return null;
+      return {
+        issue: issueMatch[1].trim(),
+        occurrences: occMatch ? parseInt(occMatch[1]) : 1,
+        firstMentioned: dateRange.start,
+        lastMentioned: dateRange.end,
+        status: (statusMatch ? statusMatch[1] : 'recurring') as 'recurring' | 'escalating' | 'resolved',
+        context: '',
+      } satisfies IssuePattern;
+    }).filter((i): i is IssuePattern => i !== null);
+  };
 
-  const themesMatch = text.match(/💡\s*Key Themes\s*([\s\S]*?)(?=$)/i);
-  const keyThemes: string[] = [];
-  if (themesMatch) {
-    const themeLines = themesMatch[1].split("\n").filter((line) => line.trim().startsWith("-"));
-    themeLines.forEach((line) => {
-      const theme = line.replace(/^-\s*/, "").trim();
-      if (theme) keyThemes.push(theme);
-    });
-  }
+  const parseThemeLines = (body: string): string[] => {
+    if (!body) return [];
+    return body
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('-') || line.startsWith('*') || /^\d+\./.test(line))
+      .map((line) => line.replace(/^[-*]\s*|^\d+\.\s*/, '').trim())
+      .filter(Boolean);
+  };
 
   return {
     summary,
-    processGaps,
-    strategicActions,
-    issuePatterns,
-    keyThemes,
+    processGaps: parseGapBlocks(sections[SECTION_NAMES.gaps] ?? ''),
+    strategicActions: parseActionBlocks(sections[SECTION_NAMES.actions] ?? ''),
+    issuePatterns: parseIssueBlocks(sections[SECTION_NAMES.issues] ?? ''),
+    keyThemes: parseThemeLines(sections[SECTION_NAMES.themes] ?? ''),
     analyzedMeetingsCount: recordingsCount,
     dateRange,
     generatedAt: Date.now(),
@@ -173,8 +306,15 @@ export const generateStrategicAnalysis = async (
     "Strategic analysis generation"
   );
 
+  // Surface the raw response so a parser miss is obvious in DevTools.
+  console.log(
+    "[Strategic Analysis] Raw response (first 500 chars):",
+    responseText.slice(0, 500),
+  );
+
   const analysis = parseStrategicResponse(responseText, completedRecordings.length, dateRange);
-  console.log("[Strategic Analysis] Parsed successfully:", {
+  console.log("[Strategic Analysis] Parsed:", {
+    summaryLength: analysis.summary.length,
     processGaps: analysis.processGaps.length,
     strategicActions: analysis.strategicActions.length,
     issuePatterns: analysis.issuePatterns.length,
