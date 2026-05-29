@@ -272,12 +272,49 @@ const App: React.FC = () => {
 
   const handleManualEntry = async (data: {
     title: string;
-    transcript: string;
     source: RecordingSource;
     date: number;
     duration: number;
+    transcript?: string;
+    audioBlob?: Blob;
   }) => {
     if (!user) return;
+
+    // ── Audio-upload branch ──────────────────────────────────────────────
+    // Reuses the same orchestration as a fresh recording, which means the
+    // file goes through Storage upload, transcription (with the silent
+    // Sarvam fallback for long audio), then analysis. This is also how
+    // users can re-process a failed long recording: download the archived
+    // audio from Supabase Storage and re-upload it here.
+    if (data.audioBlob) {
+      const audioSession: RecordingSession = {
+        id: uuidv4(),
+        title: data.title,
+        date: data.date,
+        duration: data.duration,
+        analysis: null,
+        status: 'processing',
+        source: data.source,
+        processingStep: 'transcribing',
+      };
+      setRecordings(prev => [audioSession, ...prev]);
+      setActiveRecordingId(audioSession.id);
+      setProcessingSessionId(audioSession.id);
+      setIsManualProcessing(true);
+      try {
+        await runProcessingForSession(audioSession, data.audioBlob);
+      } finally {
+        setIsManualProcessing(false);
+      }
+      return;
+    }
+
+    // ── Transcript-paste branch (original flow) ─────────────────────────
+    if (!data.transcript) {
+      console.error('Manual entry: neither transcript nor audioBlob provided');
+      return;
+    }
+    const transcript = data.transcript;
     setIsManualProcessing(true);
 
     const newSession: RecordingSession = {
@@ -303,8 +340,8 @@ const App: React.FC = () => {
 
     try {
       await saveRecording(newSession, user.id);
-      const analysisResult = await analyzeTranscript(data.transcript, data.date);
-      const fullAnalysis = { ...analysisResult, transcript: data.transcript };
+      const analysisResult = await analyzeTranscript(transcript, data.date);
+      const fullAnalysis = { ...analysisResult, transcript };
       const completedSession: RecordingSession = {
         ...newSession,
         analysis: fullAnalysis,
