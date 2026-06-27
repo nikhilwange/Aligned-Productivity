@@ -14,6 +14,7 @@ import SettingsView from './components/SettingsView';
 import AuthView from './components/AuthView';
 import ResetPassword from './components/ResetPassword';
 import LandingPage from './components/LandingPage';
+import OAuthConsent from './components/OAuthConsent';
 import { AppState, RecordingSession, AudioRecording, User, ChatMessage, RecordingSource, TrackedActionItem } from './types';
 import { extractTranscript, analyzeTranscript } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
@@ -758,6 +759,13 @@ const App: React.FC = () => {
     clearAllRecovery();
     setRecoveryData(null);
   }, []);
+
+  // OAuth 2.1 consent screen (Claude connecting to the Aligned MCP server).
+  // Supabase bounces the user here at /oauth/consent?authorization_id=… — this
+  // owns its own auth/consent flow, so short-circuit the rest of the app.
+  if (typeof window !== 'undefined' && window.location.pathname === '/oauth/consent') {
+    return <OAuthConsent />;
+  }
 
   // Loading State
   if (isInitialLoad) return (
