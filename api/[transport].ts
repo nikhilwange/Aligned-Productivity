@@ -34,7 +34,7 @@ const ok = (data: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(data ?? null) }],
 });
 
-const baseHandler = createMcpHandler(
+const makeBase = () => createMcpHandler(
   (server) => {
     // ---- meetings (read) -------------------------------------------------
     server.registerTool(
@@ -256,21 +256,47 @@ const baseHandler = createMcpHandler(
   }
 );
 
-const handler = withMcpAuth(baseHandler, verifyToken, { required: true });
+// TEMP DIAGNOSTIC (marker diag-v3): build the handler lazily INSIDE try/catch so
+// a construction/module-load error is surfaced in the response too, not just a
+// generic platform 500. `?diag=1` returns a marker (no auth) to confirm which
+// deploy is live. Remove this whole block once the root cause is fixed.
+const json = (obj: unknown, status: number) =>
+  new Response(JSON.stringify(obj), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
 
-// TEMP DIAGNOSTIC: surface the real error in the response so we can see why the
-// function 500s on Vercel. Remove once the root cause is fixed.
+let _handler: ((req: Request) => Promise<Response>) | null = null;
+
 const debugHandler = async (req: Request): Promise<Response> => {
+  let phase = 'construct';
   try {
-    return await handler(req);
+    if (!_handler) {
+      _handler = withMcpAuth(makeBase(), verifyToken, { required: true });
+    }
+    if (new URL(req.url).searchParams.get('diag') === '1') {
+      return json(
+        {
+          ok: true,
+          marker: 'diag-v3',
+          hasSupabaseUrl: !!process.env.SUPABASE_URL,
+          hasSupabaseAnonKey: !!process.env.SUPABASE_ANON_KEY,
+        },
+        200
+      );
+    }
+    phase = 'request';
+    return await _handler(req);
   } catch (e: any) {
-    return new Response(
-      JSON.stringify({
+    return json(
+      {
+        marker: 'diag-v3',
+        phase,
         debug_error: String(e?.message ?? e),
         name: e?.name,
-        stack: String(e?.stack ?? '').split('\n').slice(0, 8),
-      }),
-      { status: 500, headers: { 'content-type': 'application/json' } }
+        stack: String(e?.stack ?? '').split('\n').slice(0, 10),
+      },
+      500
     );
   }
 };
