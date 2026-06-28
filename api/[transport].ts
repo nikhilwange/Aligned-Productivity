@@ -258,4 +258,21 @@ const baseHandler = createMcpHandler(
 
 const handler = withMcpAuth(baseHandler, verifyToken, { required: true });
 
-export { handler as GET, handler as POST, handler as DELETE };
+// TEMP DIAGNOSTIC: surface the real error in the response so we can see why the
+// function 500s on Vercel. Remove once the root cause is fixed.
+const debugHandler = async (req: Request): Promise<Response> => {
+  try {
+    return await handler(req);
+  } catch (e: any) {
+    return new Response(
+      JSON.stringify({
+        debug_error: String(e?.message ?? e),
+        name: e?.name,
+        stack: String(e?.stack ?? '').split('\n').slice(0, 8),
+      }),
+      { status: 500, headers: { 'content-type': 'application/json' } }
+    );
+  }
+};
+
+export { debugHandler as GET, debugHandler as POST, debugHandler as DELETE };
