@@ -1,31 +1,25 @@
 /**
- * api/[transport].ts
- * ------------------
- * The Aligned MCP server, as a Vercel Function. Serves the MCP endpoint at
- *   https://getitaligned.com/api/mcp   (that's your connector URL)
+ * api/mcp.ts
+ * ----------
+ * The Aligned MCP server, as a Vercel Function at https://getitaligned.com/api/mcp
+ * (the connector URL). Static route — replaces the earlier api/[transport].ts,
+ * because Vercel (Vite project, not Next.js) does not invoke a dynamic
+ * `[param]` route with Web-handler exports, which produced FUNCTION_INVOCATION_FAILED.
+ * We only need the single streamable-HTTP endpoint, so a static file is enough.
  *
  * Auth is enforced by withMcpAuth + verifyToken (Supabase OAuth tokens). Every
  * tool runs as the calling user via userClient(), so RLS scopes the data.
- *
- * Schema is mapped to Aligned's real tables (verified live):
- *   recordings(id,title,date,source,status,analysis jsonb{transcript,summary,
- *              actionPoints,meetingType,detectedLanguages})
- *   action_items(id,user_id,recording_id,text,status,assignee,due_date,created_at)
- *
- * NOTE: this uses Vercel's Web-handler function exports (export const GET/POST).
- * `[transport]` is a Vercel dynamic route segment, so this file answers /api/mcp.
  */
 
 import { createMcpHandler, withMcpAuth } from 'mcp-handler';
 import { z } from 'zod';
-import { verifyToken, userClient } from '../_lib/mcpAuth';
+import { verifyToken, userClient } from './_lib/mcpAuth.js';
 
 const RECORDINGS = 'recordings';
 const ACTION_ITEMS = 'action_items';
 const ARCHIVED = 'archived';
 const DEFAULT_STATUS = 'not_started';
 
-// Pull the verified token / user id that withMcpAuth attached to the request.
 const tokenFrom = (extra: any): string => extra?.authInfo?.token as string;
 const userIdFrom = (extra: any): string | undefined =>
   extra?.authInfo?.extra?.userId as string | undefined;
@@ -34,7 +28,7 @@ const ok = (data: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(data ?? null) }],
 });
 
-const makeBase = () => createMcpHandler(
+const baseHandler = createMcpHandler(
   (server) => {
     // ---- meetings (read) -------------------------------------------------
     server.registerTool(
@@ -247,58 +241,13 @@ const makeBase = () => createMcpHandler(
   },
   {},
   {
-    // basePath must match where this [transport] file lives, so the route is /api/mcp
+    // basePath '/api' + this file at api/mcp.ts → the endpoint resolves to /api/mcp.
     basePath: '/api',
-    // If you later enable the SSE transport or want resumable streams, set an
-    // Upstash Redis URL here: redisUrl: process.env.REDIS_URL
     verboseLogs: true,
     maxDuration: 60,
   }
 );
 
-// TEMP DIAGNOSTIC (marker diag-v3): build the handler lazily INSIDE try/catch so
-// a construction/module-load error is surfaced in the response too, not just a
-// generic platform 500. `?diag=1` returns a marker (no auth) to confirm which
-// deploy is live. Remove this whole block once the root cause is fixed.
-const json = (obj: unknown, status: number) =>
-  new Response(JSON.stringify(obj), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
+const handler = withMcpAuth(baseHandler, verifyToken, { required: true });
 
-let _handler: ((req: Request) => Promise<Response>) | null = null;
-
-const debugHandler = async (req: Request): Promise<Response> => {
-  let phase = 'construct';
-  try {
-    if (!_handler) {
-      _handler = withMcpAuth(makeBase(), verifyToken, { required: true });
-    }
-    if (new URL(req.url).searchParams.get('diag') === '1') {
-      return json(
-        {
-          ok: true,
-          marker: 'diag-v3',
-          hasSupabaseUrl: !!process.env.SUPABASE_URL,
-          hasSupabaseAnonKey: !!process.env.SUPABASE_ANON_KEY,
-        },
-        200
-      );
-    }
-    phase = 'request';
-    return await _handler(req);
-  } catch (e: any) {
-    return json(
-      {
-        marker: 'diag-v3',
-        phase,
-        debug_error: String(e?.message ?? e),
-        name: e?.name,
-        stack: String(e?.stack ?? '').split('\n').slice(0, 10),
-      },
-      500
-    );
-  }
-};
-
-export { debugHandler as GET, debugHandler as POST, debugHandler as DELETE };
+export { handler as GET, handler as POST, handler as DELETE };
