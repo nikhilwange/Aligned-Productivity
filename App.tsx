@@ -20,11 +20,17 @@ import { extractTranscript, analyzeTranscript } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage } from './services/storageService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems } from './services/supabaseService';
-import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery } from './services/recordingRecovery';
+import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery, clearChunkTranscripts, clearAllChunkTranscripts, purgeStaleChunkTranscripts } from './services/recordingRecovery';
+import { useWakeLock } from './hooks/useWakeLock';
 import ProcessingBanner from './components/ProcessingBanner';
 import RecoveryModal from './components/RecoveryModal';
 import ConfirmModal, { ConfirmRequest } from './components/ConfirmModal';
 import { ToastContainer, ToastData } from './components/Toast';
+import PricingView from './components/PricingView';
+import UpgradeModal from './components/UpgradeModal';
+import BillingSection from './components/BillingSection';
+import { useSubscription } from './hooks/useSubscription';
+import { canStartNewRecording } from './hooks/usePaywall';
 
 declare global {
   interface Window {
@@ -58,6 +64,12 @@ const App: React.FC = () => {
     return (localStorage.getItem('aligned-engine') as 'gemini' | 'sarvam') || 'gemini';
   });
 
+  // ─── Subscription / paywall state ─────────────────────────────────────────
+  // Single source of truth for plan tier + usage caps. Realtime-subscribed
+  // inside the hook so the webhook-driven tier flip lands without refresh.
+  const subscriptionState = useSubscription(user?.id ?? null);
+  const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; reason?: string }>({ open: false });
+
   // ─── Processing UX State ──────────────────────────────────────────────────
   const [processingSessionId, setProcessingSessionId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastData[]>([]);
@@ -69,6 +81,13 @@ const App: React.FC = () => {
     recoveryId: string;
   } | null>(null);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  // Sarvam chunk progress for the processing banner (component state only — never persisted).
+  const [chunkProgress, setChunkProgress] = useState<{ done: number; total: number } | null>(null);
+
+  // Keep the device awake while any session is actively processing (fresh
+  // recording, manual upload, retry, or auto-resume). Feature-detected + safe.
+  const isProcessingActive = recordings.some(r => r.status === 'processing') || isManualProcessing;
+  useWakeLock(isProcessingActive);
 
   // ─── Toast helper ─────────────────────────────────────────────────────────
   const addToast = useCallback((message: string, type: ToastData['type'] = 'success', opts?: { actionLabel?: string; onAction?: () => void }) => {
@@ -79,6 +98,17 @@ const App: React.FC = () => {
   const dismissToast = useCallback((id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
+
+  // Single chokepoint: returns true if the user is allowed to start a new
+  // recording right now, otherwise opens the Upgrade modal with the
+  // explanation copy and returns false. Callers (handleStartNew /
+  // handleManualEntry) bail when this returns false.
+  const checkRecordingAllowed = useCallback((): boolean => {
+    const decision = canStartNewRecording(subscriptionState);
+    if (decision.allowed) return true;
+    setUpgradeModal({ open: true, reason: decision.message });
+    return false;
+  }, [subscriptionState]);
 
   // ─── Detect when processing finishes (success or error) ───────────────────
   useEffect(() => {
@@ -198,10 +228,14 @@ const App: React.FC = () => {
         ]);
         console.log('[App] Fetched recordings:', data.length, 'recordings');
 
-        // Fix stale processing sessions (interrupted by page close/crash)
+        // Fix stale processing sessions (interrupted by page close/crash).
+        // Track which ones we just flipped so we can try to auto-resume the
+        // most recent recoverable one below instead of leaving it as an error.
         const now = Date.now();
+        const interruptedIds = new Set<string>();
         const fixedData = data.map(r => {
           if (r.status === 'processing' && (now - r.date) > 5 * 60 * 1000) {
+            interruptedIds.add(r.id);
             return { ...r, status: 'error' as const, errorMessage: 'Processing was interrupted. Tap Retry if audio is still available.', processingStep: undefined };
           }
           return r;
@@ -220,35 +254,82 @@ const App: React.FC = () => {
         // the "Add to tracker" UI in ResultsView. Existing rows in the
         // `action_items` table (synced under the old behavior) are preserved.
 
+        // Housekeeping: drop chunk-transcript caches older than 7 days.
+        purgeStaleChunkTranscripts();
+
         // Check for recoverable recordings from crashed/closed sessions
         try {
           const recoverable = await getRecoverableRecordings();
-          if (recoverable.length > 0) {
-            const newest = recoverable[0];
 
-            // Smart check: skip if this recording already completed in Supabase
-            const alreadyCompleted = data.find(
-              r => r.recoveryId === newest.meta.id && r.status === 'completed'
-            );
-            if (alreadyCompleted) {
+          // ── Auto-resume ────────────────────────────────────────────────
+          // If a session we just marked interrupted has a recoverable blob,
+          // resume it automatically instead of showing an error. Guard rails:
+          // at most one per load (most recent), and at most 2 attempts per
+          // recoveryId (sessionStorage counter) to avoid a crash loop.
+          let autoResumedRecoveryId: string | null = null;
+          const resumeCandidates = fixedData
+            .filter(r =>
+              interruptedIds.has(r.id) &&
+              r.recoveryId &&
+              recoverable.some(rec => rec.meta.id === r.recoveryId)
+            )
+            .sort((a, b) => b.date - a.date);
+
+          for (const cand of resumeCandidates) {
+            const key = `aligned-autoresume-${cand.recoveryId}`;
+            const attempts = parseInt(sessionStorage.getItem(key) || '0', 10);
+            if (attempts >= 2) continue; // Crash-loop guard — fall back to manual Retry.
+            const rec = recoverable.find(x => x.meta.id === cand.recoveryId);
+            if (!rec) continue;
+
+            sessionStorage.setItem(key, String(attempts + 1));
+            autoResumedRecoveryId = cand.recoveryId!;
+            addToast(`Resuming processing for "${cand.title}"…`, 'success');
+
+            const resetSession: RecordingSession = {
+              ...cand,
+              status: 'processing',
+              processingStep: 'transcribing',
+              errorMessage: undefined,
+              analysis: null,
+            };
+            setRecordings(prev => prev.map(r => r.id === cand.id ? resetSession : r));
+            setProcessingSessionId(cand.id);
+            // Fire-and-forget: do not await, so load doesn't block on full processing.
+            runProcessingForSession(resetSession, rec.blob);
+            break; // At most one auto-resume per load.
+          }
+
+          // ── Recovery modal ─────────────────────────────────────────────
+          // Show the modal for the newest recoverable entry that is NOT already
+          // completed and was NOT auto-resumed (auto-resume supersedes it).
+          // Orphaned recordings (no matching session row) still surface here.
+          const modalEntry = recoverable.find(rec => {
+            if (rec.meta.id === autoResumedRecoveryId) return false; // suppressed
+            const sess = data.find(r => r.recoveryId === rec.meta.id);
+            if (sess?.status === 'completed') {
               console.log('[App] Recovery entry already completed — clearing silently');
-              clearRecoverySession(newest.meta.id);
-            } else {
-              const durationStr = newest.meta.duration > 0
-                ? `${Math.floor(newest.meta.duration / 60)}m ${newest.meta.duration % 60}s`
-                : 'unknown duration';
-              const timeAgo = Math.round((Date.now() - newest.meta.startedAt) / 60000);
-              const source = (newest.meta.source || 'in-person') as RecordingSource;
-
-              // Show in-app modal instead of window.confirm
-              setRecoveryData({
-                durationStr,
-                timeAgo,
-                blob: newest.blob,
-                source,
-                recoveryId: newest.meta.id,
-              });
+              clearRecoverySession(rec.meta.id);
+              return false;
             }
+            return true;
+          });
+
+          if (modalEntry) {
+            const durationStr = modalEntry.meta.duration > 0
+              ? `${Math.floor(modalEntry.meta.duration / 60)}m ${modalEntry.meta.duration % 60}s`
+              : 'unknown duration';
+            const timeAgo = Math.round((Date.now() - modalEntry.meta.startedAt) / 60000);
+            const source = (modalEntry.meta.source || 'in-person') as RecordingSource;
+
+            // Show in-app modal instead of window.confirm
+            setRecoveryData({
+              durationStr,
+              timeAgo,
+              blob: modalEntry.blob,
+              source,
+              recoveryId: modalEntry.meta.id,
+            });
           }
         } catch (err) {
           console.warn('[App] Recovery check failed:', err);
@@ -281,6 +362,9 @@ const App: React.FC = () => {
     audioBlob?: Blob;
   }) => {
     if (!user) return;
+    // Manual entry creates a new recordings row → counts against the cap.
+    // Gate before any persistence work happens.
+    if (!checkRecordingAllowed()) return;
 
     // ── Audio-upload branch ──────────────────────────────────────────────
     // Reuses the same orchestration as a fresh recording, which means the
@@ -366,6 +450,7 @@ const App: React.FC = () => {
   };
 
   const handleStartNew = () => {
+    if (!checkRecordingAllowed()) return;
     setActiveRecordingId(null);
     setIsRecordingMode(true);
     setAppState(AppState.IDLE);
@@ -539,12 +624,19 @@ const App: React.FC = () => {
 
       // Phase 1: Transcription
       let transcript: string;
+      // Report Sarvam chunk progress into the processing banner. Session-scoped
+      // React state only — nothing is persisted to types.ts or Supabase.
+      const sarvamOpts = {
+        recoveryId: session.recoveryId,
+        onProgress: (done: number, total: number) => setChunkProgress({ done, total }),
+      };
       if (transcriptionEngine === 'sarvam' && hasSarvamKey) {
         try {
           console.log('[App] Using Sarvam STT → Gemini analysis pipeline');
-          transcript = await transcribeAudioWithSarvam(blob);
+          transcript = await transcribeAudioWithSarvam(blob, sarvamOpts);
         } catch (sarvamError: any) {
           console.error('[App] ⚠️ Sarvam STT failed — falling back to Gemini transcription.', sarvamError.message);
+          setChunkProgress(null);
           updateSession({ processingStep: 'transcribing' });
           transcript = await extractTranscript(blob, { audioPath: archivedAudioPath });
         }
@@ -566,12 +658,15 @@ const App: React.FC = () => {
               geminiErr.message,
             );
             updateSession({ processingStep: 'transcribing' });
-            transcript = await transcribeAudioWithSarvam(blob);
+            transcript = await transcribeAudioWithSarvam(blob, sarvamOpts);
           } else {
             throw geminiErr;
           }
         }
       }
+
+      // Transcription done — clear the chunk-progress indicator.
+      setChunkProgress(null);
 
       // Intermediate update: show transcript immediately
       const partialAnalysis = { transcript, summary: '', actionPoints: [] as string[] };
@@ -623,6 +718,8 @@ const App: React.FC = () => {
       if (session.recoveryId) {
         try {
           clearRecoverySession(session.recoveryId);
+          // Also drop any resumable chunk-transcript cache for this recording.
+          clearChunkTranscripts(session.recoveryId);
         } catch (clearErr) {
           console.warn('[App] IndexedDB cleanup failed (non-critical):', clearErr);
         }
@@ -641,6 +738,7 @@ const App: React.FC = () => {
         console.error("Failed to save error state:", saveErr);
       }
     } finally {
+      setChunkProgress(null);
       setAppState(AppState.IDLE);
     }
   }, [user, transcriptionEngine, hasSarvamKey]);
@@ -757,6 +855,7 @@ const App: React.FC = () => {
 
   const handleDiscardRecovery = useCallback(() => {
     clearAllRecovery();
+    clearAllChunkTranscripts();
     setRecoveryData(null);
   }, []);
 
@@ -890,6 +989,7 @@ const App: React.FC = () => {
             return ps && ps.status === 'processing' ? (
               <ProcessingBanner
                 session={ps}
+                progress={ps.id === processingSessionId ? chunkProgress : null}
                 onTap={() => {
                   setIsRecordingMode(false);
                   setActiveRecordingId(processingSessionId);
@@ -940,6 +1040,17 @@ const App: React.FC = () => {
               hasSarvamKey={hasSarvamKey}
               onLogout={handleLogout}
             />
+          ) : activeRecordingId === 'billing' || activeRecordingId === 'pricing' ? (
+            <div className="h-full overflow-y-auto">
+              <div className="max-w-3xl mx-auto px-6 md:px-12 pt-8">
+                <BillingSection
+                  state={subscriptionState}
+                  onUpgradeClick={() => setUpgradeModal({ open: true })}
+                  onCancelled={() => addToast('Subscription will end at the close of your billing period.', 'success')}
+                />
+              </div>
+              <PricingView user={user} variant="page" />
+            </div>
           ) : activeRecordingId === 'intelligence' || activeRecordingId === 'strategist' || activeRecordingId === 'chatbot' ? (
             <IntelligenceView
               recordings={recordings}
@@ -1065,6 +1176,21 @@ const App: React.FC = () => {
         <ConfirmModal
           request={confirmRequest}
           onClose={() => setConfirmRequest(null)}
+        />
+      )}
+
+      {/* Paywall — opens when canStartNewRecording returns false. */}
+      {user && (
+        <UpgradeModal
+          user={user}
+          open={upgradeModal.open}
+          reason={upgradeModal.reason}
+          onClose={() => setUpgradeModal({ open: false })}
+          onSubscribed={() => {
+            addToast('Payment received — activating your Pro account…', 'success');
+            // Realtime subscription will flip tier when the webhook lands.
+            setUpgradeModal({ open: false });
+          }}
         />
       )}
     </div>

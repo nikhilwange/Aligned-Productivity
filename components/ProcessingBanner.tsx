@@ -4,13 +4,17 @@ import { RecordingSession } from '../types';
 interface ProcessingBannerProps {
   session: RecordingSession;
   onTap: () => void;
+  // Optional Sarvam chunk progress for a live "(26 of 144)" readout.
+  progress?: { done: number; total: number } | null;
 }
 
-const ProcessingBanner: React.FC<ProcessingBannerProps> = ({ session, onTap }) => {
+const ProcessingBanner: React.FC<ProcessingBannerProps> = ({ session, onTap, progress }) => {
   const step = session.processingStep || 'transcribing';
+  const showChunks = step === 'transcribing' && progress && progress.total > 1;
   const stepLabel =
-    step === 'transcribing' ? 'Transcribing audio...' :
-    step === 'analyzing' ? 'Generating notes...' :
+    step === 'transcribing'
+      ? (showChunks ? `Transcribing... (${progress!.done} of ${progress!.total})` : 'Transcribing audio...')
+    : step === 'analyzing' ? 'Generating notes...' :
     'Finalizing...';
 
   return (
@@ -36,6 +40,9 @@ const ProcessingBanner: React.FC<ProcessingBannerProps> = ({ session, onTap }) =
           <span className="text-xs text-[var(--text-secondary)] opacity-60 sm:hidden">
             {stepLabel}
           </span>
+        </div>
+        <div className="text-[11px] text-amber-500/80 truncate">
+          Processing your session — keep this tab open
         </div>
       </div>
 

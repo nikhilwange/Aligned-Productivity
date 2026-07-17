@@ -1,6 +1,17 @@
 import { retryOperation } from "./geminiService";
 import { supabase } from "./supabaseService";
 import { uploadAudioToStorage, deleteAudioPaths } from "./storageService";
+import { getChunkTranscripts, saveChunkTranscript } from "./recordingRecovery";
+
+// Options for resumable / observable transcription. Both fields are optional so
+// every existing call site (`transcribeAudioWithSarvam(blob)`) keeps working.
+export interface SarvamTranscribeOptions {
+  // When set, per-chunk transcripts are cached in IndexedDB and restored on
+  // retry so interrupted long recordings resume instead of restarting.
+  recoveryId?: string;
+  // Fired as chunks complete (multi-chunk path only) for UI progress display.
+  onProgress?: (done: number, total: number) => void;
+}
 
 const CHUNK_DURATION_MS = 25000; // 25 seconds per chunk (Sarvam REST API limit is 30s)
 
@@ -224,10 +235,16 @@ const splitAudioBlob = async (audioBlob: Blob, chunkDurationMs: number): Promise
 };
 
 // Main export: Transcribe audio with Sarvam (handles chunking for long recordings)
-export const transcribeAudioWithSarvam = async (audioBlob: Blob): Promise<string> => {
+export const transcribeAudioWithSarvam = async (
+  audioBlob: Blob,
+  opts?: SarvamTranscribeOptions,
+): Promise<string> => {
   if (!audioBlob || audioBlob.size === 0) {
     throw new Error("No audio was captured. Please check your microphone and try again.");
   }
+
+  const recoveryId = opts?.recoveryId;
+  const onProgress = opts?.onProgress;
 
   console.log(`[Sarvam] Transcribing audio (${(audioBlob.size / 1024).toFixed(1)} KB)...`);
   const token = await getAuthToken();
@@ -266,16 +283,56 @@ export const transcribeAudioWithSarvam = async (audioBlob: Blob): Promise<string
   const concurrency = 2;
   const UNRECOGNISED_PLACEHOLDER = "[…audio unclear…]";
 
+  // ── Resume: restore chunks already transcribed on a previous attempt ──
+  // The cache is keyed by recoveryId and is only returned when its chunkCount
+  // matches chunks.length, so a mismatched chunking can never be stitched in.
+  const cachedIndices = new Set<number>();
+  if (recoveryId) {
+    const cached = await getChunkTranscripts(recoveryId, chunks.length);
+    if (cached) {
+      for (const key of Object.keys(cached)) {
+        const idx = Number(key);
+        // Never treat a cached placeholder as done — those must be re-attempted.
+        if (cached[idx] !== undefined && cached[idx] !== UNRECOGNISED_PLACEHOLDER) {
+          results[idx] = cached[idx];
+          cachedIndices.add(idx);
+        }
+      }
+      if (cachedIndices.size > 0) {
+        console.log(
+          `[Sarvam] Resumed: ${cachedIndices.size}/${chunks.length} chunks restored from cache, ` +
+          `transcribing ${chunks.length - cachedIndices.size} remaining`,
+        );
+      }
+    }
+  }
+
+  // Progress: count restored + freshly-completed chunks against the total.
+  let completedCount = cachedIndices.size;
+  const reportProgress = () => {
+    try { onProgress?.(completedCount, chunks.length); } catch { /* ignore */ }
+  };
+  reportProgress();
+
+  // Fire-and-forget cache write — a cache failure must never fail transcription.
+  const cacheChunk = (idx: number, transcript: string) => {
+    if (recoveryId) saveChunkTranscript(recoveryId, idx, chunks.length, transcript).catch(() => {});
+  };
+
+  // Only the not-yet-cached indices need work, batched at the given concurrency.
+  const pendingIndices = chunks
+    .map((_, idx) => idx)
+    .filter((idx) => !cachedIndices.has(idx));
+
   try {
     // ── First pass: parallel batches, 4 attempts per chunk ─────────────
-    for (let i = 0; i < chunks.length; i += concurrency) {
-      const batch = chunks.slice(i, i + concurrency);
+    for (let i = 0; i < pendingIndices.length; i += concurrency) {
+      const batchIndices = pendingIndices.slice(i, i + concurrency);
       const batchResults = await Promise.allSettled(
-        batch.map((chunk, j) => {
-          const idx = i + j;
+        batchIndices.map((idx) => {
           const pathSuffix = `chunks/${sessionId}-${String(idx).padStart(4, "0")}.wav`;
           return retryOperation(
-            () => transcribeChunkViaStorage(chunk, token, pathSuffix),
+            () => transcribeChunkViaStorage(chunks[idx], token, pathSuffix),
             3,
             1000,
             `Sarvam STT chunk ${idx + 1}/${chunks.length}`,
@@ -283,10 +340,13 @@ export const transcribeAudioWithSarvam = async (audioBlob: Blob): Promise<string
         }),
       );
       batchResults.forEach((result, j) => {
-        const idx = i + j;
+        const idx = batchIndices[j];
         if (result.status === "fulfilled") {
           results[idx] = result.value.transcript;
           uploadedPaths.push(result.value.storagePath);
+          cacheChunk(idx, result.value.transcript);
+          completedCount++;
+          reportProgress();
         } else {
           console.warn(`[Sarvam] Chunk ${idx + 1} failed (pass 1): ${result.reason?.message}`);
           failedIndices.push(idx);
@@ -310,8 +370,12 @@ export const transcribeAudioWithSarvam = async (audioBlob: Blob): Promise<string
           );
           results[idx] = result.transcript;
           uploadedPaths.push(result.storagePath);
+          cacheChunk(idx, result.transcript);
+          completedCount++;
+          reportProgress();
         } catch (err: any) {
           console.warn(`[Sarvam] Chunk ${idx + 1} failed (final pass): ${err?.message}`);
+          // Do NOT cache the placeholder — this chunk must be retried next time.
           results[idx] = UNRECOGNISED_PLACEHOLDER;
         }
       }
