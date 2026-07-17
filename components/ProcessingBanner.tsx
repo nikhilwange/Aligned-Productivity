@@ -6,14 +6,19 @@ interface ProcessingBannerProps {
   onTap: () => void;
   // Optional Sarvam chunk progress for a live "(26 of 144)" readout.
   progress?: { done: number; total: number } | null;
+  // Optional segment progress ("Transcribing segment 4 of 22") for Phase 2.
+  segmentProgress?: { done: number; total: number } | null;
 }
 
-const ProcessingBanner: React.FC<ProcessingBannerProps> = ({ session, onTap, progress }) => {
+const ProcessingBanner: React.FC<ProcessingBannerProps> = ({ session, onTap, progress, segmentProgress }) => {
   const step = session.processingStep || 'transcribing';
+  const showSegments = step === 'transcribing' && segmentProgress && segmentProgress.total > 1;
   const showChunks = step === 'transcribing' && progress && progress.total > 1;
   const stepLabel =
     step === 'transcribing'
-      ? (showChunks ? `Transcribing... (${progress!.done} of ${progress!.total})` : 'Transcribing audio...')
+      ? (showSegments
+          ? `Transcribing segment ${segmentProgress!.done + 1} of ${segmentProgress!.total}`
+          : showChunks ? `Transcribing... (${progress!.done} of ${progress!.total})` : 'Transcribing audio...')
     : step === 'analyzing' ? 'Generating notes...' :
     'Finalizing...';
 

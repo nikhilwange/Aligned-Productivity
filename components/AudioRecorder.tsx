@@ -7,6 +7,8 @@ import {
   updateRecoveryDuration,
   clearRecoverySession,
 } from '../services/recordingRecovery';
+import { USE_SEGMENTED_RECORDING } from '../config/features';
+import { SegmentRecorder } from '../services/segmentRecorder';
 
 interface AudioRecorderProps {
   appState: AppState;
@@ -31,6 +33,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
   const [silenceSeconds, setSilenceSeconds] = useState(0);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const segmentRecorderRef = useRef<SegmentRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const uncheckpointedRef = useRef<Blob[]>([]); // chunks not yet saved to IndexedDB
   const timerIntervalRef = useRef<number | null>(null);
@@ -177,6 +180,31 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
         console.warn('[AudioRecorder] Silence detection setup failed:', err);
       }
 
+      // ── Segmented path (Phase 2, flag-gated) ────────────────────────────
+      // Record in ~5-min self-contained segments that upload during the
+      // meeting. Uses the same MediaStream/constraints and the same timer +
+      // silence detection above; only the recording mechanics differ.
+      if (USE_SEGMENTED_RECORDING) {
+        const segRecoveryId = `rec-${Date.now()}`;
+        recoveryIdRef.current = segRecoveryId;
+        const segSource = inputMode === 'meeting' ? 'virtual-meeting' : inputMode === 'call' ? 'phone-call' : 'in-person';
+        const controller = new SegmentRecorder({
+          stream: finalStream,
+          sessionId: segRecoveryId,
+          source: segSource,
+        });
+        segmentRecorderRef.current = controller;
+        controller.start();
+
+        setAppState(AppState.RECORDING);
+        setTimer(0);
+        durationRef.current = 0;
+        silenceSecondsRef.current = 0;
+        setSilenceSeconds(0);
+        startTimer();
+        return;
+      }
+
       // 32 kbps Opus — voice-quality stays excellent, file size drops ~75%.
       // 1h meeting ≈ 14 MB instead of ~58 MB; fits well under Supabase free tier limits.
       const options = { audioBitsPerSecond: 32000 };
@@ -270,6 +298,28 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
   };
 
   const stopRecording = () => {
+    // Segmented path: stop the rotating recorder, flush the final segment, wait
+    // for pending uploads ("finishing…" shown via the PROCESSING state), then
+    // hand off. The blob is intentionally empty — segmented processing reads
+    // the segment manifest from IndexedDB by recoveryId, not a single blob.
+    if (USE_SEGMENTED_RECORDING && segmentRecorderRef.current) {
+      const controller = segmentRecorderRef.current;
+      segmentRecorderRef.current = null;
+      setAppState(AppState.PROCESSING);
+      stopTimer();
+      const source = inputMode === 'meeting' ? 'virtual-meeting' : inputMode === 'call' ? 'phone-call' : 'in-person';
+      const finalDuration = durationRef.current;
+      const handoff = () => {
+        cleanupStreams();
+        onRecordingComplete({ blob: new Blob([]), url: '', duration: finalDuration, source, recoveryId: controller.sessionId });
+      };
+      controller.stop().then(handoff).catch((err) => {
+        console.error('[AudioRecorder] Segmented stop failed:', err);
+        handoff();
+      });
+      return;
+    }
+
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
       setAppState(AppState.PROCESSING);

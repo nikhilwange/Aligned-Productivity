@@ -20,7 +20,9 @@ import { extractTranscript, analyzeTranscript } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage } from './services/storageService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems } from './services/supabaseService';
-import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery, clearChunkTranscripts, clearAllChunkTranscripts, purgeStaleChunkTranscripts } from './services/recordingRecovery';
+import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery, clearChunkTranscripts, clearAllChunkTranscripts, purgeStaleChunkTranscripts, getSegmentManifest, getAllSegmentManifests, getSegmentBlob, clearSegmentManifest, purgeStaleSegmentManifests, SegmentManifest } from './services/recordingRecovery';
+import { reuploadPendingSegments } from './services/segmentRecorder';
+import { USE_SEGMENTED_RECORDING } from './config/features';
 import { useWakeLock } from './hooks/useWakeLock';
 import ProcessingBanner from './components/ProcessingBanner';
 import RecoveryModal from './components/RecoveryModal';
@@ -83,6 +85,8 @@ const App: React.FC = () => {
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   // Sarvam chunk progress for the processing banner (component state only — never persisted).
   const [chunkProgress, setChunkProgress] = useState<{ done: number; total: number } | null>(null);
+  // Segment progress for segmented processing ("Transcribing segment 4 of 22"). Component state only.
+  const [segmentProgress, setSegmentProgress] = useState<{ done: number; total: number } | null>(null);
 
   // Keep the device awake while any session is actively processing (fresh
   // recording, manual upload, retry, or auto-resume). Feature-detected + safe.
@@ -254,8 +258,13 @@ const App: React.FC = () => {
         // the "Add to tracker" UI in ResultsView. Existing rows in the
         // `action_items` table (synced under the old behavior) are preserved.
 
-        // Housekeeping: drop chunk-transcript caches older than 7 days.
+        // Housekeeping: drop chunk-transcript caches + segment manifests older than 7 days.
         purgeStaleChunkTranscripts();
+        if (USE_SEGMENTED_RECORDING) purgeStaleSegmentManifests();
+
+        // Shared guard: auto-resume AT MOST ONE session per load across both the
+        // Phase 1 blob path and the Phase 2 segment path.
+        let didAutoResume = false;
 
         // Check for recoverable recordings from crashed/closed sessions
         try {
@@ -284,6 +293,7 @@ const App: React.FC = () => {
 
             sessionStorage.setItem(key, String(attempts + 1));
             autoResumedRecoveryId = cand.recoveryId!;
+            didAutoResume = true;
             addToast(`Resuming processing for "${cand.title}"…`, 'success');
 
             const resetSession: RecordingSession = {
@@ -333,6 +343,67 @@ const App: React.FC = () => {
           }
         } catch (err) {
           console.warn('[App] Recovery check failed:', err);
+        }
+
+        // ── Phase 2: resume from uploaded segments ─────────────────────────
+        // A segmented recording that crashed mid-meeting leaves a manifest (and
+        // cached/uploaded segments) but may have no session row yet. Re-upload
+        // any pending segments for durability, then auto-resume at most one
+        // incomplete segmented session (sharing the single-resume + 2-attempt
+        // guard with the blob path above).
+        if (USE_SEGMENTED_RECORDING) {
+          try {
+            const manifests = await getAllSegmentManifests();
+            const candidates = manifests
+              .filter(m => {
+                if (m.segments.length === 0) return false;
+                const sess = data.find(r => r.recoveryId === m.sessionId);
+                return !sess || sess.status !== 'completed';
+              })
+              .sort((a, b) => b.startedAt - a.startedAt);
+
+            // Durability: re-upload any segment that never reached Storage.
+            for (const manifest of candidates) {
+              await reuploadPendingSegments(manifest.sessionId).catch(() => {});
+            }
+
+            if (!didAutoResume) {
+              for (const manifest of candidates) {
+                const key = `aligned-autoresume-${manifest.sessionId}`;
+                const attempts = parseInt(sessionStorage.getItem(key) || '0', 10);
+                if (attempts >= 2) continue; // crash-loop guard
+
+                const existing = fixedData.find(r => r.recoveryId === manifest.sessionId);
+                const durationMs = manifest.segments.reduce((s, seg) => s + (seg.durationMs || 0), 0);
+                const resumeSession: RecordingSession = existing
+                  ? { ...existing, status: 'processing', processingStep: 'transcribing', errorMessage: undefined, analysis: null }
+                  : {
+                      id: uuidv4(),
+                      title: `Recording ${new Date(manifest.startedAt).toLocaleDateString()} ${new Date(manifest.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+                      date: manifest.startedAt,
+                      duration: Math.round(durationMs / 1000),
+                      analysis: null,
+                      status: 'processing',
+                      source: (manifest.source || 'in-person') as RecordingSource,
+                      processingStep: 'transcribing',
+                      recoveryId: manifest.sessionId,
+                    };
+
+                sessionStorage.setItem(key, String(attempts + 1));
+                didAutoResume = true;
+                addToast(`Resuming processing for "${resumeSession.title}"…`, 'success');
+                setRecordings(prev => existing
+                  ? prev.map(r => r.id === resumeSession.id ? resumeSession : r)
+                  : [resumeSession, ...prev]);
+                setProcessingSessionId(resumeSession.id);
+                // Fire-and-forget: don't block load on full processing.
+                runSegmentedProcessingForSession(resumeSession, manifest);
+                break;
+              }
+            }
+          } catch (err) {
+            console.warn('[App] Segment recovery failed:', err);
+          }
         }
 
         setRecordingsLoading(false);
@@ -499,6 +570,7 @@ const App: React.FC = () => {
         const previousRecordings = [...recordings];
         const sessionToDelete = recordings.find(rec => rec.id === id);
         const audioPathToRemove = sessionToDelete?.audioPath;
+        const segRecoveryId = sessionToDelete?.recoveryId;
 
         setRecordings(prev => prev.filter(rec => rec.id !== id));
 
@@ -525,6 +597,24 @@ const App: React.FC = () => {
               `Session deleted, but the server audio archive could not be removed (${err?.message ?? 'unknown error'}). Please contact support if this keeps happening.`,
               'error',
             );
+          }
+        }
+
+        // Segmented sessions have multiple files under recordings/{sessionId}/.
+        // Completed ones already cleaned up on success (no manifest), so this
+        // only fires for failed/interrupted segmented sessions still holding
+        // segments. Legacy single-file sessions (audioPath only) are unaffected.
+        if (USE_SEGMENTED_RECORDING && segRecoveryId) {
+          try {
+            const manifest = await getSegmentManifest(segRecoveryId);
+            if (manifest) {
+              const segPaths = manifest.segments.map(s => s.storagePath).filter((p): p is string => !!p);
+              if (segPaths.length > 0) await deleteAudioPaths(segPaths);
+              await clearSegmentManifest(segRecoveryId);
+              manifest.segments.forEach(s => clearChunkTranscripts(`${segRecoveryId}:seg${s.index}`));
+            }
+          } catch (err: any) {
+            console.error('[App] Segment cleanup failed during delete:', err);
           }
         }
       },
@@ -743,6 +833,121 @@ const App: React.FC = () => {
     }
   }, [user, transcriptionEngine, hasSarvamKey]);
 
+  // ── Segmented cleanup ───────────────────────────────────────────────────
+  // IMPORTANT (egress): a completed segmented session must have its whole
+  // `recordings/{sessionId}/` prefix deleted from Storage — leaving segments
+  // behind is the known Supabase egress-overage source. We also clear the
+  // IndexedDB manifest + cached blobs and the per-segment Phase 1 chunk caches.
+  const cleanupSegmentedSession = useCallback(async (recoveryId: string, manifest: SegmentManifest) => {
+    try {
+      const paths = manifest.segments.map(s => s.storagePath).filter((p): p is string => !!p);
+      if (paths.length > 0) {
+        await deleteAudioPaths(paths).catch(err =>
+          console.error('[App] Segment storage cleanup failed:', err?.message));
+      }
+      await clearSegmentManifest(recoveryId);
+      manifest.segments.forEach(s => clearChunkTranscripts(`${recoveryId}:seg${s.index}`));
+    } catch (err) {
+      console.warn('[App] Segmented cleanup failed (non-critical):', err);
+    }
+  }, []);
+
+  // Segment-wise pipeline: transcribe each segment in order (each ≤5 min, so
+  // decode/chunk is safe), concatenate, then run the SAME analyzeTranscript as
+  // today. Reuses Phase 1's resumable Sarvam chunk cache per segment via a
+  // stable `${recoveryId}:seg{index}` key so a retry resumes at sub-chunk level.
+  const runSegmentedProcessingForSession = useCallback(async (session: RecordingSession, manifest: SegmentManifest) => {
+    if (!user) return;
+    const recoveryId = session.recoveryId!;
+    const UNCLEAR = '[…audio unclear…]';
+
+    const updateSession = (updates: Partial<RecordingSession>) => {
+      setRecordings(prev => prev.map(rec => rec.id === session.id ? { ...rec, ...updates } : rec));
+    };
+
+    try {
+      try { await saveRecording(session, user.id); } catch (e) { console.warn('Initial save failed:', e); }
+
+      const segments = [...manifest.segments].sort((a, b) => a.index - b.index);
+      const transcripts: string[] = [];
+      let unclearCount = 0;
+
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        setSegmentProgress({ done: i, total: segments.length });
+        updateSession({ processingStep: 'transcribing' });
+
+        // Prefer the cached blob; fall back to the uploaded segment in Storage.
+        let blob = await getSegmentBlob(recoveryId, seg.index);
+        if (!blob && seg.storagePath) {
+          try { blob = await downloadAudioFromStorage(seg.storagePath); } catch (e: any) {
+            console.error(`[App] Segment ${seg.index} download failed:`, e?.message);
+          }
+        }
+        if (!blob) {
+          console.error(`[App] Segment ${seg.index} unavailable — inserting placeholder`);
+          transcripts.push(UNCLEAR);
+          unclearCount++;
+          continue;
+        }
+
+        try {
+          const text = await transcribeAudioWithSarvam(blob, {
+            recoveryId: `${recoveryId}:seg${seg.index}`,
+            onProgress: (done, total) => setChunkProgress({ done, total }),
+          });
+          transcripts.push(text);
+        } catch (e: any) {
+          console.error(`[App] Segment ${seg.index} transcription failed after retries:`, e?.message);
+          transcripts.push(UNCLEAR);
+          unclearCount++;
+        }
+        setChunkProgress(null);
+      }
+      setSegmentProgress(null);
+
+      const fullTranscript = transcripts.join(' ').replace(/\s+/g, ' ').trim();
+
+      // Show transcript immediately, then analyze (unchanged path).
+      const partialAnalysis = { transcript: fullTranscript, summary: '', actionPoints: [] as string[] };
+      updateSession({ analysis: partialAnalysis, processingStep: 'analyzing' });
+      await saveRecording({ ...session, analysis: partialAnalysis, status: 'processing', processingStep: 'analyzing' }, user.id);
+
+      const analysisResult = await analyzeTranscript(fullTranscript, session.date);
+      const fullAnalysis = { ...analysisResult, transcript: fullTranscript };
+      const completedSession: RecordingSession = {
+        ...session,
+        analysis: fullAnalysis,
+        status: 'completed',
+        processingStep: undefined,
+        errorMessage: undefined,
+        recoveryId: undefined,
+        audioPath: undefined,
+      };
+      updateSession({ analysis: fullAnalysis, status: 'completed', processingStep: undefined, errorMessage: undefined, recoveryId: undefined });
+      await saveRecording(completedSession, user.id);
+
+      if (unclearCount > 0) {
+        addToast(`Processing complete — part of the audio couldn't be transcribed (${unclearCount} of ${segments.length} segments).`, 'error');
+      }
+
+      // Delete-on-success: remove segments from Storage + clear local state.
+      await cleanupSegmentedSession(recoveryId, manifest);
+    } catch (err: any) {
+      console.error('Segmented processing failed:', err);
+      updateSession({ status: 'error', errorMessage: err.message, processingStep: undefined });
+      try {
+        await saveRecording({ ...session, status: 'error', errorMessage: err.message, processingStep: undefined }, user.id);
+      } catch (saveErr) {
+        console.error('Failed to save error state:', saveErr);
+      }
+    } finally {
+      setChunkProgress(null);
+      setSegmentProgress(null);
+      setAppState(AppState.IDLE);
+    }
+  }, [user, addToast, cleanupSegmentedSession]);
+
   const handleRecordingComplete = useCallback(async (audioData: AudioRecording) => {
     if (!user) return;
 
@@ -764,13 +969,54 @@ const App: React.FC = () => {
     setAppState(AppState.PROCESSING);
     setProcessingSessionId(newSession.id);
 
+    // Segmented handoff: if this recording produced a segment manifest, process
+    // it segment-by-segment. The recovery-modal recover path (real blob, no
+    // manifest) and manual uploads fall through to the monolithic pipeline.
+    if (USE_SEGMENTED_RECORDING && audioData.recoveryId) {
+      const manifest = await getSegmentManifest(audioData.recoveryId);
+      if (manifest && manifest.segments.length > 0) {
+        await runSegmentedProcessingForSession(newSession, manifest);
+        return;
+      }
+      if (manifest && manifest.segments.length === 0) {
+        setRecordings(prev => prev.map(r => r.id === newSession.id
+          ? { ...r, status: 'error', errorMessage: 'Recording captured no audio. Please try again.', processingStep: undefined }
+          : r));
+        setAppState(AppState.IDLE);
+        return;
+      }
+    }
+
     await runProcessingForSession(newSession, audioData.blob);
-  }, [user, runProcessingForSession]);
+  }, [user, runProcessingForSession, runSegmentedProcessingForSession]);
 
   const handleRetryProcessing = useCallback(async (sessionId: string) => {
     if (!user) return;
     const session = recordings.find(r => r.id === sessionId);
     if (!session) return;
+
+    // Segmented retry: resume from the manifest/segments (and Phase 1's
+    // sub-chunk cache per segment), not from a single blob. Re-upload any
+    // still-pending segments first for durability.
+    if (USE_SEGMENTED_RECORDING && session.recoveryId) {
+      const manifest = await getSegmentManifest(session.recoveryId);
+      if (manifest && manifest.segments.length > 0) {
+        await reuploadPendingSegments(session.recoveryId).catch(() => {});
+        const resetSession: RecordingSession = {
+          ...session,
+          status: 'processing',
+          processingStep: 'transcribing',
+          errorMessage: undefined,
+          analysis: null,
+        };
+        setRecordings(prev => prev.map(r => r.id === sessionId ? resetSession : r));
+        setActiveRecordingId(sessionId);
+        setAppState(AppState.PROCESSING);
+        setProcessingSessionId(sessionId);
+        await runSegmentedProcessingForSession(resetSession, manifest);
+        return;
+      }
+    }
 
     // IndexedDB is fastest (available right after a failed recording on the
     // same browser). If that's gone, fall back to the server audio archive so
@@ -808,7 +1054,7 @@ const App: React.FC = () => {
     setProcessingSessionId(sessionId);
 
     await runProcessingForSession(resetSession, blob);
-  }, [user, recordings, runProcessingForSession]);
+  }, [user, recordings, runProcessingForSession, runSegmentedProcessingForSession]);
 
   // Download the archived audio Blob for a failed session and trigger a
   // browser save dialog. No download limit — convenience for users who want
@@ -990,6 +1236,7 @@ const App: React.FC = () => {
               <ProcessingBanner
                 session={ps}
                 progress={ps.id === processingSessionId ? chunkProgress : null}
+                segmentProgress={ps.id === processingSessionId ? segmentProgress : null}
                 onTap={() => {
                   setIsRecordingMode(false);
                   setActiveRecordingId(processingSessionId);

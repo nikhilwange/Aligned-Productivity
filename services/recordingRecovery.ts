@@ -9,7 +9,12 @@ const STORE_NAME = 'recordings';
 // Keeping it in its own store means the audio-blob recovery entries above are
 // never disturbed by chunk-cache reads/writes.
 const CHUNK_STORE_NAME = 'chunk-transcripts';
-const DB_VERSION = 2;
+// Phase 2 segmented recording: one manifest per recording session + the cached
+// segment blobs (so a crash can re-upload any segment that never reached
+// Storage). Both kept in their own stores so the Phase 1 stores are untouched.
+const SEGMENT_MANIFEST_STORE = 'segment-manifests';
+const SEGMENT_BLOB_STORE = 'segment-blobs';
+const DB_VERSION = 3;
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -38,6 +43,13 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(CHUNK_STORE_NAME)) {
         db.createObjectStore(CHUNK_STORE_NAME, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(SEGMENT_MANIFEST_STORE)) {
+        db.createObjectStore(SEGMENT_MANIFEST_STORE, { keyPath: 'sessionId' });
+      }
+      if (!db.objectStoreNames.contains(SEGMENT_BLOB_STORE)) {
+        // Key: `${sessionId}:${index}` → { key, sessionId, index, blob }
+        db.createObjectStore(SEGMENT_BLOB_STORE, { keyPath: 'key' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -321,5 +333,164 @@ export async function purgeStaleChunkTranscripts(): Promise<void> {
     db.close();
   } catch (err) {
     console.warn('[Recovery] Failed to purge stale chunk transcripts:', err);
+  }
+}
+
+// ─── Phase 2: segment manifests + cached segment blobs ───────────────────────
+// A manifest records the ordered segments of a segmented recording so that,
+// after a crash, uploaded segments can be re-uploaded and processing can finish
+// from them. All best-effort — no schema/type-model changes.
+
+export interface SegmentEntry {
+  index: number;
+  ext: string;
+  storagePath?: string;
+  uploaded: boolean;
+  durationMs: number;
+}
+
+export interface SegmentManifest {
+  sessionId: string; // == the recording's recoveryId
+  source: string;
+  startedAt: number;
+  mimeType: string;
+  segments: SegmentEntry[];
+  updatedAt: number;
+}
+
+interface SegmentBlobRecord {
+  key: string; // `${sessionId}:${index}`
+  sessionId: string;
+  index: number;
+  blob: Blob;
+}
+
+const segBlobKey = (sessionId: string, index: number) => `${sessionId}:${index}`;
+
+/** Create/replace the manifest for a segmented recording session. */
+export async function saveSegmentManifest(manifest: SegmentManifest): Promise<void> {
+  if (!manifest?.sessionId) return;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(SEGMENT_MANIFEST_STORE, 'readwrite');
+    tx.objectStore(SEGMENT_MANIFEST_STORE).put({ ...manifest, updatedAt: Date.now() });
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch (err) {
+    console.warn('[Recovery] Failed to save segment manifest:', err);
+  }
+}
+
+export async function getSegmentManifest(sessionId: string): Promise<SegmentManifest | null> {
+  if (!sessionId) return null;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(SEGMENT_MANIFEST_STORE, 'readonly');
+    const record: SegmentManifest | undefined = await new Promise((resolve, reject) => {
+      const req = tx.objectStore(SEGMENT_MANIFEST_STORE).get(sessionId);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return record || null;
+  } catch (err) {
+    console.warn('[Recovery] Failed to get segment manifest:', err);
+    return null;
+  }
+}
+
+export async function getAllSegmentManifests(): Promise<SegmentManifest[]> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(SEGMENT_MANIFEST_STORE, 'readonly');
+    const all: SegmentManifest[] = await new Promise((resolve, reject) => {
+      const req = tx.objectStore(SEGMENT_MANIFEST_STORE).getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return all || [];
+  } catch (err) {
+    console.warn('[Recovery] Failed to list segment manifests:', err);
+    return [];
+  }
+}
+
+/** Cache a completed segment blob so a crash can re-upload it later. */
+export async function saveSegmentBlob(sessionId: string, index: number, blob: Blob): Promise<void> {
+  if (!sessionId) return;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(SEGMENT_BLOB_STORE, 'readwrite');
+    const record: SegmentBlobRecord = { key: segBlobKey(sessionId, index), sessionId, index, blob };
+    tx.objectStore(SEGMENT_BLOB_STORE).put(record);
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch (err) {
+    console.warn('[Recovery] Failed to save segment blob:', err);
+  }
+}
+
+export async function getSegmentBlob(sessionId: string, index: number): Promise<Blob | null> {
+  if (!sessionId) return null;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(SEGMENT_BLOB_STORE, 'readonly');
+    const record: SegmentBlobRecord | undefined = await new Promise((resolve, reject) => {
+      const req = tx.objectStore(SEGMENT_BLOB_STORE).get(segBlobKey(sessionId, index));
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return record?.blob || null;
+  } catch (err) {
+    console.warn('[Recovery] Failed to get segment blob:', err);
+    return null;
+  }
+}
+
+/** Remove a session's manifest AND all its cached segment blobs. */
+export async function clearSegmentManifest(sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  try {
+    const db = await openDB();
+    const tx = db.transaction([SEGMENT_MANIFEST_STORE, SEGMENT_BLOB_STORE], 'readwrite');
+    tx.objectStore(SEGMENT_MANIFEST_STORE).delete(sessionId);
+    // Delete every blob whose key is `${sessionId}:*`.
+    const blobStore = tx.objectStore(SEGMENT_BLOB_STORE);
+    const all: SegmentBlobRecord[] = await new Promise((resolve, reject) => {
+      const req = blobStore.getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    for (const rec of all) {
+      if (rec.sessionId === sessionId) blobStore.delete(rec.key);
+    }
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch (err) {
+    console.warn('[Recovery] Failed to clear segment manifest:', err);
+  }
+}
+
+/** Purge segment manifests (and their blobs) older than 7 days. Call on load. */
+export async function purgeStaleSegmentManifests(): Promise<void> {
+  try {
+    const manifests = await getAllSegmentManifests();
+    const cutoff = Date.now() - SEVEN_DAYS_MS;
+    for (const m of manifests) {
+      if (!m.updatedAt || m.updatedAt < cutoff) await clearSegmentManifest(m.sessionId);
+    }
+  } catch (err) {
+    console.warn('[Recovery] Failed to purge stale segment manifests:', err);
   }
 }
