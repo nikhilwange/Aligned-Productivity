@@ -94,7 +94,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
           {/* Center links */}
           <div style={{ display: 'flex', gap: 26, color: C.textMuted }}>
             <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Product</a>
-            <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Pricing</a>
+            <a href="#pricing" style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Pricing</a>
             <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Customers</a>
             <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Changelog</a>
           </div>
@@ -352,6 +352,87 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
               </div>
             ))}
           </div>
+        </section>
+
+        {/* ══════ Pricing ══════ */}
+        <section id="pricing" style={{ margin: '80px auto 0', maxWidth: 720, scrollMarginTop: 80 }}>
+          <h2 style={{
+            fontFamily: DISPLAY, fontSize: 'clamp(26px, 4vw, 36px)',
+            fontWeight: 600, letterSpacing: '-0.03em', lineHeight: 1.1,
+            margin: '0 0 8px', color: C.text,
+          }}>
+            Start free. <em style={{ fontStyle: 'italic', color: C.accent, fontWeight: 500 }}>Upgrade anytime.</em>
+          </h2>
+          <p style={{ fontSize: 13.5, color: C.textMuted, marginBottom: 28 }}>
+            Free includes 10 meetings or 120 minutes of audio per month — enough to put Aligned through its paces. Pro removes every limit.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14 }}>
+            {[
+              {
+                tag: 'Monthly',
+                price: '₹499',
+                cadence: 'per month',
+                pill: undefined as string | undefined,
+              },
+              {
+                tag: 'Annual',
+                price: '₹4,999',
+                cadence: 'per year',
+                pill: 'Save 17%',
+              },
+            ].map((p) => (
+              <div key={p.tag} style={{
+                position: 'relative',
+                padding: '24px 26px', borderRadius: 16,
+                background: C.surface, border: `1px solid ${C.rule}`,
+              }}>
+                {p.pill && (
+                  <span style={{
+                    position: 'absolute', top: -10, right: 18,
+                    padding: '3px 10px', borderRadius: 999,
+                    background: 'rgba(245, 158, 11, 0.16)',
+                    border: '1px solid rgba(245, 158, 11, 0.36)',
+                    color: '#fbbf24',
+                    fontSize: 10.5, fontFamily: MONO,
+                    letterSpacing: '0.12em', textTransform: 'uppercase',
+                    fontWeight: 600,
+                  }}>{p.pill}</span>
+                )}
+                <div style={{
+                  fontSize: 11, fontFamily: MONO, letterSpacing: '0.14em',
+                  textTransform: 'uppercase', color: C.accent, marginBottom: 10,
+                }}>
+                  Aligned Pro · {p.tag}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 18 }}>
+                  <span style={{
+                    fontFamily: DISPLAY, fontSize: 36, fontWeight: 600,
+                    letterSpacing: '-0.03em', color: C.text,
+                  }}>{p.price}</span>
+                  <span style={{ fontSize: 13, color: C.textMuted }}>{p.cadence}</span>
+                </div>
+                <ul style={{
+                  margin: 0, padding: 0, listStyle: 'none',
+                  fontSize: 13, color: C.textMuted, lineHeight: 1.7,
+                }}>
+                  <li>Unlimited meetings every month</li>
+                  <li>Unlimited audio minutes</li>
+                  <li>Strategist & Intelligence chat</li>
+                  <li>Cancel anytime — keep access until period ends</li>
+                </ul>
+                <button onClick={onGetStarted} style={{
+                  marginTop: 20, width: '100%', padding: '10px 14px',
+                  borderRadius: 12, border: 'none', cursor: 'pointer',
+                  background: C.accent, color: '#000',
+                  fontSize: 13.5, fontWeight: 600,
+                  fontFamily: DISPLAY,
+                }}>Sign up to subscribe</button>
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: 12, color: C.textMuted, marginTop: 16, textAlign: 'center' }}>
+            Payments processed by Razorpay
+          </p>
         </section>
 
         {/* ══════ Privacy — how we treat your audio ══════ */}

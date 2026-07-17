@@ -101,6 +101,8 @@
     "@supabase/supabase-js": "^2.48.1",
     "jose": "^6.2.3",
     "mcp-handler": "^1.1.0",
+    "raw-body": "^3.0.2",
+    "razorpay": "^2.9.6",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "react-markdown": "^10.1.0",

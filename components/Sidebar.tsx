@@ -177,6 +177,21 @@ const Sidebar: React.FC<SidebarProps> = ({
             <span className="flex-1 text-left">Manual Entry</span>
           </button>
 
+          {/* Billing — secondary action */}
+          <button
+            onClick={() => onSelect('billing')}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+              activeId === 'billing'
+                ? 'bg-white/[0.06] text-[var(--text-primary)]'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-white/[0.04]'
+            }`}
+          >
+            <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M5 6h14a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2z" />
+            </svg>
+            <span className="flex-1 text-left">Billing</span>
+          </button>
+
           {/* Settings — secondary action */}
           <button
             onClick={() => onSelect('settings')}

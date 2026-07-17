@@ -128,3 +128,56 @@ export interface StrategicAnalysis {
   dateRange: { start: number; end: number };
   generatedAt: number;
 }
+
+// ─── Subscriptions / billing ─────────────────────────────────────────────────
+
+export type PlanTier = 'free' | 'pro';
+export type PlanCycle = 'monthly' | 'annual';
+
+// Mirrors Razorpay's subscription lifecycle. We don't try to enumerate every
+// possible value Razorpay might add later — anything unknown still gets
+// stored as a string in the DB so we can react in the dashboard.
+export type SubscriptionStatus =
+  | 'created'
+  | 'authenticated'
+  | 'active'
+  | 'pending'
+  | 'halted'
+  | 'cancelled'
+  | 'completed'
+  | 'expired';
+
+export interface Subscription {
+  userId: string;
+  planTier: PlanTier;
+  planCycle: PlanCycle | null;
+  razorpayCustomerId: string | null;
+  razorpaySubscriptionId: string | null;
+  status: SubscriptionStatus | null;
+  currentPeriodStart: number | null;   // ms epoch
+  currentPeriodEnd: number | null;     // ms epoch
+  cancelAtPeriodEnd: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface UsageMeter {
+  userId: string;
+  periodYear: number;
+  periodMonth: number; // 1-12
+  meetingsCount: number;
+  minutesUsed: number;
+  updatedAt: number;
+}
+
+// Aggregate state surfaced by useSubscription — combines DB rows with the
+// app-side caps so consumers don't have to repeat the math.
+export interface SubscriptionState {
+  subscription: Subscription | null;
+  usage: { meetings: number; minutes: number };
+  caps: { meetings: number; minutes: number } | null; // null = unlimited (pro)
+  isPro: boolean;
+  isOverCap: boolean;
+  capPercent: number; // 0..1 of the closer cap; 0 for pro/unlimited
+  loading: boolean;
+}
