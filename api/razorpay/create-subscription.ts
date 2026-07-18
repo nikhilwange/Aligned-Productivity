@@ -29,13 +29,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'cycle must be "monthly" or "annual"' });
   }
 
-  const planId = planIdFor(cycle);
-  const keyId = process.env.RAZORPAY_KEY_ID;
-  if (!planId || !keyId) {
-    return res.status(500).json({ error: 'Server misconfiguration: Razorpay plan IDs / key not set' });
+  // Fail loudly and specifically on missing config rather than throwing an
+  // opaque 500 downstream (getSupabaseAdmin / razorpay authHeader would throw).
+  const missingEnv = [
+    'RAZORPAY_KEY_ID',
+    'RAZORPAY_KEY_SECRET',
+    `RAZORPAY_PLAN_ID_${cycle.toUpperCase()}`,
+    'SUPABASE_URL',
+    'SUPABASE_SERVICE_ROLE_KEY',
+  ].filter((k) => !process.env[k]);
+  if (missingEnv.length) {
+    return res.status(500).json({ error: `Server misconfiguration: missing env ${missingEnv.join(', ')}` });
   }
+  const planId = planIdFor(cycle)!;
+  const keyId = process.env.RAZORPAY_KEY_ID!;
 
-  const admin = getSupabaseAdmin();
+  let admin;
+  try {
+    admin = getSupabaseAdmin();
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message ?? 'Supabase admin init failed' });
+  }
 
   // Read the current subscription row (backfilled to 'free' for everyone on
   // schema rollout) so we can reuse an existing Razorpay customer instead of

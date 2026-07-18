@@ -15,7 +15,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   const userId = user.id;
 
-  const admin = getSupabaseAdmin();
+  const missingEnv = [
+    'RAZORPAY_KEY_ID',
+    'RAZORPAY_KEY_SECRET',
+    'SUPABASE_URL',
+    'SUPABASE_SERVICE_ROLE_KEY',
+  ].filter((k) => !process.env[k]);
+  if (missingEnv.length) {
+    return res.status(500).json({ error: `Server misconfiguration: missing env ${missingEnv.join(', ')}` });
+  }
+
+  let admin;
+  try {
+    admin = getSupabaseAdmin();
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message ?? 'Supabase admin init failed' });
+  }
 
   const { data: sub, error: subErr } = await admin
     .from('subscriptions')
