@@ -368,7 +368,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             Start free. <em style={{ fontStyle: 'italic', color: C.accent, fontWeight: 500 }}>Upgrade anytime.</em>
           </h2>
           <p style={{ fontSize: 13.5, color: C.textMuted, marginBottom: 28 }}>
-            Free includes 10 meetings or 120 minutes of audio per month — enough to put Aligned through its paces. Pro removes every limit.
+            Free includes 10 meetings or 20 hours of audio per month — enough to put Aligned through its paces. Pro removes every limit.
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14 }}>
             {[

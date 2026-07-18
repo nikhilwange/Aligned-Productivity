@@ -103,7 +103,7 @@ const PricingView: React.FC<PricingViewProps> = ({ user, variant = 'page', onClo
             {isModal ? 'Upgrade to Pro' : 'Pricing'}
           </h1>
           <p className="text-sm text-[var(--text-muted)] mt-1.5">
-            Free includes 10 meetings or 120 minutes of audio per month. Pro removes every limit.
+            Free includes 10 meetings or 20 hours of audio per month. Pro removes every limit.
           </p>
         </div>
         {isModal && onClose && (

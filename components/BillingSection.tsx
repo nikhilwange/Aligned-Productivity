@@ -82,8 +82,8 @@ const BillingSection: React.FC<BillingSectionProps> = ({ state, onUpgradeClick, 
             <span className="text-[var(--text-primary)]/85 font-medium">{state.usage.meetings}</span>
             <span> of {state.caps?.meetings ?? FREE_CAP_MEETINGS} meetings</span>
             <span className="mx-2 opacity-40">·</span>
-            <span className="text-[var(--text-primary)]/85 font-medium">{Math.round(state.usage.minutes)}</span>
-            <span> of {state.caps?.minutes ?? FREE_CAP_MINUTES} minutes</span>
+            <span className="text-[var(--text-primary)]/85 font-medium">{(state.usage.minutes / 60).toFixed(1)}</span>
+            <span> of {Math.round((state.caps?.minutes ?? FREE_CAP_MINUTES) / 60)} hours</span>
             <span className="opacity-70"> this month</span>
           </div>
           <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">

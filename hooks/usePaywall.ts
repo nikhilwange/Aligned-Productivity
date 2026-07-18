@@ -23,12 +23,13 @@ export function canStartNewRecording(state: SubscriptionState): PaywallDecision 
     const overMeetings = state.caps && state.usage.meetings >= state.caps.meetings;
     const overMinutes = state.caps && state.usage.minutes >= state.caps.minutes;
     let detail = '';
+    const capHours = Math.round((state.caps?.minutes ?? 0) / 60);
     if (overMeetings && overMinutes) {
-      detail = `You've used all ${state.caps?.meetings} meetings and ${state.caps?.minutes} minutes this month.`;
+      detail = `You've used all ${state.caps?.meetings} meetings and ${capHours} hours this month.`;
     } else if (overMeetings) {
       detail = `You've used all ${state.caps?.meetings} meetings this month.`;
     } else if (overMinutes) {
-      detail = `You've used all ${state.caps?.minutes} minutes this month.`;
+      detail = `You've used all ${capHours} hours this month.`;
     }
     return {
       allowed: false,

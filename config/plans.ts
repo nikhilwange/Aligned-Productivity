@@ -5,7 +5,7 @@
 import type { PlanCycle } from '../types';
 
 export const FREE_CAP_MEETINGS = 10;
-export const FREE_CAP_MINUTES = 120;
+export const FREE_CAP_MINUTES = 1200; // 20 hours of audio per month (whichever cap is hit first)
 
 // Razorpay plan IDs. Created in the Razorpay dashboard once (step 0 in the
 // rollout plan); pulled from env so test-mode vs live-mode are swappable
