@@ -46,6 +46,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const { audioBase64, audioPath, mimeType, filename } = req.body;
 
+  // Sarvam validates the file's content-type against a strict allowlist and
+  // does NOT accept MIME parameters: `audio/webm;codecs=opus` is rejected even
+  // though `audio/webm` is allowed. MediaRecorder always tags blobs with the
+  // codecs parameter, so strip everything after ';' before sending.
+  const normalizeMime = (m?: string, fallback = 'audio/wav'): string =>
+    (m || fallback).split(';')[0].trim() || fallback;
+
   let audioBuffer: Buffer;
   let resolvedMimeType: string;
   let resolvedFilename: string;
@@ -62,11 +69,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     audioBuffer = Buffer.from(await blob.arrayBuffer());
-    resolvedMimeType = mimeType || blob.type || 'audio/wav';
+    resolvedMimeType = normalizeMime(mimeType || blob.type);
     resolvedFilename = filename || audioPath.split('/').pop() || 'audio.wav';
   } else if (audioBase64) {
     audioBuffer = Buffer.from(audioBase64, 'base64');
-    resolvedMimeType = mimeType || 'audio/wav';
+    resolvedMimeType = normalizeMime(mimeType);
     resolvedFilename = filename || 'audio.wav';
   } else {
     return res.status(400).json({ error: 'Missing audioBase64 or audioPath' });

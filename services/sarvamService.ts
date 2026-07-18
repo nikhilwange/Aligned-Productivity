@@ -22,6 +22,13 @@ const getAuthToken = async (): Promise<string> => {
   return token;
 };
 
+// Sarvam rejects MIME types that carry parameters (e.g. `audio/webm;codecs=opus`
+// from MediaRecorder) even though the base type `audio/webm` is allowed. Strip
+// the parameter before sending. The proxy normalizes too, but doing it here
+// keeps the request correct at the source.
+const normalizeMime = (m?: string, fallback = "audio/wav"): string =>
+  (m || fallback).split(";")[0].trim() || fallback;
+
 const blobToBase64 = (blob: Blob): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -40,7 +47,7 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 // Single-chunk path: small audio sent as base64 (no storage round-trip needed)
 const transcribeChunkInline = async (audioBlob: Blob, token: string): Promise<string> => {
   const audioBase64 = await blobToBase64(audioBlob);
-  const mimeType = audioBlob.type || "audio/wav";
+  const mimeType = normalizeMime(audioBlob.type);
 
   const res = await fetch("/api/sarvam/transcribe", {
     method: "POST",
@@ -82,7 +89,7 @@ const transcribeChunkViaStorage = async (
     },
     body: JSON.stringify({
       audioPath: storagePath,
-      mimeType: audioBlob.type || "audio/wav",
+      mimeType: normalizeMime(audioBlob.type),
     }),
   });
 
