@@ -21,7 +21,7 @@ import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage } from './services/storageService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems } from './services/supabaseService';
 import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery, clearChunkTranscripts, clearAllChunkTranscripts, purgeStaleChunkTranscripts, getSegmentManifest, getAllSegmentManifests, getSegmentBlob, clearSegmentManifest, purgeStaleSegmentManifests, SegmentManifest } from './services/recordingRecovery';
-import { reuploadPendingSegments } from './services/segmentRecorder';
+import { reuploadPendingSegments, getActiveSegmentSessionId } from './services/segmentRecorder';
 import { USE_SEGMENTED_RECORDING } from './config/features';
 import { useWakeLock } from './hooks/useWakeLock';
 import ProcessingBanner from './components/ProcessingBanner';
@@ -176,17 +176,32 @@ const App: React.FC = () => {
   useEffect(() => {
     // Register the auth listener FIRST so we never miss events like
     // PASSWORD_RECOVERY that Supabase fires when it processes URL tokens.
+    // Apply a Supabase session user to state, but ONLY when the user id
+    // actually changes. Supabase re-emits SIGNED_IN / TOKEN_REFRESHED on token
+    // refresh and on tab focus; creating a new `user` object each time would
+    // re-run the loadData effect (deps: [user]) mid-recording and let segment
+    // recovery mistake the live recording for a crashed one. Returning `prev`
+    // for the same id keeps the reference stable so the effect does not re-run.
+    // Genuine changes (sign-out → null, switching users → different id) still
+    // update state.
+    const applySessionUser = (sessionUser: { id: string; email?: string | null; user_metadata?: any }) => {
+      setUser(prev => {
+        if (prev && prev.id === sessionUser.id) return prev; // same user — no churn
+        return {
+          id: sessionUser.id,
+          email: sessionUser.email || '',
+          name: sessionUser.user_metadata?.name || sessionUser.email?.split('@')[0] || 'User',
+        };
+      });
+    };
+
     const { data: authData } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'PASSWORD_RECOVERY') {
         setShowResetPassword(true);
         return;
       }
       if (session?.user) {
-        setUser({
-          id: session.user.id,
-          email: session.user.email || '',
-          name: session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'User'
-        });
+        applySessionUser(session.user);
       } else {
         setUser(null);
         setRecordings([]);
@@ -201,11 +216,7 @@ const App: React.FC = () => {
         if (error) {
           console.error('Error getting session:', error);
         } else if (data?.session?.user) {
-          setUser({
-            id: data.session.user.id,
-            email: data.session.user.email || '',
-            name: data.session.user.user_metadata?.name || data.session.user.email?.split('@')[0] || 'User'
-          });
+          applySessionUser(data.session.user);
         }
       } catch (err) {
         console.error('Auth initialization error:', err);
@@ -354,11 +365,21 @@ const App: React.FC = () => {
         if (USE_SEGMENTED_RECORDING) {
           try {
             const manifests = await getAllSegmentManifests();
+            const activeSegId = getActiveSegmentSessionId();
+            const SEVEN_MIN_MS = 7 * 60 * 1000;
             const candidates = manifests
               .filter(m => {
                 if (m.segments.length === 0) return false;
+                // Never recover the recording in progress in THIS tab.
+                if (m.sessionId === activeSegId) return false;
+                // Freshness guard: a manifest written in the last 7 minutes is
+                // almost certainly still being recorded (another tab/device) or
+                // is mid-handoff — treat it as live, not crashed.
+                if (m.updatedAt && (Date.now() - m.updatedAt) < SEVEN_MIN_MS) return false;
                 const sess = data.find(r => r.recoveryId === m.sessionId);
-                return !sess || sess.status !== 'completed';
+                // Skip if already completed or currently being processed.
+                if (sess && (sess.status === 'completed' || sess.status === 'processing')) return false;
+                return true;
               })
               .sort((a, b) => b.startedAt - a.startedAt);
 

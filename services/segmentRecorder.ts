@@ -38,6 +38,16 @@ export function extFromMime(mime: string | undefined): string {
 export const segmentStoragePath = (sessionId: string, index: number, ext: string) =>
   `recordings/${sessionId}/seg-${String(index).padStart(4, '0')}.${ext}`;
 
+// The recording currently in progress IN THIS TAB. Set while a SegmentRecorder
+// is live and cleared when it stops, so crash-recovery can tell a still-
+// recording manifest apart from a genuinely crashed one and never "recover"
+// (and then delete) an active recording. Module-level so it resets on reload —
+// a real crash leaves no active id, so recovery still works.
+let activeSegmentSessionId: string | null = null;
+export function getActiveSegmentSessionId(): string | null {
+  return activeSegmentSessionId;
+}
+
 export interface SegmentRecorderOptions {
   stream: MediaStream;
   sessionId: string; // == the recording's recoveryId
@@ -72,6 +82,7 @@ export class SegmentRecorder {
 
   start(): void {
     this.stopped = false;
+    activeSegmentSessionId = this.sessionId; // mark this tab as actively recording
     this.beginSegment();
   }
 
@@ -192,6 +203,10 @@ export class SegmentRecorder {
    */
   async stop(): Promise<string> {
     this.stopped = true;
+    // No longer actively recording in this tab. The freshness guard (recent
+    // updatedAt) still protects the brief handoff/processing window that
+    // follows, so recovery can't grab this manifest before it's handled.
+    if (activeSegmentSessionId === this.sessionId) activeSegmentSessionId = null;
     if (this.rotationTimer !== null) {
       clearTimeout(this.rotationTimer);
       this.rotationTimer = null;
