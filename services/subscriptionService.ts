@@ -154,8 +154,13 @@ export const createRazorpaySubscription = async (
   cycle: 'monthly' | 'annual',
 ): Promise<CreateSubscriptionResponse> => {
   const res = await authedFetch('/api/razorpay/create-subscription', { cycle });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
+  // Parse defensively: a 404/5xx (or a missing /api layer in local dev) can
+  // return an empty or non-JSON body, which would otherwise surface as the
+  // cryptic "Unexpected end of JSON input" instead of a useful message.
+  const json = await res.json().catch(() => null);
+  if (!res.ok || !json) {
+    throw new Error(json?.error ?? `Checkout is unavailable right now (HTTP ${res.status}). Please try again shortly.`);
+  }
   return json as CreateSubscriptionResponse;
 };
 
