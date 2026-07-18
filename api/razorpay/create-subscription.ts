@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { requireUser } from '../_lib/jwt';
-import { getSupabaseAdmin } from '../_lib/supabaseAdmin';
-import { createCustomer, createSubscription } from '../_lib/razorpay';
+import { requireUser } from '../_lib/jwt.js';
+import { getSupabaseAdmin } from '../_lib/supabaseAdmin.js';
+import { createCustomer, createSubscription } from '../_lib/razorpay.js';
 
 type Cycle = 'monthly' | 'annual';
 

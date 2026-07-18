@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import crypto from 'crypto';
 import getRawBody from 'raw-body';
-import { getSupabaseAdmin } from '../_lib/supabaseAdmin';
+import { getSupabaseAdmin } from '../_lib/supabaseAdmin.js';
 
 // Razorpay → us. No JWT. Auth = HMAC over the raw request body, keyed by
 // the webhook secret configured in Razorpay's dashboard.

@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { requireUser } from '../_lib/jwt';
-import { getSupabaseAdmin } from '../_lib/supabaseAdmin';
-import { cancelSubscription } from '../_lib/razorpay';
+import { requireUser } from '../_lib/jwt.js';
+import { getSupabaseAdmin } from '../_lib/supabaseAdmin.js';
+import { cancelSubscription } from '../_lib/razorpay.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
