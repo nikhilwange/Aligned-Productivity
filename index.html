@@ -895,10 +895,9 @@
 </head>
   <body class="antialiased">
     <div id="root"></div>
-    <!-- Razorpay Checkout SDK (subscription + payment widget). Loaded async
-         so it doesn't block first paint; PricingView handles the case where
-         the user clicks Subscribe before the script lands. -->
-    <script src="https://checkout.razorpay.com/v1/checkout.js" async></script>
+    <!-- Razorpay Checkout SDK is loaded lazily by PricingView when the user
+         actually starts a subscription — no third-party script for visitors
+         who never touch billing (and none at all while billing is disabled). -->
     <script type="module" src="index.tsx"></script>
   </body>
 </html>

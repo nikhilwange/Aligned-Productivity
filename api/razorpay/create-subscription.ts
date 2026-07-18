@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { decodeAuthHeader } from '../_lib/jwt';
+import { requireUser } from '../_lib/jwt';
 import { getSupabaseAdmin } from '../_lib/supabaseAdmin';
 import { createCustomer, createSubscription } from '../_lib/razorpay';
 
@@ -16,10 +16,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { sub: userId, email } = decodeAuthHeader(req.headers.authorization);
-  if (!userId) {
+  // Verified against Supabase Auth — a forged/expired token gets a 401 here.
+  const user = await requireUser(req.headers.authorization);
+  if (!user) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  const userId = user.id;
+  const email = user.email;
 
   const cycle = req.body?.cycle as Cycle | undefined;
   if (cycle !== 'monthly' && cycle !== 'annual') {

@@ -3,13 +3,40 @@ import { PLAN_DISPLAY, PRO_FEATURE_BULLETS } from '../config/plans';
 import { createRazorpaySubscription } from '../services/subscriptionService';
 import type { PlanCycle, User } from '../types';
 
-// Razorpay Checkout SDK global. We load it via <script> in index.html; the
-// constructor signature is shaped by their docs at
+// Razorpay Checkout SDK global. Loaded lazily by loadCheckoutScript() the
+// first time the user starts a subscription — visitors who never open billing
+// load no third-party script. Constructor signature shaped by their docs at
 // https://razorpay.com/docs/payments/payment-gateway/web-integration/standard/
 declare global {
   interface Window {
     Razorpay?: new (options: RazorpayCheckoutOptions) => { open: () => void };
   }
+}
+
+const CHECKOUT_SRC = 'https://checkout.razorpay.com/v1/checkout.js';
+let checkoutScriptPromise: Promise<void> | null = null;
+
+// Inject checkout.js once and resolve when window.Razorpay is available.
+// Rejects on network/script failure so the caller can show a readable error.
+function loadCheckoutScript(): Promise<void> {
+  if (window.Razorpay) return Promise.resolve();
+  if (checkoutScriptPromise) return checkoutScriptPromise;
+  checkoutScriptPromise = new Promise<void>((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = CHECKOUT_SRC;
+    script.async = true;
+    script.onload = () => {
+      if (window.Razorpay) resolve();
+      else reject(new Error('Payment widget failed to initialise.'));
+    };
+    script.onerror = () => {
+      // Allow a retry on the next click rather than caching the failure.
+      checkoutScriptPromise = null;
+      reject(new Error('Could not load the payment widget. Check your connection and try again.'));
+    };
+    document.head.appendChild(script);
+  });
+  return checkoutScriptPromise;
 }
 
 interface RazorpayCheckoutOptions {
@@ -37,14 +64,15 @@ const PricingView: React.FC<PricingViewProps> = ({ user, variant = 'page', onClo
 
   const handleSubscribe = async (cycle: PlanCycle) => {
     setError(null);
-    if (!window.Razorpay) {
-      setError('Payment widget is loading. Please try again in a moment.');
-      return;
-    }
     setBusy(cycle);
     try {
-      const { subscription_id, key_id } = await createRazorpaySubscription(cycle);
-      const rzp = new window.Razorpay({
+      // Load the checkout SDK on demand (no-op if already present), in
+      // parallel with creating the subscription server-side.
+      const [{ subscription_id, key_id }] = await Promise.all([
+        createRazorpaySubscription(cycle),
+        loadCheckoutScript(),
+      ]);
+      const rzp = new window.Razorpay!({
         key: key_id,
         subscription_id,
         name: 'Aligned',

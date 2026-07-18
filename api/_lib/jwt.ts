@@ -1,37 +1,44 @@
-// Vercel-side JWT helpers.
+// Vercel-side auth helper for user-facing endpoints.
 //
-// We don't verify the signature here — the Vercel functions are reached from
-// our own frontend which is already authenticated against Supabase. If we
-// wanted full verification we'd need the project's JWT secret; for the
-// Razorpay flows that secret isn't worth shipping to Vercel just to re-check
-// what Supabase already validated. Decode-only is enough to fish out the
-// user_id (`sub`) and email claim so we can look the user up server-side.
+// SECURITY: tokens must be VERIFIED, never merely decoded. These functions are
+// public endpoints — a decoded-only `sub` claim can be forged by anyone, which
+// would let an attacker act as any user (e.g. cancel their subscription).
+// Verification does NOT require the project's JWT secret: Supabase validates
+// the token server-side via `auth.getUser(token)` using just the anon key —
+// the same pattern api/sarvam/transcribe.ts uses.
 
-export interface DecodedJwt {
-  sub: string | null;
+import { createClient } from '@supabase/supabase-js';
+
+export interface VerifiedUser {
+  id: string;
   email: string | null;
-  role: string | null;
-  raw: Record<string, unknown> | null;
 }
 
-const EMPTY: DecodedJwt = { sub: null, email: null, role: null, raw: null };
+/**
+ * Verify the Bearer token against Supabase Auth and return the user, or null
+ * if the header is missing/invalid/expired. Callers should respond 401 on null.
+ */
+export async function requireUser(authHeader: string | undefined | null): Promise<VerifiedUser | null> {
+  const token = authHeader?.replace(/^Bearer\s+/i, '').trim();
+  if (!token) return null;
 
-export function decodeAuthHeader(authHeader: string | undefined | null): DecodedJwt {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !supabaseAnonKey) {
+    // Misconfiguration — treat as auth failure rather than crashing the route.
+    console.error('[auth] SUPABASE_URL / SUPABASE_ANON_KEY not set');
+    return null;
+  }
+
   try {
-    const token = authHeader?.replace(/^Bearer\s+/i, '').trim();
-    if (!token) return EMPTY;
-    const parts = token.split('.');
-    if (parts.length < 2) return EMPTY;
-    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
-    const json = JSON.parse(Buffer.from(padded, 'base64').toString('utf-8')) as Record<string, unknown>;
-    return {
-      sub: typeof json.sub === 'string' ? json.sub : null,
-      email: typeof json.email === 'string' ? json.email : null,
-      role: typeof json.role === 'string' ? json.role : null,
-      raw: json,
-    };
-  } catch {
-    return EMPTY;
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (error || !user) return null;
+    return { id: user.id, email: user.email ?? null };
+  } catch (err) {
+    console.error('[auth] token verification failed:', err);
+    return null;
   }
 }

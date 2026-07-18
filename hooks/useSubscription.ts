@@ -31,7 +31,21 @@ const INITIAL: SubscriptionState = {
 };
 
 function derive(sub: Subscription | null, usage: UsageMeter): SubscriptionState {
-  const isPro = sub?.planTier === 'pro' && (sub.status === 'active' || sub.status === 'halted');
+  // Pro access rules, matching the webhook's semantics:
+  //   - active            → pro
+  //   - halted / pending  → payment trouble; keep access rather than yanking
+  //                         it mid-billing-issue (webhook keeps tier 'pro')
+  //   - cancelled         → cancel-at-cycle-end: access remains until the
+  //                         period actually ends ("You keep Pro until the
+  //                         period ends"), then falls back to free
+  const isPro =
+    sub?.planTier === 'pro' &&
+    (sub.status === 'active' ||
+      sub.status === 'halted' ||
+      sub.status === 'pending' ||
+      (sub.status === 'cancelled' &&
+        sub.currentPeriodEnd != null &&
+        sub.currentPeriodEnd > Date.now()));
   const caps = isPro ? null : { meetings: FREE_CAP_MEETINGS, minutes: FREE_CAP_MINUTES };
   const meetings = usage.meetingsCount;
   const minutes = usage.minutesUsed;
