@@ -109,7 +109,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
                        fontWeight: 500, fontSize: 14, border: 'none', cursor: 'pointer',
                        fontFamily: DISPLAY }),
             }}>
-              Download
+              Start free
             </button>
           </div>
         </nav>
@@ -149,7 +149,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
 
           {/* CTA row */}
           <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
-            <button onClick={onGetStarted} style={ctaPrimary}>Download for Mac</button>
+            <button onClick={onGetStarted} style={ctaPrimary}>Start for free</button>
             <a href="#demo" style={ctaSecondary}>Watch a 90-sec demo →</a>
           </div>
 
@@ -158,7 +158,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             display: 'flex', justifyContent: 'center', gap: 8, flexWrap: 'wrap',
             fontSize: 12.5, color: C.textFaint,
           }}>
-            <span>macOS 13+ · 28 MB</span>
+            <span>No install · Works in your browser</span>
             <span>·</span>
             <span>Free for personal use</span>
             <span>·</span>

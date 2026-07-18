@@ -19,4 +19,4 @@ export const USE_SEGMENTED_RECORDING = true;
 // Flip to TRUE only once Razorpay is configured in production (RAZORPAY_* env,
 // VITE_RAZORPAY_PLAN_ID_*, and the dashboard webhook). Kept off so Phase 1/2
 // recording can ship to production without turning on billing.
-export const BILLING_ENABLED = false;
+export const BILLING_ENABLED = true;
