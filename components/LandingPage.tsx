@@ -374,13 +374,13 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             {[
               {
                 tag: 'Monthly',
-                price: '₹499',
+                price: '₹799',
                 cadence: 'per month',
                 pill: undefined as string | undefined,
               },
               {
                 tag: 'Annual',
-                price: '₹4,999',
+                price: '₹7,999',
                 cadence: 'per year',
                 pill: 'Save 17%',
               },

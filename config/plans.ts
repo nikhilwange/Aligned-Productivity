@@ -32,13 +32,13 @@ export const PLAN_DISPLAY: Record<PlanCycle, PlanDisplay> = {
   monthly: {
     cycle: 'monthly',
     label: 'Monthly',
-    priceInr: 499,
+    priceInr: 799,
     perPeriodLabel: 'per month',
   },
   annual: {
     cycle: 'annual',
     label: 'Annual',
-    priceInr: 4999,
+    priceInr: 7999,
     perPeriodLabel: 'per year',
     pillLabel: 'Save 17%',
   },
