@@ -22,7 +22,7 @@ import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage } from
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems } from './services/supabaseService';
 import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery, clearChunkTranscripts, clearAllChunkTranscripts, purgeStaleChunkTranscripts, getSegmentManifest, getAllSegmentManifests, getSegmentBlob, clearSegmentManifest, purgeStaleSegmentManifests, SegmentManifest } from './services/recordingRecovery';
 import { reuploadPendingSegments, getActiveSegmentSessionId } from './services/segmentRecorder';
-import { USE_SEGMENTED_RECORDING } from './config/features';
+import { USE_SEGMENTED_RECORDING, BILLING_ENABLED } from './config/features';
 import { useWakeLock } from './hooks/useWakeLock';
 import ProcessingBanner from './components/ProcessingBanner';
 import RecoveryModal from './components/RecoveryModal';
@@ -108,6 +108,8 @@ const App: React.FC = () => {
   // explanation copy and returns false. Callers (handleStartNew /
   // handleManualEntry) bail when this returns false.
   const checkRecordingAllowed = useCallback((): boolean => {
+    // Billing off: no usage cap / paywall — every recording is allowed.
+    if (!BILLING_ENABLED) return true;
     const decision = canStartNewRecording(subscriptionState);
     if (decision.allowed) return true;
     setUpgradeModal({ open: true, reason: decision.message });
@@ -1308,7 +1310,7 @@ const App: React.FC = () => {
               hasSarvamKey={hasSarvamKey}
               onLogout={handleLogout}
             />
-          ) : activeRecordingId === 'billing' || activeRecordingId === 'pricing' ? (
+          ) : BILLING_ENABLED && (activeRecordingId === 'billing' || activeRecordingId === 'pricing') ? (
             <div className="h-full overflow-y-auto">
               <div className="max-w-3xl mx-auto px-6 md:px-12 pt-8">
                 <BillingSection
@@ -1448,7 +1450,7 @@ const App: React.FC = () => {
       )}
 
       {/* Paywall — opens when canStartNewRecording returns false. */}
-      {user && (
+      {BILLING_ENABLED && user && (
         <UpgradeModal
           user={user}
           open={upgradeModal.open}

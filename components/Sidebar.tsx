@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { RecordingSession, User, TrackedActionItem } from '../types';
 import { formatDateShort } from '../utils/formatters';
+import { BILLING_ENABLED } from '../config/features';
 
 interface SidebarProps {
   user: User | null;
@@ -177,7 +178,8 @@ const Sidebar: React.FC<SidebarProps> = ({
             <span className="flex-1 text-left">Manual Entry</span>
           </button>
 
-          {/* Billing — secondary action */}
+          {/* Billing — secondary action (hidden while billing is disabled) */}
+          {BILLING_ENABLED && (
           <button
             onClick={() => onSelect('billing')}
             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
@@ -191,6 +193,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             </svg>
             <span className="flex-1 text-left">Billing</span>
           </button>
+          )}
 
           {/* Settings — secondary action */}
           <button

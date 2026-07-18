@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { BILLING_ENABLED } from '../config/features';
 
 interface LandingPageProps {
   onGetStarted: () => void;
@@ -94,7 +95,9 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
           {/* Center links */}
           <div style={{ display: 'flex', gap: 26, color: C.textMuted }}>
             <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Product</a>
-            <a href="#pricing" style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Pricing</a>
+            {BILLING_ENABLED && (
+              <a href="#pricing" style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Pricing</a>
+            )}
             <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Customers</a>
             <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Changelog</a>
           </div>
@@ -354,7 +357,8 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
           </div>
         </section>
 
-        {/* ══════ Pricing ══════ */}
+        {/* ══════ Pricing (hidden while billing is disabled) ══════ */}
+        {BILLING_ENABLED && (
         <section id="pricing" style={{ margin: '80px auto 0', maxWidth: 720, scrollMarginTop: 80 }}>
           <h2 style={{
             fontFamily: DISPLAY, fontSize: 'clamp(26px, 4vw, 36px)',
@@ -434,6 +438,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             Payments processed by Razorpay
           </p>
         </section>
+        )}
 
         {/* ══════ Privacy — how we treat your audio ══════ */}
         <section style={{ margin: '80px auto 0', maxWidth: 880 }}>
