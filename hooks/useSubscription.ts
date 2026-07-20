@@ -5,7 +5,7 @@ import {
   subscribeToBillingChanges,
 } from '../services/subscriptionService';
 import { FREE_CAP_MEETINGS } from '../config/plans';
-import { TIERS, effectiveTier } from '../config/tiers';
+import { TIERS, effectiveTier, hasUnlimitedAccess } from '../config/tiers';
 import type { Subscription, SubscriptionState, UsageMeter } from '../types';
 
 // Single source of truth for "what tier is this user on and how much have they
@@ -33,7 +33,7 @@ const INITIAL: SubscriptionState = {
   loading: true,
 };
 
-function derive(sub: Subscription | null, usage: UsageMeter): SubscriptionState {
+function derive(sub: Subscription | null, usage: UsageMeter, unlimited: boolean): SubscriptionState {
   // Resolve the effective tier from the subscription. `effectiveTier` keeps
   // paid access through payment trouble (halted / pending) and until
   // period-end after a cancellation — matching the webhook's semantics.
@@ -48,19 +48,23 @@ function derive(sub: Subscription | null, usage: UsageMeter): SubscriptionState 
   const minutes = usage.minutesUsed;
   const meetings = usage.meetingsCount;
 
+  // Unlimited-access accounts (admin allowlist) have no monthly budget and no
+  // per-session cap, and are never over cap — the paywall reads these fields.
+  const monthlyMinutes = unlimited ? Number.POSITIVE_INFINITY : tierConfig.monthlyMinutes;
+
   // Every tier now has a monthly audio-minutes budget; Free enforces it as a
   // hard block, Pro/Max as a soft cap (gating lives in usePaywall). Meetings
   // are no longer part of gating — kept for legacy display only.
-  const caps = { meetings: FREE_CAP_MEETINGS, minutes: tierConfig.monthlyMinutes };
-  const capPercent = Math.min(1, minutes / tierConfig.monthlyMinutes);
-  const isOverCap = minutes >= tierConfig.monthlyMinutes;
+  const caps = { meetings: FREE_CAP_MEETINGS, minutes: monthlyMinutes };
+  const capPercent = unlimited ? 0 : Math.min(1, minutes / tierConfig.monthlyMinutes);
+  const isOverCap = unlimited ? false : minutes >= tierConfig.monthlyMinutes;
 
   return {
     subscription: sub,
     tier,
     usage: { meetings, minutes },
     caps,
-    sessionCapMinutes: tierConfig.sessionCapMinutes,
+    sessionCapMinutes: unlimited ? null : tierConfig.sessionCapMinutes,
     isPro,
     isOverCap,
     capPercent,
@@ -68,8 +72,12 @@ function derive(sub: Subscription | null, usage: UsageMeter): SubscriptionState 
   };
 }
 
-export function useSubscription(userId: string | null): SubscriptionState & { refetch: () => void } {
+export function useSubscription(
+  userId: string | null,
+  email?: string | null,
+): SubscriptionState & { refetch: () => void } {
   const [state, setState] = useState<SubscriptionState>(INITIAL);
+  const unlimited = hasUnlimitedAccess(email);
 
   const refetch = useCallback(async () => {
     if (!userId) return;
@@ -77,8 +85,8 @@ export function useSubscription(userId: string | null): SubscriptionState & { re
       fetchSubscription(userId),
       fetchUsageThisMonth(userId),
     ]);
-    setState(derive(sub, usage));
-  }, [userId]);
+    setState(derive(sub, usage, unlimited));
+  }, [userId, unlimited]);
 
   useEffect(() => {
     if (!userId) {
@@ -92,7 +100,7 @@ export function useSubscription(userId: string | null): SubscriptionState & { re
         fetchSubscription(userId),
         fetchUsageThisMonth(userId),
       ]);
-      if (!cancelled) setState(derive(sub, usage));
+      if (!cancelled) setState(derive(sub, usage, unlimited));
     })();
     const unsub = subscribeToBillingChanges(userId, () => {
       if (!cancelled) void refetch();
@@ -101,7 +109,7 @@ export function useSubscription(userId: string | null): SubscriptionState & { re
       cancelled = true;
       unsub();
     };
-  }, [userId, refetch]);
+  }, [userId, unlimited, refetch]);
 
   return { ...state, refetch };
 }

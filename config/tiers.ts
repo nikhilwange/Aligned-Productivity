@@ -34,6 +34,22 @@ export const TIERS: Record<PlanTier, TierConfig> = {
 
 export const ALL_TIERS: PlanTier[] = ['free', 'pro', 'max'];
 
+// ─── Admin / unlimited-access allowlist ──────────────────────────────────────
+//
+// Accounts listed here bypass ALL usage caps and paywalls — no monthly-minutes
+// budget, no per-session cap, never blocked. Kept as an explicit code allowlist
+// so it needs no env var or DB row to take effect. This is the CLIENT copy;
+// it MUST be mirrored server-side in api/_lib/tiers.ts and inline in the
+// gemini-transcribe-audio Edge Function (the two authoritative gates).
+const UNLIMITED_ACCESS_EMAILS = new Set<string>([
+  'nikhil.wange2011@gmail.com',
+]);
+
+/** True when the given email has unlimited (uncapped) access. */
+export function hasUnlimitedAccess(email: string | null | undefined): boolean {
+  return !!email && UNLIMITED_ACCESS_EMAILS.has(email.trim().toLowerCase());
+}
+
 // Warn the user once they cross this fraction of their monthly budget.
 export const USAGE_WARN_THRESHOLD = 0.8;
 

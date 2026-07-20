@@ -25,7 +25,9 @@ export function canStartNewRecording(state: SubscriptionState): PaywallDecision 
   }
 
   const { tier } = state;
-  const limit = TIERS[tier].monthlyMinutes;
+  // state.caps.minutes is the tier's monthly budget, or Infinity for
+  // unlimited-access (admin allowlist) accounts — which are never blocked.
+  const limit = state.caps.minutes;
   if (state.usage.minutes < limit) return { allowed: true };
 
   // Over budget for this tier — block starting a new session.

@@ -14,6 +14,19 @@ export const TIER_MONTHLY_MINUTES: Record<ServerTier, number> = {
   max: 3600,
 };
 
+// ─── Admin / unlimited-access allowlist ──────────────────────────────────────
+// Accounts here bypass the usage gate entirely. Server mirror of the client
+// allowlist in config/tiers.ts and the inline copy in the
+// gemini-transcribe-audio Edge Function. Keep all three in sync.
+const UNLIMITED_ACCESS_EMAILS = new Set<string>([
+  'nikhil.wange2011@gmail.com',
+]);
+
+/** True when the given email has unlimited (uncapped) access. */
+export function hasUnlimitedAccess(email: string | null | undefined): boolean {
+  return !!email && UNLIMITED_ACCESS_EMAILS.has(email.trim().toLowerCase());
+}
+
 // Razorpay plan IDs come from (non-VITE) server env. Monthly + Annual Pro map
 // to the same `pro` tier; Max is its own. Unknown/empty → free.
 export function tierFromPlanId(planId: string | null | undefined): ServerTier {

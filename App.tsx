@@ -90,7 +90,7 @@ const App: React.FC = () => {
   // ─── Subscription / paywall state ─────────────────────────────────────────
   // Single source of truth for plan tier + usage caps. Realtime-subscribed
   // inside the hook so the webhook-driven tier flip lands without refresh.
-  const subscriptionState = useSubscription(user?.id ?? null);
+  const subscriptionState = useSubscription(user?.id ?? null, user?.email ?? null);
   const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; reason?: string; offerTiers?: PlanTier[] }>({ open: false });
 
   // ─── Processing UX State ──────────────────────────────────────────────────

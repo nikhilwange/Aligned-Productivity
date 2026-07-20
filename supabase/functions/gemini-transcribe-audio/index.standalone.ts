@@ -77,6 +77,33 @@ interface GateVerdict {
   limitMinutes: number;
 }
 
+// ─── Admin / unlimited-access allowlist ──────────────────────────────────────
+// Accounts here bypass the usage gate entirely. Inline copy of the client
+// allowlist (config/tiers.ts) and the server one (api/_lib/tiers.ts). Keep all
+// three in sync. This function only has the JWT, so the email is read from the
+// token's `email` claim.
+const UNLIMITED_ACCESS_EMAILS = new Set<string>([
+  'nikhil.wange2011@gmail.com',
+]);
+
+function emailFromAuthHeader(authHeader: string): string | null {
+  try {
+    const token = authHeader.replace(/^Bearer\s+/i, '');
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    const b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+    const claims = JSON.parse(atob(b64 + pad));
+    return typeof claims.email === 'string' ? claims.email : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function hasUnlimitedAccess(email: string | null): boolean {
+  return !!email && UNLIMITED_ACCESS_EMAILS.has(email.trim().toLowerCase());
+}
+
 // Reads the caller's tier + this month's COMPLETED billable minutes (via the
 // monthly_audio_usage() RPC, which excludes in-flight 'processing' sessions so
 // the current recording always finishes). Talks to PostgREST directly with the
@@ -85,6 +112,10 @@ interface GateVerdict {
 // FAIL OPEN: returns null on ANY error so metering can never break the core
 // transcription pipeline.
 async function evaluateUsageGate(authHeader: string): Promise<GateVerdict | null> {
+  // Admin / unlimited-access accounts are never over cap.
+  if (hasUnlimitedAccess(emailFromAuthHeader(authHeader))) {
+    return { over: false, tier: 'max', usedMinutes: 0, limitMinutes: TIER_MONTHLY_MINUTES.max };
+  }
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const anonKey = Deno.env.get('SUPABASE_ANON_KEY');

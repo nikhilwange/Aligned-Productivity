@@ -50,7 +50,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // interrupt an in-flight session. The RPC counts only COMPLETED sessions, so
   // once a session starts it always finishes. Fail-open inside the helper.
   if (req.body?.sessionStart) {
-    const gate = await checkUsageAllowed(userSupabase, user.id);
+    const gate = await checkUsageAllowed(userSupabase, user.id, user.email);
     if (!gate.allowed) {
       return res.status(402).json({
         error: 'usage_limit',

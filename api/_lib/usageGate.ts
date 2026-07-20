@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { TIER_MONTHLY_MINUTES, resolveTierFromSubscription, type ServerTier } from './tiers.js';
+import { TIER_MONTHLY_MINUTES, resolveTierFromSubscription, hasUnlimitedAccess, type ServerTier } from './tiers.js';
 
 export interface UsageGateResult {
   allowed: boolean;
@@ -18,7 +18,12 @@ export interface UsageGateResult {
 export async function checkUsageAllowed(
   userClient: SupabaseClient,
   userId: string,
+  email?: string | null,
 ): Promise<UsageGateResult> {
+  // Admin / unlimited-access accounts skip metering entirely.
+  if (hasUnlimitedAccess(email)) {
+    return { allowed: true, tier: 'max', usedMinutes: 0, limitMinutes: Number.POSITIVE_INFINITY };
+  }
   try {
     const { data: sub } = await userClient
       .from('subscriptions')
