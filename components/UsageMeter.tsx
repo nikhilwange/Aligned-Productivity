@@ -14,12 +14,29 @@ const TIER_LABEL: Record<string, string> = { free: 'Free', pro: 'Pro', max: 'Max
 const UsageMeter: React.FC<UsageMeterProps> = ({ state, onUpgrade }) => {
   if (state.loading) return null;
 
-  const limitMinutes = TIERS[state.tier].monthlyMinutes;
+  // Unlimited-access (admin allowlist) accounts have an Infinity cap — show a
+  // simple "Unlimited" state instead of a bar against a finite budget.
+  const unlimited = !Number.isFinite(state.caps.minutes);
   const usedHours = (state.usage.minutes / 60).toFixed(1);
-  const limitHrs = minutesToHoursLabel(limitMinutes);
+  const limitHrs = minutesToHoursLabel(TIERS[state.tier].monthlyMinutes);
   const pct = Math.min(100, Math.round(state.capPercent * 100));
-  const danger = state.capPercent >= 0.9;
+  const danger = !unlimited && state.capPercent >= 0.9;
   const barColor = danger ? 'bg-red-500' : 'bg-amber-500/70';
+
+  if (unlimited) {
+    return (
+      <div className="px-3 py-2 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+            Usage
+          </span>
+          <span className="text-[11px] font-medium text-[var(--text-secondary)]">
+            {usedHours} hrs · Unlimited
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="px-3 py-2 rounded-xl bg-white/[0.03] border border-white/[0.06]">
