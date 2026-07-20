@@ -2,14 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { requireUser } from '../_lib/jwt.js';
 import { getSupabaseAdmin } from '../_lib/supabaseAdmin.js';
 import { createCustomer, createSubscription } from '../_lib/razorpay.js';
-
-type Cycle = 'monthly' | 'annual';
-
-function planIdFor(cycle: Cycle): string | undefined {
-  return cycle === 'monthly'
-    ? process.env.RAZORPAY_PLAN_ID_MONTHLY
-    : process.env.RAZORPAY_PLAN_ID_ANNUAL;
-}
+import { planConfigFor, type CheckoutPlan } from '../_lib/tiers.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -24,24 +17,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const userId = user.id;
   const email = user.email;
 
-  const cycle = req.body?.cycle as Cycle | undefined;
-  if (cycle !== 'monthly' && cycle !== 'annual') {
-    return res.status(400).json({ error: 'cycle must be "monthly" or "annual"' });
+  // Prefer the new `plan` selector (monthly | annual | max); fall back to the
+  // legacy `cycle` field for older clients.
+  const plan = (req.body?.plan ?? req.body?.cycle) as CheckoutPlan | undefined;
+  if (plan !== 'monthly' && plan !== 'annual' && plan !== 'max') {
+    return res.status(400).json({ error: 'plan must be "monthly", "annual", or "max"' });
   }
+  const { planId, cycle, envKey } = planConfigFor(plan);
 
   // Fail loudly and specifically on missing config rather than throwing an
   // opaque 500 downstream (getSupabaseAdmin / razorpay authHeader would throw).
   const missingEnv = [
     'RAZORPAY_KEY_ID',
     'RAZORPAY_KEY_SECRET',
-    `RAZORPAY_PLAN_ID_${cycle.toUpperCase()}`,
+    envKey,
     'SUPABASE_URL',
     'SUPABASE_SERVICE_ROLE_KEY',
   ].filter((k) => !process.env[k]);
   if (missingEnv.length) {
     return res.status(500).json({ error: `Server misconfiguration: missing env ${missingEnv.join(', ')}` });
   }
-  const planId = planIdFor(cycle)!;
+  const resolvedPlanId = planId!;
   const keyId = process.env.RAZORPAY_KEY_ID!;
 
   let admin;
@@ -96,9 +92,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let subscription;
   try {
     subscription = await createSubscription({
-      plan_id: planId,
+      plan_id: resolvedPlanId,
       customer_id: customerId,
-      notes: { user_id: userId, app: 'aligned' },
+      notes: { user_id: userId, app: 'aligned', plan },
     });
   } catch (err: any) {
     console.error('[create-subscription] subscription create failed:', err);

@@ -1,10 +1,13 @@
 import React from 'react';
 import PricingView from './PricingView';
-import type { User } from '../types';
+import type { PlanTier, User } from '../types';
 
 interface UpgradeModalProps {
   user: User;
   reason?: string;
+  // Which paid tiers to offer. Free hitting the cap → [pro, max]; a Pro user
+  // hitting the soft cap → [max]. Undefined shows all paid tiers.
+  offerTiers?: PlanTier[];
   open: boolean;
   onClose: () => void;
   onSubscribed?: () => void;
@@ -12,7 +15,7 @@ interface UpgradeModalProps {
 
 // Slim wrapper around PricingView for the blocking in-app upgrade flow.
 // Reason copy explains *why* the modal opened (usually cap-hit context).
-const UpgradeModal: React.FC<UpgradeModalProps> = ({ user, reason, open, onClose, onSubscribed }) => {
+const UpgradeModal: React.FC<UpgradeModalProps> = ({ user, reason, offerTiers, open, onClose, onSubscribed }) => {
   if (!open) return null;
   return (
     <div
@@ -30,7 +33,13 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({ user, reason, open, onClose
             </div>
           </div>
         )}
-        <PricingView user={user} variant="modal" onClose={onClose} onSubscribed={onSubscribed} />
+        <PricingView
+          user={user}
+          variant="modal"
+          onlyTiers={offerTiers}
+          onClose={onClose}
+          onSubscribed={onSubscribed}
+        />
       </div>
     </div>
   );

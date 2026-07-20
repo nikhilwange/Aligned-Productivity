@@ -52,22 +52,32 @@ export const fetchRecordings = async (userId: string): Promise<RecordingSession[
 /**
  * Saves or updates a recording session, including the AI-generated insights (analysis).
  */
-export const saveRecording = async (recording: RecordingSession, userId: string) => {
-  const { error } = await supabase
-    .from('recordings')
-    .upsert({
-      id: recording.id,
-      user_id: userId,
-      title: recording.title,
-      date: recording.date,
-      duration: recording.duration,
-      status: recording.status,
-      source: recording.source,
-      analysis: recording.analysis, // Stores the MeetingAnalysis object (transcript, summary, etc.)
-      errorMessage: recording.errorMessage,
-      recoveryId: recording.recoveryId ?? null,
-      audioPath: recording.audioPath ?? null,
-    });
+export const saveRecording = async (
+  recording: RecordingSession,
+  userId: string,
+  opts?: { billable?: boolean },
+) => {
+  // `billable` (default true) controls whether this recording's minutes count
+  // toward the monthly audio-hours budget. Manual transcript paste sets it
+  // false — no audio was transcribed, so it has no STT cost. It's a DB-only
+  // concern (not part of RecordingSession); the usage trigger reads it at
+  // INSERT time, so it must be set on the first save.
+  const row: Record<string, unknown> = {
+    id: recording.id,
+    user_id: userId,
+    title: recording.title,
+    date: recording.date,
+    duration: recording.duration,
+    status: recording.status,
+    source: recording.source,
+    analysis: recording.analysis, // Stores the MeetingAnalysis object (transcript, summary, etc.)
+    errorMessage: recording.errorMessage,
+    recoveryId: recording.recoveryId ?? null,
+    audioPath: recording.audioPath ?? null,
+  };
+  if (opts?.billable === false) row.billable = false;
+
+  const { error } = await supabase.from('recordings').upsert(row);
 
   if (error) {
     console.error('Error saving recording to Supabase:', error);

@@ -6,7 +6,7 @@ import type { Subscription, UsageMeter } from '../types';
 
 interface SubscriptionRow {
   user_id: string;
-  plan_tier: 'free' | 'pro';
+  plan_tier: 'free' | 'pro' | 'max';
   plan_cycle: 'monthly' | 'annual' | null;
   razorpay_customer_id: string | null;
   razorpay_subscription_id: string | null;
@@ -150,10 +150,14 @@ export interface CreateSubscriptionResponse {
   short_url: string | null;
 }
 
+// A checkout "plan": Pro monthly, Pro annual, or Max (monthly-only). The
+// server maps this to the right Razorpay plan ID and tier.
 export const createRazorpaySubscription = async (
-  cycle: 'monthly' | 'annual',
+  plan: 'monthly' | 'annual' | 'max',
 ): Promise<CreateSubscriptionResponse> => {
-  const res = await authedFetch('/api/razorpay/create-subscription', { cycle });
+  // `cycle` is kept for backward compatibility with the previous API shape.
+  const cycle = plan === 'max' ? 'monthly' : plan;
+  const res = await authedFetch('/api/razorpay/create-subscription', { plan, cycle });
   // Parse defensively: a 404/5xx (or a missing /api layer in local dev) can
   // return an empty or non-JSON body, which would otherwise surface as the
   // cryptic "Unexpected end of JSON input" instead of a useful message.

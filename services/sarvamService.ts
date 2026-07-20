@@ -2,6 +2,7 @@ import { retryOperation } from "./geminiService";
 import { supabase } from "./supabaseService";
 import { uploadAudioToStorage, deleteAudioPaths } from "./storageService";
 import { getChunkTranscripts, saveChunkTranscript } from "./recordingRecovery";
+import { usageLimitFromBody, isUsageLimitError } from "./usageLimit";
 
 // Options for resumable / observable transcription. Both fields are optional so
 // every existing call site (`transcribeAudioWithSarvam(blob)`) keeps working.
@@ -11,9 +12,75 @@ export interface SarvamTranscribeOptions {
   recoveryId?: string;
   // Fired as chunks complete (multi-chunk path only) for UI progress display.
   onProgress?: (done: number, total: number) => void;
+  // Superseding-run cancellation. When a newer pipeline for the same session
+  // starts (Retry / auto-resume), the previous run's signal is aborted so its
+  // in-flight chunk fetches cancel and the pipeline exits without writing state.
+  signal?: AbortSignal;
 }
 
 const CHUNK_DURATION_MS = 25000; // 25 seconds per chunk (Sarvam REST API limit is 30s)
+
+// Hard ceiling on any single chunk-transcription request. Without this a hung
+// request would only be caught by retryOperation's coarse 120s wall-timeout —
+// and even then the underlying connection is left open. An AbortController both
+// bounds the wait tighter (90s) and actually cancels the request.
+const CHUNK_FETCH_TIMEOUT_MS = 90_000;
+
+// Abort a fetch on whichever fires first: the per-request timeout, or an
+// external superseding-run signal. The timeout throws a "timed out" error that
+// retryOperation treats as retryable; an external abort propagates as an
+// AbortError so the caller can exit silently instead of retrying.
+const fetchWithTimeout = async (
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  timeoutMessage: string,
+  externalSignal?: AbortSignal,
+): Promise<Response> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(timeoutMessage)), timeoutMs);
+  const onExternalAbort = () => controller.abort(externalSignal?.reason);
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort(externalSignal.reason);
+    else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err: any) {
+    // Timeout fired (external signal still live) → surface a retryable
+    // "timed out" error. Otherwise re-throw the abort so it stays fatal.
+    if (controller.signal.aborted && !externalSignal?.aborted) {
+      throw new Error(timeoutMessage);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
+  }
+};
+
+// Parse a Retry-After value (delta-seconds or an HTTP date) into milliseconds.
+const parseRetryAfterMs = (value?: string | null): number | null => {
+  if (!value) return null;
+  const secs = Number(value);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const dateMs = Date.parse(value);
+  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
+  return null;
+};
+
+// Build the error thrown when the Sarvam proxy returns a non-OK status,
+// tagging 429s with a `retryAfterMs` so retryOperation waits the server-
+// requested interval instead of its fixed exponential backoff.
+const proxyError = (status: number, body: any, res: Response): Error => {
+  const err: any = new Error(body?.error || `Sarvam proxy error ${status}`);
+  err.status = status;
+  if (status === 429) {
+    const ms = parseRetryAfterMs(body?.retryAfter ?? res.headers.get('retry-after'));
+    if (ms !== null) err.retryAfterMs = ms;
+  }
+  return err;
+};
 
 const getAuthToken = async (): Promise<string> => {
   const { data } = await supabase.auth.getSession();
@@ -45,26 +112,40 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 };
 
 // Single-chunk path: small audio sent as base64 (no storage round-trip needed)
-const transcribeChunkInline = async (audioBlob: Blob, token: string): Promise<string> => {
+const transcribeChunkInline = async (
+  audioBlob: Blob,
+  token: string,
+  sessionStart = false,
+  signal?: AbortSignal,
+): Promise<string> => {
   const audioBase64 = await blobToBase64(audioBlob);
   const mimeType = normalizeMime(audioBlob.type);
 
-  const res = await fetch("/api/sarvam/transcribe", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
+  const res = await fetchWithTimeout(
+    "/api/sarvam/transcribe",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        audioBase64,
+        mimeType,
+        filename: mimeType.includes("wav") ? "audio.wav" : "audio.webm",
+        // Signals the server usage gate to run (only at session start).
+        sessionStart,
+      }),
     },
-    body: JSON.stringify({
-      audioBase64,
-      mimeType,
-      filename: mimeType.includes("wav") ? "audio.wav" : "audio.webm",
-    }),
-  });
+    CHUNK_FETCH_TIMEOUT_MS,
+    `Sarvam chunk request timed out after ${CHUNK_FETCH_TIMEOUT_MS / 1000}s`,
+    signal,
+  );
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || `Sarvam proxy error ${res.status}`);
+    if (res.status === 402) throw usageLimitFromBody(err);
+    throw proxyError(res.status, err, res);
   }
 
   const data = await res.json();
@@ -78,24 +159,36 @@ const transcribeChunkViaStorage = async (
   audioBlob: Blob,
   token: string,
   pathSuffix: string,
+  sessionStart = false,
+  signal?: AbortSignal,
 ): Promise<{ transcript: string; storagePath: string }> => {
+  if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
   const storagePath = await uploadAudioToStorage(audioBlob, pathSuffix);
 
-  const res = await fetch("/api/sarvam/transcribe", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
+  const res = await fetchWithTimeout(
+    "/api/sarvam/transcribe",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        audioPath: storagePath,
+        mimeType: normalizeMime(audioBlob.type),
+        // Signals the server usage gate to run (only at session start).
+        sessionStart,
+      }),
     },
-    body: JSON.stringify({
-      audioPath: storagePath,
-      mimeType: normalizeMime(audioBlob.type),
-    }),
-  });
+    CHUNK_FETCH_TIMEOUT_MS,
+    `Sarvam chunk request timed out after ${CHUNK_FETCH_TIMEOUT_MS / 1000}s`,
+    signal,
+  );
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || `Sarvam proxy error ${res.status}`);
+    if (res.status === 402) throw usageLimitFromBody(err);
+    throw proxyError(res.status, err, res);
   }
 
   const data = await res.json();
@@ -252,6 +345,10 @@ export const transcribeAudioWithSarvam = async (
 
   const recoveryId = opts?.recoveryId;
   const onProgress = opts?.onProgress;
+  const signal = opts?.signal;
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+  };
 
   console.log(`[Sarvam] Transcribing audio (${(audioBlob.size / 1024).toFixed(1)} KB)...`);
   const token = await getAuthToken();
@@ -261,7 +358,7 @@ export const transcribeAudioWithSarvam = async (
   // Single-chunk fast path: send inline as base64 — no storage needed
   if (chunks.length === 1) {
     return retryOperation(
-      () => transcribeChunkInline(chunks[0], token),
+      () => transcribeChunkInline(chunks[0], token, /* sessionStart */ true, signal),
       2,
       1000,
       "Sarvam STT",
@@ -334,19 +431,21 @@ export const transcribeAudioWithSarvam = async (
   try {
     // ── First pass: parallel batches, 4 attempts per chunk ─────────────
     for (let i = 0; i < pendingIndices.length; i += concurrency) {
+      throwIfAborted(); // superseded by a newer run — stop before the next batch
       const batchIndices = pendingIndices.slice(i, i + concurrency);
       const batchResults = await Promise.allSettled(
         batchIndices.map((idx) => {
           const pathSuffix = `chunks/${sessionId}-${String(idx).padStart(4, "0")}.wav`;
           return retryOperation(
-            () => transcribeChunkViaStorage(chunks[idx], token, pathSuffix),
+            () => transcribeChunkViaStorage(chunks[idx], token, pathSuffix, /* sessionStart */ idx === 0, signal),
             3,
             1000,
             `Sarvam STT chunk ${idx + 1}/${chunks.length}`,
           );
         }),
       );
-      batchResults.forEach((result, j) => {
+      for (let j = 0; j < batchResults.length; j++) {
+        const result = batchResults[j];
         const idx = batchIndices[j];
         if (result.status === "fulfilled") {
           results[idx] = result.value.transcript;
@@ -355,10 +454,16 @@ export const transcribeAudioWithSarvam = async (
           completedCount++;
           reportProgress();
         } else {
+          // Superseded by a newer run → stop immediately; don't degrade chunks
+          // to placeholders or write any more state.
+          if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+          // Monthly usage cap → abort the whole transcription (not a partial
+          // degrade). Propagates out of the try/finally after cleanup.
+          if (isUsageLimitError(result.reason)) throw result.reason;
           console.warn(`[Sarvam] Chunk ${idx + 1} failed (pass 1): ${result.reason?.message}`);
           failedIndices.push(idx);
         }
-      });
+      }
     }
 
     // ── Final pass: serial retry of stragglers ─────────────────────────
@@ -367,10 +472,11 @@ export const transcribeAudioWithSarvam = async (
         `[Sarvam] ${failedIndices.length} of ${chunks.length} chunks failed first pass — retrying serially…`,
       );
       for (const idx of failedIndices) {
+        throwIfAborted(); // superseded — stop before the next straggler
         const pathSuffix = `chunks/${sessionId}-${String(idx).padStart(4, "0")}-retry.wav`;
         try {
           const result = await retryOperation(
-            () => transcribeChunkViaStorage(chunks[idx], token, pathSuffix),
+            () => transcribeChunkViaStorage(chunks[idx], token, pathSuffix, /* sessionStart */ false, signal),
             3,
             3000,
             `Sarvam STT chunk ${idx + 1} (final pass)`,
@@ -381,6 +487,8 @@ export const transcribeAudioWithSarvam = async (
           completedCount++;
           reportProgress();
         } catch (err: any) {
+          if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+          if (isUsageLimitError(err)) throw err;
           console.warn(`[Sarvam] Chunk ${idx + 1} failed (final pass): ${err?.message}`);
           // Do NOT cache the placeholder — this chunk must be retried next time.
           results[idx] = UNRECOGNISED_PLACEHOLDER;

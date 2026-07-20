@@ -1,9 +1,10 @@
-import React, { useMemo } from 'react';
-import { RecordingSession, TrackedActionItem } from '../types';
+import React, { useMemo, useState } from 'react';
+import { RecordingSession, TrackedActionItem, SubscriptionState } from '../types';
 import { Skeleton, SessionCardSkeleton } from './Skeleton';
 import EmptyState from './EmptyState';
 import { formatDateShort, formatDateFull, formatDuration } from '../utils/formatters';
 import { initialsOf, colorFor } from '../utils/avatar';
+import { TIERS, minutesToHoursLabel } from '../config/tiers';
 
 interface HomeViewProps {
   user: { name: string; email: string };
@@ -12,7 +13,14 @@ interface HomeViewProps {
   isLoading?: boolean;
   onSelectSession: (id: string) => void;
   onStartNew: () => void;
+  usage?: SubscriptionState;
+  onUpgrade?: () => void;
 }
+
+const USAGE_BANNER_DISMISS_KEY = () => {
+  const d = new Date();
+  return `aligned-usage-banner-dismissed-${d.getFullYear()}-${d.getMonth() + 1}`;
+};
 
 const STORAGE_KEY = 'aligned-action-items-done';
 const loadDoneIds = (): Set<string> => {
@@ -30,9 +38,23 @@ const getGreeting = () => {
 };
 
 const HomeView: React.FC<HomeViewProps> = ({
-  user, recordings, actionItems, isLoading, onSelectSession, onStartNew
+  user, recordings, actionItems, isLoading, onSelectSession, onStartNew, usage, onUpgrade
 }) => {
   const doneIds = useMemo(() => loadDoneIds(), []);
+
+  // Usage banner (≥80% of the monthly audio budget), dismissible per month.
+  const [bannerDismissed, setBannerDismissed] = useState<boolean>(() => {
+    try { return localStorage.getItem(USAGE_BANNER_DISMISS_KEY()) === '1'; } catch { return false; }
+  });
+  const dismissBanner = () => {
+    setBannerDismissed(true);
+    try { localStorage.setItem(USAGE_BANNER_DISMISS_KEY(), '1'); } catch { /* ignore */ }
+  };
+  const showUsageBanner =
+    !!usage && !usage.loading && usage.tier !== 'max' && usage.capPercent >= 0.8 && !bannerDismissed;
+  const usageLimitLabel = usage ? minutesToHoursLabel(TIERS[usage.tier].monthlyMinutes) : '';
+  const usedHoursLabel = usage ? (usage.usage.minutes / 60).toFixed(1) : '0';
+  const nextTierLabel = usage?.tier === 'pro' ? 'Max' : 'Pro';
 
   const completedRecordings = useMemo(() =>
     recordings.filter(r => r.status === 'completed'),
@@ -103,6 +125,30 @@ const HomeView: React.FC<HomeViewProps> = ({
             Start recording
           </button>
         </div>
+
+        {/* Usage banner — shown at ≥80% of the monthly audio budget. */}
+        {showUsageBanner && (
+          <div className="mb-6 flex items-center gap-3 p-4 rounded-2xl bg-amber-500/[0.08] border border-amber-500/25">
+            <svg className="w-5 h-5 text-amber-300 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div className="flex-1 text-sm text-[var(--text-primary)]/90">
+              You've used <b className="font-semibold">{usedHoursLabel} of your {usageLimitLabel}</b> of audio this month.{' '}
+              <button onClick={onUpgrade} className="font-semibold text-amber-300 hover:text-amber-200 underline">
+                Upgrade to {nextTierLabel} →
+              </button>
+            </div>
+            <button
+              onClick={dismissBanner}
+              aria-label="Dismiss"
+              className="p-1 -m-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        )}
 
         {/* Loading skeleton */}
         {isLoading && recordings.length === 0 ? (

@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
+import { checkUsageAllowed } from '../_lib/usageGate.js';
 
 export const config = {
   api: {
@@ -42,6 +43,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const apiKey = process.env.SARVAM_API_KEY;
   if (!apiKey) {
     return res.status(500).json({ error: 'Sarvam API key not configured' });
+  }
+
+  // Usage gate — only at SESSION START (first chunk). Sarvam re-chunks a whole
+  // recording into ~120 requests; gating every one would be wasteful and could
+  // interrupt an in-flight session. The RPC counts only COMPLETED sessions, so
+  // once a session starts it always finishes. Fail-open inside the helper.
+  if (req.body?.sessionStart) {
+    const gate = await checkUsageAllowed(userSupabase, user.id);
+    if (!gate.allowed) {
+      return res.status(402).json({
+        error: 'usage_limit',
+        tier: gate.tier,
+        usedMinutes: Math.round(gate.usedMinutes),
+        limitMinutes: gate.limitMinutes,
+      });
+    }
   }
 
   const { audioBase64, audioPath, mimeType, filename } = req.body;
@@ -96,7 +113,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!sarvamRes.ok) {
       const errText = await sarvamRes.text();
       console.error('[Sarvam proxy] Error:', errText);
-      return res.status(sarvamRes.status).json({ error: `Sarvam error: ${errText}` });
+      // Forward Sarvam's Retry-After (when rate-limited) so the client can wait
+      // the requested interval instead of a fixed backoff.
+      const retryAfter = sarvamRes.headers.get('retry-after');
+      if (retryAfter) res.setHeader('Retry-After', retryAfter);
+      return res.status(sarvamRes.status).json({
+        error: `Sarvam error: ${errText}`,
+        retryAfter: retryAfter || undefined,
+      });
     }
 
     const data = await sarvamRes.json();

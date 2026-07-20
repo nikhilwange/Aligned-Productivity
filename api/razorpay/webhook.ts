@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import crypto from 'crypto';
 import getRawBody from 'raw-body';
 import { getSupabaseAdmin } from '../_lib/supabaseAdmin.js';
+import { tierFromPlanId } from '../_lib/tiers.js';
 
 // Razorpay → us. No JWT. Auth = HMAC over the raw request body, keyed by
 // the webhook secret configured in Razorpay's dashboard.
@@ -194,7 +195,9 @@ async function applyEvent(
     case 'subscription.activated':
     case 'subscription.charged':
     case 'subscription.resumed':
-      baseUpdate.plan_tier = 'pro';
+      // Map the Razorpay plan → our tier (pro OR max) rather than hardcoding
+      // 'pro', so Max subscriptions activate at the right tier.
+      baseUpdate.plan_tier = tierFromPlanId(sub.plan_id);
       // A fresh charge/activate implies the user is NOT cancelling — unless
       // a later subscription.cancelled overrides it.
       if (event.event !== 'subscription.charged') {

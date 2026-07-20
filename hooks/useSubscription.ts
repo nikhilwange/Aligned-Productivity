@@ -4,12 +4,13 @@ import {
   fetchUsageThisMonth,
   subscribeToBillingChanges,
 } from '../services/subscriptionService';
-import { FREE_CAP_MEETINGS, FREE_CAP_MINUTES } from '../config/plans';
+import { FREE_CAP_MEETINGS } from '../config/plans';
+import { TIERS, effectiveTier } from '../config/tiers';
 import type { Subscription, SubscriptionState, UsageMeter } from '../types';
 
-// Single source of truth for "what plan does this user have and how much have
-// they used this month?". Wires up Supabase Realtime so the webhook-driven
-// tier flip lands in the UI without a refresh.
+// Single source of truth for "what tier is this user on and how much have they
+// used this month?". Wires up Supabase Realtime so the webhook-driven tier flip
+// (and the usage bump on each new recording) lands in the UI without a refresh.
 
 const EMPTY_USAGE: UsageMeter = {
   userId: '',
@@ -22,8 +23,10 @@ const EMPTY_USAGE: UsageMeter = {
 
 const INITIAL: SubscriptionState = {
   subscription: null,
+  tier: 'free',
   usage: { meetings: 0, minutes: 0 },
-  caps: { meetings: FREE_CAP_MEETINGS, minutes: FREE_CAP_MINUTES },
+  caps: { meetings: FREE_CAP_MEETINGS, minutes: TIERS.free.monthlyMinutes },
+  sessionCapMinutes: TIERS.free.sessionCapMinutes,
   isPro: false,
   isOverCap: false,
   capPercent: 0,
@@ -31,36 +34,33 @@ const INITIAL: SubscriptionState = {
 };
 
 function derive(sub: Subscription | null, usage: UsageMeter): SubscriptionState {
-  // Pro access rules, matching the webhook's semantics:
-  //   - active            → pro
-  //   - halted / pending  → payment trouble; keep access rather than yanking
-  //                         it mid-billing-issue (webhook keeps tier 'pro')
-  //   - cancelled         → cancel-at-cycle-end: access remains until the
-  //                         period actually ends ("You keep Pro until the
-  //                         period ends"), then falls back to free
-  const isPro =
-    sub?.planTier === 'pro' &&
-    (sub.status === 'active' ||
-      sub.status === 'halted' ||
-      sub.status === 'pending' ||
-      (sub.status === 'cancelled' &&
-        sub.currentPeriodEnd != null &&
-        sub.currentPeriodEnd > Date.now()));
-  const caps = isPro ? null : { meetings: FREE_CAP_MEETINGS, minutes: FREE_CAP_MINUTES };
-  const meetings = usage.meetingsCount;
+  // Resolve the effective tier from the subscription. `effectiveTier` keeps
+  // paid access through payment trouble (halted / pending) and until
+  // period-end after a cancellation — matching the webhook's semantics.
+  const tier = effectiveTier(
+    sub
+      ? { planTier: sub.planTier, status: sub.status, currentPeriodEnd: sub.currentPeriodEnd }
+      : null,
+  );
+  const tierConfig = TIERS[tier];
+  const isPro = tier !== 'free'; // any paid tier (pro OR max)
+
   const minutes = usage.minutesUsed;
-  let capPercent = 0;
-  let isOverCap = false;
-  if (caps) {
-    const pctMeetings = meetings / caps.meetings;
-    const pctMinutes = minutes / caps.minutes;
-    capPercent = Math.min(1, Math.max(pctMeetings, pctMinutes));
-    isOverCap = pctMeetings >= 1 || pctMinutes >= 1;
-  }
+  const meetings = usage.meetingsCount;
+
+  // Every tier now has a monthly audio-minutes budget; Free enforces it as a
+  // hard block, Pro/Max as a soft cap (gating lives in usePaywall). Meetings
+  // are no longer part of gating — kept for legacy display only.
+  const caps = { meetings: FREE_CAP_MEETINGS, minutes: tierConfig.monthlyMinutes };
+  const capPercent = Math.min(1, minutes / tierConfig.monthlyMinutes);
+  const isOverCap = minutes >= tierConfig.monthlyMinutes;
+
   return {
     subscription: sub,
+    tier,
     usage: { meetings, minutes },
     caps,
+    sessionCapMinutes: tierConfig.sessionCapMinutes,
     isPro,
     isOverCap,
     capPercent,

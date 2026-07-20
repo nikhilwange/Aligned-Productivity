@@ -3,6 +3,7 @@ import { RecordingSession } from '../types';
 import { SessionRowSkeleton } from './Skeleton';
 import EmptyState from './EmptyState';
 import { formatDateLong, formatTime } from '../utils/formatters';
+import { USE_SEGMENTED_RECORDING } from '../config/features';
 
 interface SessionsLogViewProps {
   sessions: RecordingSession[];
@@ -11,9 +12,11 @@ interface SessionsLogViewProps {
   onDelete: (id: string) => void;
   onRetry?: (id: string) => void;
   onDownloadAudio?: (id: string) => void;
+  // Segmented "Download audio" gather progress for the session being bundled.
+  downloadState?: { sessionId: string; done: number; total: number } | null;
 }
 
-const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, isLoading, onSelect, onDelete, onRetry, onDownloadAudio }) => {
+const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, isLoading, onSelect, onDelete, onRetry, onDownloadAudio, downloadState }) => {
   const [searchQuery, setSearchQuery] = useState('');
 
   const groupedSessions = useMemo(() => {
@@ -234,18 +237,31 @@ const SessionsLogView: React.FC<SessionsLogViewProps> = ({ sessions, isLoading, 
                                   Retry processing
                                 </button>
                               )}
-                              {session.audioPath && onDownloadAudio && (
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); onDownloadAudio(session.id); }}
-                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.05] hover:bg-white/[0.10] border border-white/[0.08] text-[var(--text-primary)]/80 text-xs font-semibold transition-all"
-                                  title="Download the recorded audio for this session"
-                                >
-                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4" />
-                                  </svg>
-                                  Download audio
-                                </button>
-                              )}
+                              {(session.audioPath || (USE_SEGMENTED_RECORDING && session.recoveryId)) && onDownloadAudio && (() => {
+                                const gathering = downloadState?.sessionId === session.id;
+                                return (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); if (!gathering) onDownloadAudio(session.id); }}
+                                    disabled={gathering}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.05] hover:bg-white/[0.10] border border-white/[0.08] text-[var(--text-primary)]/80 text-xs font-semibold transition-all disabled:opacity-60 disabled:cursor-default"
+                                    title="Download the recorded audio for this session"
+                                  >
+                                    {gathering ? (
+                                      <>
+                                        <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
+                                        Preparing download… {downloadState!.done} of {downloadState!.total}
+                                      </>
+                                    ) : (
+                                      <>
+                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4" />
+                                        </svg>
+                                        Download audio
+                                      </>
+                                    )}
+                                  </button>
+                                );
+                              })()}
                             </div>
                           </div>
                         ) : (

@@ -131,7 +131,7 @@ export interface StrategicAnalysis {
 
 // ─── Subscriptions / billing ─────────────────────────────────────────────────
 
-export type PlanTier = 'free' | 'pro';
+export type PlanTier = 'free' | 'pro' | 'max';
 export type PlanCycle = 'monthly' | 'annual';
 
 // Mirrors Razorpay's subscription lifecycle. We don't try to enumerate every
@@ -174,10 +174,16 @@ export interface UsageMeter {
 // app-side caps so consumers don't have to repeat the math.
 export interface SubscriptionState {
   subscription: Subscription | null;
+  // The effective tier this user is on right now (free if no live access).
+  tier: PlanTier;
   usage: { meetings: number; minutes: number };
-  caps: { meetings: number; minutes: number } | null; // null = unlimited (pro)
-  isPro: boolean;
+  // Monthly audio-minutes budget for the current tier, plus the per-session
+  // cap (null = no per-session limit). `caps.meetings` is retained for legacy
+  // display only — gating is minutes-based.
+  caps: { meetings: number; minutes: number } | null; // null = unbounded
+  sessionCapMinutes: number | null;
+  isPro: boolean;   // true for any paid tier (pro OR max) with live access
   isOverCap: boolean;
-  capPercent: number; // 0..1 of the closer cap; 0 for pro/unlimited
+  capPercent: number; // 0..1 of the monthly minutes budget; 0 for unbounded
   loading: boolean;
 }

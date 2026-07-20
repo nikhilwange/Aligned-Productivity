@@ -17,6 +17,11 @@ interface AudioRecorderProps {
   transcriptionEngine: 'gemini' | 'sarvam';
   onEngineChange: (engine: 'gemini' | 'sarvam') => void;
   hasSarvamKey: boolean;
+  // Per-session recording cap in minutes (Free tier = 90; null = no cap).
+  // At the cap the recorder auto-stops; the audio up to that point is kept
+  // and processed normally. A warning fires 5 minutes before the cap.
+  sessionCapMinutes?: number | null;
+  onSessionCapWarning?: (minutesLeft: number) => void;
 }
 
 type InputMode = 'mic' | 'meeting' | 'call';
@@ -26,7 +31,7 @@ const SILENCE_THRESHOLD = 0.01; // RMS below this = silence
 const SILENCE_AUTO_STOP_SECONDS = 300; // 5 minutes of continuous silence → auto-stop
 const CHECKPOINT_INTERVAL_CHUNKS = 10; // checkpoint to IndexedDB every ~10s (since timeslice=1000ms)
 
-const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, onRecordingComplete, transcriptionEngine, onEngineChange, hasSarvamKey }) => {
+const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, onRecordingComplete, transcriptionEngine, onEngineChange, hasSarvamKey, sessionCapMinutes, onSessionCapWarning }) => {
   const [timer, setTimer] = useState(0);
   const [inputMode, setInputMode] = useState<InputMode>('mic');
   const [isScreenCaptureSupported, setIsScreenCaptureSupported] = useState<boolean>(true);
@@ -38,6 +43,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
   const uncheckpointedRef = useRef<Blob[]>([]); // chunks not yet saved to IndexedDB
   const timerIntervalRef = useRef<number | null>(null);
   const durationRef = useRef<number>(0);
+  const capWarnedRef = useRef(false); // session-cap warning fired once
   const sourceStreamsRef = useRef<MediaStream[]>([]);
   const recoveryIdRef = useRef<string>('');
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -91,11 +97,30 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     silenceSecondsRef.current = 0;
     setSilenceSeconds(0);
+    capWarnedRef.current = false;
+
+    // Free-tier per-session cap (minutes → seconds), clamped to the global max.
+    const capSeconds =
+      sessionCapMinutes && sessionCapMinutes > 0
+        ? Math.min(sessionCapMinutes * 60, MAX_RECORDING_SECONDS)
+        : null;
 
     timerIntervalRef.current = window.setInterval(() => {
       setTimer(prev => {
         const newValue = prev + 1;
         durationRef.current = newValue;
+
+        // Warn 5 minutes before the session cap (once).
+        if (capSeconds && !capWarnedRef.current && newValue >= capSeconds - 300 && newValue < capSeconds) {
+          capWarnedRef.current = true;
+          try { onSessionCapWarning?.(Math.max(1, Math.ceil((capSeconds - newValue) / 60))); } catch { /* ignore */ }
+        }
+
+        // Hit the session cap → auto-stop; audio so far is kept & processed.
+        if (capSeconds && newValue >= capSeconds) {
+          stopRecording();
+          return capSeconds;
+        }
 
         if (newValue >= MAX_RECORDING_SECONDS) {
           stopRecording();

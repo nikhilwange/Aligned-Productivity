@@ -1,5 +1,6 @@
 import { MeetingAnalysis } from "../types";
 import { supabase } from "./supabaseService";
+import { usageLimitFromBody } from "./usageLimit";
 
 // ─── Large-audio threshold (kept for client-side timeout selection) ────────────
 // 6 MB ≈ 25 min at our 32 kbps recording bitrate. Crossing this threshold
@@ -53,6 +54,7 @@ export const invokeEdgeFunction = async <T>(
     const err = await res.json().catch(() => ({ error: res.statusText }));
     const error = new Error(err.error || `${name} failed (${res.status})`);
     (error as any).status = res.status;
+    (error as any).body = err;
     throw error;
   }
   return res.json() as Promise<T>;
@@ -230,8 +232,13 @@ export async function retryOperation<T>(
       error.message?.includes('code: 6');
 
     if (retries > 0 && isRetryable) {
-      console.warn(`[Retry] ${operationName} failed, retrying in ${delay}ms... (${retries} attempts left)`);
-      await new Promise(resolve => setTimeout(resolve, delay));
+      // Honor a server-supplied Retry-After (attached as `retryAfterMs` on 429s)
+      // instead of the fixed exponential backoff; fall back to `delay` otherwise.
+      const wait = typeof error.retryAfterMs === 'number' && Number.isFinite(error.retryAfterMs)
+        ? error.retryAfterMs
+        : delay;
+      console.warn(`[Retry] ${operationName} failed, retrying in ${wait}ms... (${retries} attempts left)`);
+      await new Promise(resolve => setTimeout(resolve, wait));
       return retryOperation(operation, retries - 1, delay * 2, operationName, timeoutMs);
     }
     throw error;
@@ -287,16 +294,24 @@ export const extractTranscript = async (
     payload = { audioBase64, mimeType, audioSizeBytes: audioBlob.size };
   }
 
-  const data = await retryOperation(
-    () => invokeEdgeFunction<{ transcript: string; wasTruncated?: boolean }>(
-      'gemini-transcribe-audio',
-      payload,
-    ),
-    3,
-    1000,
-    'Pass 1: Transcript extraction',
-    serverWillUseFilesApi ? LARGE_AUDIO_TIMEOUT_MS : SMALL_AUDIO_TIMEOUT_MS,
-  );
+  let data: { transcript: string; wasTruncated?: boolean };
+  try {
+    data = await retryOperation(
+      () => invokeEdgeFunction<{ transcript: string; wasTruncated?: boolean }>(
+        'gemini-transcribe-audio',
+        payload,
+      ),
+      3,
+      1000,
+      'Pass 1: Transcript extraction',
+      serverWillUseFilesApi ? LARGE_AUDIO_TIMEOUT_MS : SMALL_AUDIO_TIMEOUT_MS,
+    );
+  } catch (e: any) {
+    // Monthly usage cap hit — surface as a typed error so the pipeline shows
+    // an upgrade prompt and does NOT fall through to the Sarvam fallback.
+    if (e?.status === 402) throw usageLimitFromBody(e.body ?? {});
+    throw e;
+  }
 
   const transcript = (data.transcript ?? '').trim();
   if (!transcript) throw new Error("Empty transcript from Gemini.");

@@ -15,7 +15,9 @@ import AuthView from './components/AuthView';
 import ResetPassword from './components/ResetPassword';
 import LandingPage from './components/LandingPage';
 import OAuthConsent from './components/OAuthConsent';
-import { AppState, RecordingSession, AudioRecording, User, ChatMessage, RecordingSource, TrackedActionItem } from './types';
+import { AppState, RecordingSession, AudioRecording, User, ChatMessage, RecordingSource, TrackedActionItem, PlanTier } from './types';
+import { isUsageLimitError } from './services/usageLimit';
+import { minutesToHoursLabel } from './config/tiers';
 import { extractTranscript, analyzeTranscript } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage } from './services/storageService';
@@ -23,6 +25,8 @@ import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchA
 import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery, clearChunkTranscripts, clearAllChunkTranscripts, purgeStaleChunkTranscripts, getSegmentManifest, getAllSegmentManifests, getSegmentBlob, clearSegmentManifest, purgeStaleSegmentManifests, SegmentManifest } from './services/recordingRecovery';
 import { reuploadPendingSegments, getActiveSegmentSessionId } from './services/segmentRecorder';
 import { USE_SEGMENTED_RECORDING, BILLING_ENABLED } from './config/features';
+import { startHeartbeat, clearHeartbeat, isHeartbeatFresh, HEARTBEAT_STALE_MS } from './services/processingHeartbeat';
+import JSZip from 'jszip';
 import { useWakeLock } from './hooks/useWakeLock';
 import ProcessingBanner from './components/ProcessingBanner';
 import RecoveryModal from './components/RecoveryModal';
@@ -44,6 +48,23 @@ declare global {
 }
 
 const isElectron = typeof window !== 'undefined' && !!(window as any).ipcRenderer;
+
+// ─── Per-session pipeline run tokens ────────────────────────────────────────
+// A hung-but-alive pipeline must not interleave with a Retry/auto-resume of the
+// same session (double progress writes, shared chunk-storage paths, one run
+// cleaning up files the other needs). Each session gets at most one live
+// AbortController; starting a new run aborts the previous one, whose awaits then
+// unwind and exit silently (guarded on `signal.aborted` before any state write).
+const pipelineControllers = new Map<string, AbortController>();
+
+// Abort any in-flight run for this session and register a fresh controller.
+const beginPipelineRun = (sessionId: string): AbortController => {
+  const prev = pipelineControllers.get(sessionId);
+  if (prev) prev.abort(new DOMException('Superseded by a newer run', 'AbortError'));
+  const controller = new AbortController();
+  pipelineControllers.set(sessionId, controller);
+  return controller;
+};
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -70,7 +91,7 @@ const App: React.FC = () => {
   // Single source of truth for plan tier + usage caps. Realtime-subscribed
   // inside the hook so the webhook-driven tier flip lands without refresh.
   const subscriptionState = useSubscription(user?.id ?? null);
-  const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; reason?: string }>({ open: false });
+  const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; reason?: string; offerTiers?: PlanTier[] }>({ open: false });
 
   // ─── Processing UX State ──────────────────────────────────────────────────
   const [processingSessionId, setProcessingSessionId] = useState<string | null>(null);
@@ -87,6 +108,8 @@ const App: React.FC = () => {
   const [chunkProgress, setChunkProgress] = useState<{ done: number; total: number } | null>(null);
   // Segment progress for segmented processing ("Transcribing segment 4 of 22"). Component state only.
   const [segmentProgress, setSegmentProgress] = useState<{ done: number; total: number } | null>(null);
+  // "Download audio" gather progress for a failed segmented session ("Preparing download… 3 of 12").
+  const [audioDownload, setAudioDownload] = useState<{ sessionId: string; done: number; total: number } | null>(null);
 
   // Keep the device awake while any session is actively processing (fresh
   // recording, manual upload, retry, or auto-resume). Feature-detected + safe.
@@ -112,7 +135,7 @@ const App: React.FC = () => {
     if (!BILLING_ENABLED) return true;
     const decision = canStartNewRecording(subscriptionState);
     if (decision.allowed) return true;
-    setUpgradeModal({ open: true, reason: decision.message });
+    setUpgradeModal({ open: true, reason: decision.message, offerTiers: decision.upgradeTiers });
     return false;
   }, [subscriptionState]);
 
@@ -140,6 +163,9 @@ const App: React.FC = () => {
         );
       }
       setProcessingSessionId(null);
+      // A completed session may have consumed audio-minutes → refresh the
+      // usage meter / tier state so the sidebar + gates reflect it.
+      subscriptionState.refetch();
     } else if (session.status === 'error') {
       const isViewingSession = activeRecordingId === processingSessionId;
       const isRetryable = Boolean(session.recoveryId || session.audioPath);
@@ -158,7 +184,7 @@ const App: React.FC = () => {
       }
       setProcessingSessionId(null);
     }
-  }, [recordings, processingSessionId, activeRecordingId, addToast]);
+  }, [recordings, processingSessionId, activeRecordingId, addToast, subscriptionState.refetch]);
 
   const handleEngineChange = (engine: 'gemini' | 'sarvam') => {
     setTranscriptionEngine(engine);
@@ -248,12 +274,27 @@ const App: React.FC = () => {
         // Fix stale processing sessions (interrupted by page close/crash).
         // Track which ones we just flipped so we can try to auto-resume the
         // most recent recoverable one below instead of leaving it as an error.
+        //
+        // A legitimate long transcription now runs for 10–30+ minutes, so the
+        // old "processing for > 5 min → interrupted" check falsely stamped
+        // healthy runs (and permanently re-stamped retried sessions, whose
+        // `date` never changes). Instead we use a liveness heartbeat: a session
+        // is interrupted ONLY if no tab has written a fresh (<90s) heartbeat for
+        // it. A hard 24h backstop still catches anything truly stuck.
         const now = Date.now();
+        const HARD_BACKSTOP_MS = 24 * 60 * 60 * 1000;
         const interruptedIds = new Set<string>();
         const fixedData = data.map(r => {
-          if (r.status === 'processing' && (now - r.date) > 5 * 60 * 1000) {
-            interruptedIds.add(r.id);
-            return { ...r, status: 'error' as const, errorMessage: 'Processing was interrupted. Tap Retry if audio is still available.', processingStep: undefined };
+          if (r.status === 'processing') {
+            const hbFresh = isHeartbeatFresh(r.id, now, HEARTBEAT_STALE_MS);
+            const tooOld = (now - r.date) > HARD_BACKSTOP_MS;
+            // Fresh heartbeat → another tab (or this one, pre-reload) is genuinely
+            // working; leave it in `processing`. Backstop overrides regardless.
+            if (tooOld || !hbFresh) {
+              clearHeartbeat(r.id);
+              interruptedIds.add(r.id);
+              return { ...r, status: 'error' as const, errorMessage: 'Processing was interrupted. Tap Retry if audio is still available.', processingStep: undefined };
+            }
           }
           return r;
         });
@@ -292,6 +333,8 @@ const App: React.FC = () => {
           const resumeCandidates = fixedData
             .filter(r =>
               interruptedIds.has(r.id) &&
+              // Never resume a session another tab is actively working on.
+              !isHeartbeatFresh(r.id) &&
               r.recoveryId &&
               recoverable.some(rec => rec.meta.id === r.recoveryId)
             )
@@ -397,6 +440,8 @@ const App: React.FC = () => {
                 if (attempts >= 2) continue; // crash-loop guard
 
                 const existing = fixedData.find(r => r.recoveryId === manifest.sessionId);
+                // Never resume a session another tab is actively working on.
+                if (existing && isHeartbeatFresh(existing.id)) continue;
                 const durationMs = manifest.segments.reduce((s, seg) => s + (seg.durationMs || 0), 0);
                 const resumeSession: RecordingSession = existing
                   ? { ...existing, status: 'processing', processingStep: 'transcribing', errorMessage: undefined, analysis: null }
@@ -511,6 +556,8 @@ const App: React.FC = () => {
     setRecordings(prev => [newSession, ...prev]);
     setActiveRecordingId(newSession.id);
     setProcessingSessionId(newSession.id);
+    // Heartbeat so a reload during analysis isn't stamped "interrupted".
+    startHeartbeat(newSession.id);
 
     const updateSession = (updates: Partial<RecordingSession>) => {
       setRecordings(prev => prev.map(rec =>
@@ -518,8 +565,10 @@ const App: React.FC = () => {
       ));
     };
 
+    // Transcript paste has no STT cost → never counts against audio-hours.
+    const NON_BILLABLE = { billable: false } as const;
     try {
-      await saveRecording(newSession, user.id);
+      await saveRecording(newSession, user.id, NON_BILLABLE);
       const analysisResult = await analyzeTranscript(transcript, data.date);
       const fullAnalysis = { ...analysisResult, transcript };
       const completedSession: RecordingSession = {
@@ -529,7 +578,7 @@ const App: React.FC = () => {
         processingStep: undefined,
       };
       updateSession({ analysis: fullAnalysis, status: 'completed', processingStep: undefined });
-      await saveRecording(completedSession, user.id);
+      await saveRecording(completedSession, user.id, NON_BILLABLE);
 
       // Action items are no longer auto-synced. The user can promote selected
       // actions to the tracker from the session view.
@@ -537,8 +586,9 @@ const App: React.FC = () => {
       console.error('Manual entry processing failed:', err);
       const errorSession: RecordingSession = { ...newSession, status: 'error', errorMessage: err.message, processingStep: undefined };
       updateSession({ status: 'error', errorMessage: err.message, processingStep: undefined });
-      await saveRecording(errorSession, user.id);
+      await saveRecording(errorSession, user.id, NON_BILLABLE);
     } finally {
+      clearHeartbeat(newSession.id);
       setIsManualProcessing(false);
     }
   };
@@ -651,7 +701,15 @@ const App: React.FC = () => {
   const runProcessingForSession = useCallback(async (session: RecordingSession, blob: Blob) => {
     if (!user) return;
 
+    // Single-pipeline gate: abort any previous run for this session, then start
+    // a fresh heartbeat so reconciliation/auto-resume treat it as live.
+    const controller = beginPipelineRun(session.id);
+    const signal = controller.signal;
+    startHeartbeat(session.id);
+
+    // Ignore any state write from a run that has been superseded.
     const updateSession = (updates: Partial<RecordingSession>) => {
+      if (signal.aborted) return;
       setRecordings(prev => prev.map(rec =>
         rec.id === session.id ? { ...rec, ...updates } : rec
       ));
@@ -741,13 +799,16 @@ const App: React.FC = () => {
       // React state only — nothing is persisted to types.ts or Supabase.
       const sarvamOpts = {
         recoveryId: session.recoveryId,
-        onProgress: (done: number, total: number) => setChunkProgress({ done, total }),
+        signal,
+        onProgress: (done: number, total: number) => { if (!signal.aborted) setChunkProgress({ done, total }); },
       };
       if (transcriptionEngine === 'sarvam' && hasSarvamKey) {
         try {
           console.log('[App] Using Sarvam STT → Gemini analysis pipeline');
           transcript = await transcribeAudioWithSarvam(blob, sarvamOpts);
         } catch (sarvamError: any) {
+          // A usage-cap 402 is terminal — don't burn a Gemini call on it.
+          if (isUsageLimitError(sarvamError)) throw sarvamError;
           console.error('[App] ⚠️ Sarvam STT failed — falling back to Gemini transcription.', sarvamError.message);
           setChunkProgress(null);
           updateSession({ processingStep: 'transcribing' });
@@ -781,6 +842,9 @@ const App: React.FC = () => {
       // Transcription done — clear the chunk-progress indicator.
       setChunkProgress(null);
 
+      // Superseded mid-run → stop before writing any transcript/analysis state.
+      if (signal.aborted) return;
+
       // Intermediate update: show transcript immediately
       const partialAnalysis = { transcript, summary: '', actionPoints: [] as string[] };
       const transcribedSession: RecordingSession = {
@@ -794,6 +858,7 @@ const App: React.FC = () => {
 
       // Phase 2: Analysis
       const analysisResult = await analyzeTranscript(transcript, session.date);
+      if (signal.aborted) return; // superseded during analysis — don't finalize
       const fullAnalysis = { ...analysisResult, transcript };
 
       const completedSession: RecordingSession = {
@@ -841,18 +906,40 @@ const App: React.FC = () => {
       // Action items are no longer auto-synced. The user can promote selected
       // actions to the tracker from the session view.
     } catch (err: any) {
+      // Superseded by a newer run (Retry / auto-resume) → exit silently without
+      // stamping error or touching any session state; the newer run owns it.
+      if (signal.aborted) return;
       console.error("Recording process failed:", err);
+      // A monthly usage-cap 402 gets a friendly error + upgrade prompt rather
+      // than a generic red failure, and never retries.
+      const usage = isUsageLimitError(err);
+      const friendlyMsg = usage ? 'Monthly limit reached — upgrade to continue.' : err.message;
       // Keep recoveryId so the user can retry from the IndexedDB blob
-      const errorSession: RecordingSession = { ...session, status: 'error', errorMessage: err.message, processingStep: undefined };
-      updateSession({ status: 'error', errorMessage: err.message, processingStep: undefined });
+      const errorSession: RecordingSession = { ...session, status: 'error', errorMessage: friendlyMsg, processingStep: undefined };
+      updateSession({ status: 'error', errorMessage: friendlyMsg, processingStep: undefined });
       try {
         await saveRecording(errorSession, user.id);
       } catch (saveErr) {
         console.error("Failed to save error state:", saveErr);
       }
+      if (usage) {
+        const t = err.tier as PlanTier;
+        const offer: PlanTier[] = t === 'free' ? ['pro', 'max'] : t === 'pro' ? ['max'] : [];
+        setUpgradeModal({
+          open: true,
+          reason: `You've reached your ${minutesToHoursLabel(err.limitMinutes || 0)} of audio this month. Upgrade to keep recording.`,
+          offerTiers: offer,
+        });
+      }
     } finally {
-      setChunkProgress(null);
-      setAppState(AppState.IDLE);
+      // Only tear down heartbeat/controller/UI if this run is still the current
+      // one — a superseding run has already taken ownership of all three.
+      if (pipelineControllers.get(session.id) === controller) {
+        clearHeartbeat(session.id);
+        pipelineControllers.delete(session.id);
+        setChunkProgress(null);
+        setAppState(AppState.IDLE);
+      }
     }
   }, [user, transcriptionEngine, hasSarvamKey]);
 
@@ -884,7 +971,13 @@ const App: React.FC = () => {
     const recoveryId = session.recoveryId!;
     const UNCLEAR = '[…audio unclear…]';
 
+    // Single-pipeline gate + liveness heartbeat (see runProcessingForSession).
+    const controller = beginPipelineRun(session.id);
+    const signal = controller.signal;
+    startHeartbeat(session.id);
+
     const updateSession = (updates: Partial<RecordingSession>) => {
+      if (signal.aborted) return;
       setRecordings(prev => prev.map(rec => rec.id === session.id ? { ...rec, ...updates } : rec));
     };
 
@@ -896,6 +989,7 @@ const App: React.FC = () => {
       let unclearCount = 0;
 
       for (let i = 0; i < segments.length; i++) {
+        if (signal.aborted) return; // superseded — stop before the next segment
         const seg = segments[i];
         setSegmentProgress({ done: i, total: segments.length });
         updateSession({ processingStep: 'transcribing' });
@@ -904,6 +998,7 @@ const App: React.FC = () => {
         let blob = await getSegmentBlob(recoveryId, seg.index);
         if (!blob && seg.storagePath) {
           try { blob = await downloadAudioFromStorage(seg.storagePath); } catch (e: any) {
+            if (signal.aborted) return;
             console.error(`[App] Segment ${seg.index} download failed:`, e?.message);
           }
         }
@@ -917,17 +1012,26 @@ const App: React.FC = () => {
         try {
           const text = await transcribeAudioWithSarvam(blob, {
             recoveryId: `${recoveryId}:seg${seg.index}`,
-            onProgress: (done, total) => setChunkProgress({ done, total }),
+            signal,
+            onProgress: (done, total) => { if (!signal.aborted) setChunkProgress({ done, total }); },
           });
           transcripts.push(text);
         } catch (e: any) {
+          // Superseded by a newer run → exit silently (don't degrade to UNCLEAR).
+          if (signal.aborted) return;
+          // A usage-cap 402 aborts the whole session (not a partial degrade).
+          if (isUsageLimitError(e)) throw e;
           console.error(`[App] Segment ${seg.index} transcription failed after retries:`, e?.message);
           transcripts.push(UNCLEAR);
           unclearCount++;
         }
+        if (signal.aborted) return;
         setChunkProgress(null);
       }
       setSegmentProgress(null);
+
+      // Superseded mid-run → stop before writing any transcript/analysis state.
+      if (signal.aborted) return;
 
       const fullTranscript = transcripts.join(' ').replace(/\s+/g, ' ').trim();
 
@@ -937,6 +1041,7 @@ const App: React.FC = () => {
       await saveRecording({ ...session, analysis: partialAnalysis, status: 'processing', processingStep: 'analyzing' }, user.id);
 
       const analysisResult = await analyzeTranscript(fullTranscript, session.date);
+      if (signal.aborted) return; // superseded during analysis — don't finalize
       const fullAnalysis = { ...analysisResult, transcript: fullTranscript };
       const completedSession: RecordingSession = {
         ...session,
@@ -957,17 +1062,35 @@ const App: React.FC = () => {
       // Delete-on-success: remove segments from Storage + clear local state.
       await cleanupSegmentedSession(recoveryId, manifest);
     } catch (err: any) {
+      // Superseded by a newer run → exit silently; the newer run owns the session.
+      if (signal.aborted) return;
       console.error('Segmented processing failed:', err);
-      updateSession({ status: 'error', errorMessage: err.message, processingStep: undefined });
+      const usage = isUsageLimitError(err);
+      const friendlyMsg = usage ? 'Monthly limit reached — upgrade to continue.' : err.message;
+      updateSession({ status: 'error', errorMessage: friendlyMsg, processingStep: undefined });
       try {
-        await saveRecording({ ...session, status: 'error', errorMessage: err.message, processingStep: undefined }, user.id);
+        await saveRecording({ ...session, status: 'error', errorMessage: friendlyMsg, processingStep: undefined }, user.id);
       } catch (saveErr) {
         console.error('Failed to save error state:', saveErr);
       }
+      if (usage) {
+        const t = err.tier as PlanTier;
+        const offer: PlanTier[] = t === 'free' ? ['pro', 'max'] : t === 'pro' ? ['max'] : [];
+        setUpgradeModal({
+          open: true,
+          reason: `You've reached your ${minutesToHoursLabel(err.limitMinutes || 0)} of audio this month. Upgrade to keep recording.`,
+          offerTiers: offer,
+        });
+      }
     } finally {
-      setChunkProgress(null);
-      setSegmentProgress(null);
-      setAppState(AppState.IDLE);
+      // Only tear down if this run is still current (a superseding run may own it).
+      if (pipelineControllers.get(session.id) === controller) {
+        clearHeartbeat(session.id);
+        pipelineControllers.delete(session.id);
+        setChunkProgress(null);
+        setSegmentProgress(null);
+        setAppState(AppState.IDLE);
+      }
     }
   }, [user, addToast, cleanupSegmentedSession]);
 
@@ -1079,35 +1202,100 @@ const App: React.FC = () => {
     await runProcessingForSession(resetSession, blob);
   }, [user, recordings, runProcessingForSession, runSegmentedProcessingForSession]);
 
-  // Download the archived audio Blob for a failed session and trigger a
-  // browser save dialog. No download limit — convenience for users who want
-  // to keep their own copy of an unprocessable recording.
+  // Trigger a browser save dialog for a Blob.
+  const triggerBlobDownload = useCallback((blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Revoke after a short delay so the download has time to start.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }, []);
+
+  // Download the archived audio for a failed session so the user can keep it
+  // (and, via Manual Entry re-upload, rescue an unprocessable recording).
+  //
+  //  - Legacy single-file sessions (audioPath): download the one blob as-is.
+  //  - Segmented sessions (recoveryId + manifest): each segment is an
+  //    independent container, so we gather every segment — IndexedDB cache
+  //    first, then a signed-URL download from Storage — and bundle them into a
+  //    single .zip WITHOUT concatenating (naive concat produces broken files).
   const handleDownloadAudio = useCallback(async (sessionId: string) => {
     if (!user) return;
     const session = recordings.find(r => r.id === sessionId);
-    if (!session?.audioPath) {
-      addToast('No audio archive available for this session.', 'error');
+    if (!session) return;
+
+    const safeTitle = (session.title || 'recording').replace(/[^\w\-]+/g, '_').slice(0, 60);
+
+    // ── Segmented path ────────────────────────────────────────────────────
+    if (USE_SEGMENTED_RECORDING && session.recoveryId) {
+      let manifest: SegmentManifest | null = null;
+      try {
+        manifest = await getSegmentManifest(session.recoveryId);
+      } catch { /* fall through to legacy path below */ }
+
+      if (manifest && manifest.segments.length > 0) {
+        const segments = [...manifest.segments].sort((a, b) => a.index - b.index);
+        const zip = new JSZip();
+        let gathered = 0;
+        let missing = 0;
+        setAudioDownload({ sessionId, done: 0, total: segments.length });
+        try {
+          for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            let blob = await getSegmentBlob(session.recoveryId, seg.index).catch(() => null);
+            if (!blob && seg.storagePath) {
+              try { blob = await downloadAudioFromStorage(seg.storagePath); } catch (e: any) {
+                console.error(`[App] Download: segment ${seg.index} fetch failed:`, e?.message);
+              }
+            }
+            if (blob) {
+              const ext = seg.ext || 'webm';
+              zip.file(`seg-${String(seg.index).padStart(4, '0')}.${ext}`, blob);
+              gathered++;
+            } else {
+              missing++;
+            }
+            setAudioDownload({ sessionId, done: i + 1, total: segments.length });
+          }
+
+          if (gathered === 0) {
+            addToast('The recorded audio is no longer available for this session.', 'error');
+            return;
+          }
+          const zipBlob = await zip.generateAsync({ type: 'blob' });
+          triggerBlobDownload(zipBlob, `${safeTitle}.zip`);
+          if (missing > 0) {
+            addToast(`Downloaded ${gathered} of ${segments.length} segments — ${missing} could not be retrieved.`, 'error');
+          }
+        } catch (err: any) {
+          console.error('[App] Segmented audio download failed:', err);
+          addToast(`Audio download failed: ${err?.message ?? 'unknown error'}`, 'error');
+        } finally {
+          setAudioDownload(null);
+        }
+        return;
+      }
+    }
+
+    // ── Legacy single-file path ───────────────────────────────────────────
+    if (session.audioPath) {
+      try {
+        const blob = await downloadAudioFromStorage(session.audioPath);
+        const ext = (blob.type || 'audio/webm').split(';')[0].split('/')[1] || 'webm';
+        triggerBlobDownload(blob, `${safeTitle}.${ext}`);
+      } catch (err: any) {
+        console.error('[App] Audio download failed:', err);
+        addToast(`Audio download failed: ${err?.message ?? 'unknown error'}`, 'error');
+      }
       return;
     }
-    try {
-      const blob = await downloadAudioFromStorage(session.audioPath);
-      const ext = (blob.type || 'audio/webm').split(';')[0].split('/')[1] || 'webm';
-      const safeTitle = (session.title || 'recording').replace(/[^\w\-]+/g, '_').slice(0, 60);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${safeTitle}.${ext}`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      // Revoke the object URL after a short delay so the download has time
-      // to start.
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (err: any) {
-      console.error('[App] Audio download failed:', err);
-      addToast(`Audio download failed: ${err?.message ?? 'unknown error'}`, 'error');
-    }
-  }, [user, recordings, addToast]);
+
+    addToast('No audio archive available for this session.', 'error');
+  }, [user, recordings, addToast, triggerBlobDownload]);
 
   // ─── Recovery modal handlers ──────────────────────────────────────────────
   const handleRecoverRecording = useCallback(() => {
@@ -1182,6 +1370,8 @@ const App: React.FC = () => {
           theme={theme}
           onToggleTheme={toggleTheme}
           actionItems={actionItems}
+          usage={subscriptionState}
+          onUpgrade={() => setUpgradeModal({ open: true })}
         />
       </div>
 
@@ -1203,6 +1393,9 @@ const App: React.FC = () => {
             theme={theme}
             onToggleTheme={toggleTheme}
             onClose={() => setSidebarOpen(false)}
+            actionItems={actionItems}
+            usage={subscriptionState}
+            onUpgrade={() => { setSidebarOpen(false); setUpgradeModal({ open: true }); }}
           />
         </div>
       </div>
@@ -1275,6 +1468,8 @@ const App: React.FC = () => {
               isLoading={recordingsLoading}
               onSelectSession={handleSelectRecording}
               onStartNew={handleStartNew}
+              usage={BILLING_ENABLED ? subscriptionState : undefined}
+              onUpgrade={() => setUpgradeModal({ open: true })}
             />
           ) : activeRecordingId === 'sessions' || activeRecordingId === 'dictations' ? (
             <SessionsLogView
@@ -1284,6 +1479,7 @@ const App: React.FC = () => {
               onDelete={handleDeleteRecording}
               onRetry={handleRetryProcessing}
               onDownloadAudio={handleDownloadAudio}
+              downloadState={audioDownload}
             />
           ) : activeRecordingId === 'actions' ? (
             <ActionItemsView
@@ -1349,6 +1545,10 @@ const App: React.FC = () => {
                 transcriptionEngine={transcriptionEngine}
                 onEngineChange={handleEngineChange}
                 hasSarvamKey={hasSarvamKey}
+                sessionCapMinutes={BILLING_ENABLED ? subscriptionState.sessionCapMinutes : null}
+                onSessionCapWarning={(minsLeft) =>
+                  addToast(`Free sessions are capped at 90 minutes — ${minsLeft} minute${minsLeft !== 1 ? 's' : ''} left. Recording will stop and be saved.`, 'error')
+                }
               />
             </div>
           ) : (
@@ -1359,6 +1559,8 @@ const App: React.FC = () => {
               isLoading={recordingsLoading}
               onSelectSession={handleSelectRecording}
               onStartNew={handleStartNew}
+              usage={BILLING_ENABLED ? subscriptionState : undefined}
+              onUpgrade={() => setUpgradeModal({ open: true })}
             />
           )}
         </div>
@@ -1455,6 +1657,7 @@ const App: React.FC = () => {
           user={user}
           open={upgradeModal.open}
           reason={upgradeModal.reason}
+          offerTiers={upgradeModal.offerTiers}
           onClose={() => setUpgradeModal({ open: false })}
           onSubscribed={() => {
             addToast('Payment received — activating your Pro account…', 'success');

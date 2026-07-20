@@ -39,6 +39,86 @@ const LARGE_AUDIO_THRESHOLD_BYTES = 15 * 1024 * 1024;
 const FILES_API_READY_TIMEOUT_MS = 5 * 60_000;
 const GEMINI_MODEL = 'gemini-2.5-flash';
 
+// ─── Usage gate (metered tiers) ───────────────────────────────────────────
+// Monthly audio-minute budgets. SOURCE OF TRUTH: config/tiers.ts (client) and
+// api/_lib/tiers.ts (Vercel). This function can't import either, so the
+// numbers are DUPLICATED here — keep all three in sync.
+const TIER_MONTHLY_MINUTES: Record<string, number> = {
+  free: 300,
+  pro: 1200,
+  max: 3600,
+};
+
+// Resolve the tier a stored subscription row grants right now. Keeps paid
+// access through payment trouble (halted/pending) and until period-end after
+// a cancellation — mirrors config/tiers.ts hasLiveAccess().
+function resolveTier(sub: {
+  plan_tier?: string | null;
+  status?: string | null;
+  current_period_end?: string | null;
+} | null): string {
+  if (!sub || !sub.plan_tier || sub.plan_tier === 'free') return 'free';
+  const s = sub.status;
+  const live =
+    s === 'active' ||
+    s === 'halted' ||
+    s === 'pending' ||
+    (s === 'cancelled' &&
+      sub.current_period_end != null &&
+      Date.parse(sub.current_period_end) > Date.now());
+  if (!live) return 'free';
+  return sub.plan_tier === 'max' ? 'max' : 'pro';
+}
+
+interface GateVerdict {
+  over: boolean;
+  tier: string;
+  usedMinutes: number;
+  limitMinutes: number;
+}
+
+// Reads the caller's tier + this month's COMPLETED billable minutes (via the
+// monthly_audio_usage() RPC, which excludes in-flight 'processing' sessions so
+// the current recording always finishes). Talks to PostgREST directly with the
+// caller's JWT — RLS scopes both reads to the user.
+//
+// FAIL OPEN: returns null on ANY error so metering can never break the core
+// transcription pipeline.
+async function evaluateUsageGate(authHeader: string): Promise<GateVerdict | null> {
+  try {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+    const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
+    if (!supabaseUrl || !anonKey) return null;
+
+    const restHeaders = {
+      apikey: anonKey,
+      Authorization: authHeader,
+      'Content-Type': 'application/json',
+    };
+
+    const subRes = await fetch(
+      `${supabaseUrl}/rest/v1/subscriptions?select=plan_tier,status,current_period_end`,
+      { headers: restHeaders },
+    );
+    const subs = subRes.ok ? await subRes.json() : [];
+    const tier = resolveTier(Array.isArray(subs) && subs.length > 0 ? subs[0] : null);
+    const limitMinutes = TIER_MONTHLY_MINUTES[tier] ?? TIER_MONTHLY_MINUTES.free;
+
+    const useRes = await fetch(`${supabaseUrl}/rest/v1/rpc/monthly_audio_usage`, {
+      method: 'POST',
+      headers: restHeaders,
+      body: '{}',
+    });
+    if (!useRes.ok) return null; // fail open
+    const usedMinutes = Number(await useRes.json());
+    if (!Number.isFinite(usedMinutes)) return null;
+
+    return { over: usedMinutes >= limitMinutes, tier, usedMinutes, limitMinutes };
+  } catch (_e) {
+    return null; // fail open
+  }
+}
+
 // Transcription prompt — copied verbatim from api/gemini/transcribe-audio.ts.
 // Do not paraphrase: the timestamp/speaker format is what the analyze pass
 // expects to see in its input, and downstream "Original transcript" rendering
@@ -212,6 +292,21 @@ Deno.serve(async (req) => {
   const authHeader = req.headers.get('authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return jsonResponse({ error: 'Unauthorized' }, 401);
+  }
+
+  // Usage gate — this function is called once per session (session start), so
+  // this is the PRIMARY enforcement point. Fails open on any metering error.
+  const gate = await evaluateUsageGate(authHeader);
+  if (gate && gate.over) {
+    return jsonResponse(
+      {
+        error: 'usage_limit',
+        tier: gate.tier,
+        usedMinutes: Math.round(gate.usedMinutes),
+        limitMinutes: gate.limitMinutes,
+      },
+      402,
+    );
   }
 
   // NOTE: per-user Portkey usage tracking is NOT available for this

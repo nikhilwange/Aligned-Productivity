@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from 'react';
-import { RecordingSession, User, TrackedActionItem } from '../types';
+import { RecordingSession, User, TrackedActionItem, SubscriptionState } from '../types';
 import { formatDateShort } from '../utils/formatters';
 import { BILLING_ENABLED } from '../config/features';
+import UsageMeter from './UsageMeter';
 
 interface SidebarProps {
   user: User | null;
@@ -15,11 +16,14 @@ interface SidebarProps {
   onToggleTheme: () => void;
   onClose?: () => void;
   actionItems?: TrackedActionItem[];
+  usage?: SubscriptionState;
+  onUpgrade?: () => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
   user, recordings, activeId, onSelect, onNew,
   onDelete, onLogout, theme, onToggleTheme, onClose, actionItems,
+  usage, onUpgrade,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -207,6 +211,13 @@ const Sidebar: React.FC<SidebarProps> = ({
             <SettingsIcon className="w-4 h-4 flex-shrink-0" />
             <span className="flex-1 text-left">Settings</span>
           </button>
+
+          {/* Monthly audio-usage meter */}
+          {BILLING_ENABLED && usage && (
+            <div className="pt-1">
+              <UsageMeter state={usage} onUpgrade={onUpgrade} />
+            </div>
+          )}
         </nav>
       </div>
 
