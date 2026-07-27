@@ -8,17 +8,31 @@ interface ProcessingBannerProps {
   progress?: { done: number; total: number } | null;
   // Optional segment progress ("Transcribing segment 4 of 22") for Phase 2.
   segmentProgress?: { done: number; total: number } | null;
+  // Phase 3: how many segments were already transcribed live during recording.
+  // When most of the work was pre-done, raw segment counts are noise — the
+  // banner just says "Finalizing your notes…" instead.
+  preTranscribed?: { done: number; total: number } | null;
 }
 
-const ProcessingBanner: React.FC<ProcessingBannerProps> = ({ session, onTap, progress, segmentProgress }) => {
+// At/above this share of pre-transcribed segments the remaining work is small
+// enough that a segment countdown is more confusing than reassuring.
+const MOSTLY_PRE_DONE = 0.8;
+
+const ProcessingBanner: React.FC<ProcessingBannerProps> = ({ session, onTap, progress, segmentProgress, preTranscribed }) => {
   const step = session.processingStep || 'transcribing';
-  const showSegments = step === 'transcribing' && segmentProgress && segmentProgress.total > 1;
-  const showChunks = step === 'transcribing' && progress && progress.total > 1;
+  const mostlyPreDone =
+    !!preTranscribed &&
+    preTranscribed.total > 0 &&
+    preTranscribed.done / preTranscribed.total >= MOSTLY_PRE_DONE;
+  const showSegments = step === 'transcribing' && !mostlyPreDone && segmentProgress && segmentProgress.total > 1;
+  const showChunks = step === 'transcribing' && !mostlyPreDone && progress && progress.total > 1;
   const stepLabel =
     step === 'transcribing'
-      ? (showSegments
-          ? `Transcribing segment ${segmentProgress!.done + 1} of ${segmentProgress!.total}`
-          : showChunks ? `Transcribing... (${progress!.done} of ${progress!.total})` : 'Transcribing audio...')
+      ? (mostlyPreDone
+          ? 'Finalizing your notes…'
+          : showSegments
+            ? `Transcribing segment ${segmentProgress!.done + 1} of ${segmentProgress!.total}`
+            : showChunks ? `Transcribing... (${progress!.done} of ${progress!.total})` : 'Transcribing audio...')
     : step === 'analyzing' ? 'Generating notes...' :
     'Finalizing...';
 

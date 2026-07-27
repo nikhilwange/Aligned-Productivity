@@ -19,6 +19,8 @@ import {
   SegmentManifest,
   SegmentEntry,
 } from './recordingRecovery';
+import { LIVE_TRANSCRIPTION } from '../config/features';
+import { startLiveTranscription, enqueueSegment } from './liveTranscription';
 
 // ~5 minutes per segment. Exported so callers/tests can reference it.
 export const SEGMENT_DURATION_MS = 5 * 60 * 1000;
@@ -83,6 +85,13 @@ export class SegmentRecorder {
   start(): void {
     this.stopped = false;
     activeSegmentSessionId = this.sessionId; // mark this tab as actively recording
+    // Phase 3: open the live-transcription session so finalized segments can be
+    // transcribed while the meeting continues. Never allowed to affect recording.
+    if (LIVE_TRANSCRIPTION) {
+      try { startLiveTranscription(this.sessionId); } catch (err) {
+        console.warn('[SegmentRecorder] startLiveTranscription failed (non-critical):', err);
+      }
+    }
     this.beginSegment();
   }
 
@@ -148,6 +157,15 @@ export class SegmentRecorder {
     await saveSegmentBlob(this.sessionId, index, blob);
     const entry: SegmentEntry = { index, ext, uploaded: false, durationMs };
     await this.upsertManifestEntry(entry);
+
+    // Phase 3: queue this segment for background transcription NOW — the blob
+    // is cached, so we deliberately do not wait for the upload. Fire-and-forget
+    // and fully guarded: a queueing failure must never affect recording.
+    if (LIVE_TRANSCRIPTION) {
+      try { enqueueSegment(this.sessionId, index); } catch (err) {
+        console.warn('[SegmentRecorder] enqueueSegment failed (non-critical):', err);
+      }
+    }
 
     // Upload in the background — never block recording on the network.
     this.uploadPromises.push(this.uploadSegment(index, blob, ext));

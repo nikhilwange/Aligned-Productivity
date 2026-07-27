@@ -22,10 +22,12 @@ import { extractTranscript, analyzeTranscript } from './services/geminiService';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage } from './services/storageService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems } from './services/supabaseService';
-import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery, clearChunkTranscripts, clearAllChunkTranscripts, purgeStaleChunkTranscripts, getSegmentManifest, getAllSegmentManifests, getSegmentBlob, clearSegmentManifest, purgeStaleSegmentManifests, SegmentManifest } from './services/recordingRecovery';
+import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery, clearChunkTranscripts, clearAllChunkTranscripts, purgeStaleChunkTranscripts, getSegmentManifest, getAllSegmentManifests, getSegmentBlob, clearSegmentManifest, purgeStaleSegmentManifests, getSegmentTranscripts, clearSegmentTranscripts, clearAllSegmentTranscripts, purgeStaleSegmentTranscripts, SegmentManifest } from './services/recordingRecovery';
 import { reuploadPendingSegments, getActiveSegmentSessionId } from './services/segmentRecorder';
 import { USE_SEGMENTED_RECORDING, BILLING_ENABLED } from './config/features';
 import { startHeartbeat, clearHeartbeat, isHeartbeatFresh, HEARTBEAT_STALE_MS } from './services/processingHeartbeat';
+import { beginPipelineRun, endPipelineRun } from './services/pipelineRuns';
+import { stopLiveTranscription, clearLiveSession } from './services/liveTranscription';
 import JSZip from 'jszip';
 import { useWakeLock } from './hooks/useWakeLock';
 import ProcessingBanner from './components/ProcessingBanner';
@@ -49,22 +51,9 @@ declare global {
 
 const isElectron = typeof window !== 'undefined' && !!(window as any).ipcRenderer;
 
-// ─── Per-session pipeline run tokens ────────────────────────────────────────
-// A hung-but-alive pipeline must not interleave with a Retry/auto-resume of the
-// same session (double progress writes, shared chunk-storage paths, one run
-// cleaning up files the other needs). Each session gets at most one live
-// AbortController; starting a new run aborts the previous one, whose awaits then
-// unwind and exit silently (guarded on `signal.aborted` before any state write).
-const pipelineControllers = new Map<string, AbortController>();
-
-// Abort any in-flight run for this session and register a fresh controller.
-const beginPipelineRun = (sessionId: string): AbortController => {
-  const prev = pipelineControllers.get(sessionId);
-  if (prev) prev.abort(new DOMException('Superseded by a newer run', 'AbortError'));
-  const controller = new AbortController();
-  pipelineControllers.set(sessionId, controller);
-  return controller;
-};
+// Per-session pipeline run tokens now live in services/pipelineRuns.ts so the
+// live transcription worker can register in the SAME map (single authority for
+// "who may do Sarvam work right now"). Behaviour is unchanged.
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -108,6 +97,10 @@ const App: React.FC = () => {
   const [chunkProgress, setChunkProgress] = useState<{ done: number; total: number } | null>(null);
   // Segment progress for segmented processing ("Transcribing segment 4 of 22"). Component state only.
   const [segmentProgress, setSegmentProgress] = useState<{ done: number; total: number } | null>(null);
+  // How many segments the live worker had already transcribed when Finish ran.
+  // When most of the work is pre-done the banner says "Finalizing your notes…"
+  // instead of a raw segment count. Component state only.
+  const [preTranscribed, setPreTranscribed] = useState<{ done: number; total: number } | null>(null);
   // "Download audio" gather progress for a failed segmented session ("Preparing download… 3 of 12").
   const [audioDownload, setAudioDownload] = useState<{ sessionId: string; done: number; total: number } | null>(null);
 
@@ -314,7 +307,10 @@ const App: React.FC = () => {
 
         // Housekeeping: drop chunk-transcript caches + segment manifests older than 7 days.
         purgeStaleChunkTranscripts();
-        if (USE_SEGMENTED_RECORDING) purgeStaleSegmentManifests();
+        if (USE_SEGMENTED_RECORDING) {
+          purgeStaleSegmentManifests();
+          purgeStaleSegmentTranscripts(); // Phase 3 live transcripts
+        }
 
         // Shared guard: auto-resume AT MOST ONE session per load across both the
         // Phase 1 blob path and the Phase 2 segment path.
@@ -417,6 +413,10 @@ const App: React.FC = () => {
                 if (m.segments.length === 0) return false;
                 // Never recover the recording in progress in THIS tab.
                 if (m.sessionId === activeSegId) return false;
+                // Phase 3: a live-transcription worker (this tab or another)
+                // beats under the recoveryId while it works. Fresh beat = live
+                // work in progress, not a crash.
+                if (isHeartbeatFresh(m.sessionId)) return false;
                 // Freshness guard: a manifest written in the last 7 minutes is
                 // almost certainly still being recorded (another tab/device) or
                 // is mid-handoff — treat it as live, not crashed.
@@ -679,6 +679,8 @@ const App: React.FC = () => {
         // segments. Legacy single-file sessions (audioPath only) are unaffected.
         if (USE_SEGMENTED_RECORDING && segRecoveryId) {
           try {
+            // Stop any live worker still holding this session before deleting.
+            clearLiveSession(segRecoveryId);
             const manifest = await getSegmentManifest(segRecoveryId);
             if (manifest) {
               const segPaths = manifest.segments.map(s => s.storagePath).filter((p): p is string => !!p);
@@ -686,6 +688,7 @@ const App: React.FC = () => {
               await clearSegmentManifest(segRecoveryId);
               manifest.segments.forEach(s => clearChunkTranscripts(`${segRecoveryId}:seg${s.index}`));
             }
+            await clearSegmentTranscripts(segRecoveryId); // Phase 3 live transcripts
           } catch (err: any) {
             console.error('[App] Segment cleanup failed during delete:', err);
           }
@@ -934,9 +937,8 @@ const App: React.FC = () => {
     } finally {
       // Only tear down heartbeat/controller/UI if this run is still the current
       // one — a superseding run has already taken ownership of all three.
-      if (pipelineControllers.get(session.id) === controller) {
+      if (endPipelineRun(session.id, controller)) {
         clearHeartbeat(session.id);
-        pipelineControllers.delete(session.id);
         setChunkProgress(null);
         setAppState(AppState.IDLE);
       }
@@ -956,6 +958,7 @@ const App: React.FC = () => {
           console.error('[App] Segment storage cleanup failed:', err?.message));
       }
       await clearSegmentManifest(recoveryId);
+      await clearSegmentTranscripts(recoveryId); // Phase 3 live transcripts
       manifest.segments.forEach(s => clearChunkTranscripts(`${recoveryId}:seg${s.index}`));
     } catch (err) {
       console.warn('[App] Segmented cleanup failed (non-critical):', err);
@@ -976,11 +979,21 @@ const App: React.FC = () => {
     const signal = controller.signal;
     startHeartbeat(session.id);
 
+    // Phase 3 handoff: the live worker is keyed by `recoveryId`, NOT `session.id`,
+    // so beginPipelineRun above does not cancel it. Abort it explicitly and wait
+    // for it to unwind before we touch the same per-segment chunk-cache keys.
+    // Guarded: a handoff hiccup must never stop the pipeline from running.
+    try { await stopLiveTranscription(recoveryId); } catch (e) {
+      console.warn('[App] Live-transcription handoff failed (non-critical):', e);
+    }
+    if (signal.aborted) return;
+
     const updateSession = (updates: Partial<RecordingSession>) => {
       if (signal.aborted) return;
       setRecordings(prev => prev.map(rec => rec.id === session.id ? { ...rec, ...updates } : rec));
     };
 
+    const finishStartedAt = Date.now();
     try {
       try { await saveRecording(session, user.id); } catch (e) { console.warn('Initial save failed:', e); }
 
@@ -988,11 +1001,26 @@ const App: React.FC = () => {
       const transcripts: string[] = [];
       let unclearCount = 0;
 
+      // How much of the work is already done by live transcription? Drives both
+      // the instrumentation line and the banner's "Finalizing your notes…" copy.
+      const liveTranscripts = await getSegmentTranscripts(recoveryId);
+      const preDone = segments.filter(s => liveTranscripts[s.index] !== undefined).length;
+      console.log(`[Pipeline] finish started: ${preDone} of ${segments.length} segments pre-transcribed`);
+      setPreTranscribed({ done: preDone, total: segments.length });
+
       for (let i = 0; i < segments.length; i++) {
         if (signal.aborted) return; // superseded — stop before the next segment
         const seg = segments[i];
         setSegmentProgress({ done: i, total: segments.length });
         updateSession({ processingStep: 'transcribing' });
+
+        // Phase 3: reuse the transcript the live worker already produced.
+        const live = liveTranscripts[seg.index];
+        if (live !== undefined) {
+          console.log(`[Pipeline] segment ${seg.index}: using live transcript`);
+          transcripts.push(live);
+          continue;
+        }
 
         // Prefer the cached blob; fall back to the uploaded segment in Storage.
         let blob = await getSegmentBlob(recoveryId, seg.index);
@@ -1034,14 +1062,21 @@ const App: React.FC = () => {
       if (signal.aborted) return;
 
       const fullTranscript = transcripts.join(' ').replace(/\s+/g, ' ').trim();
+      const transcriptionMs = Date.now() - finishStartedAt;
 
       // Show transcript immediately, then analyze (unchanged path).
       const partialAnalysis = { transcript: fullTranscript, summary: '', actionPoints: [] as string[] };
       updateSession({ analysis: partialAnalysis, processingStep: 'analyzing' });
       await saveRecording({ ...session, analysis: partialAnalysis, status: 'processing', processingStep: 'analyzing' }, user.id);
 
+      const analysisStartedAt = Date.now();
       const analysisResult = await analyzeTranscript(fullTranscript, session.date);
       if (signal.aborted) return; // superseded during analysis — don't finalize
+      const analysisMs = Date.now() - analysisStartedAt;
+      console.log(
+        `[Pipeline] finish complete: transcription ${(transcriptionMs / 1000).toFixed(1)}s, ` +
+        `analysis ${(analysisMs / 1000).toFixed(1)}s, total ${((Date.now() - finishStartedAt) / 1000).toFixed(1)}s`,
+      );
       const fullAnalysis = { ...analysisResult, transcript: fullTranscript };
       const completedSession: RecordingSession = {
         ...session,
@@ -1084,11 +1119,11 @@ const App: React.FC = () => {
       }
     } finally {
       // Only tear down if this run is still current (a superseding run may own it).
-      if (pipelineControllers.get(session.id) === controller) {
+      if (endPipelineRun(session.id, controller)) {
         clearHeartbeat(session.id);
-        pipelineControllers.delete(session.id);
         setChunkProgress(null);
         setSegmentProgress(null);
+        setPreTranscribed(null);
         setAppState(AppState.IDLE);
       }
     }
@@ -1313,6 +1348,7 @@ const App: React.FC = () => {
   const handleDiscardRecovery = useCallback(() => {
     clearAllRecovery();
     clearAllChunkTranscripts();
+    clearAllSegmentTranscripts(); // Phase 3 live transcripts
     setRecoveryData(null);
   }, []);
 
@@ -1453,6 +1489,7 @@ const App: React.FC = () => {
                 session={ps}
                 progress={ps.id === processingSessionId ? chunkProgress : null}
                 segmentProgress={ps.id === processingSessionId ? segmentProgress : null}
+                preTranscribed={ps.id === processingSessionId ? preTranscribed : null}
                 onTap={() => {
                   setIsRecordingMode(false);
                   setActiveRecordingId(processingSessionId);

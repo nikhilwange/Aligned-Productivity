@@ -14,7 +14,12 @@ const CHUNK_STORE_NAME = 'chunk-transcripts';
 // Storage). Both kept in their own stores so the Phase 1 stores are untouched.
 const SEGMENT_MANIFEST_STORE = 'segment-manifests';
 const SEGMENT_BLOB_STORE = 'segment-blobs';
-const DB_VERSION = 3;
+// Phase 3 live transcription: one finished transcript per segment, written by
+// the live worker DURING recording. This is the durable record of live progress
+// — it survives reloads/crashes, and the post-Finish pipeline reads it to skip
+// work that is already done.
+const SEGMENT_TRANSCRIPT_STORE = 'segment-transcripts';
+const DB_VERSION = 4;
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -50,6 +55,10 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(SEGMENT_BLOB_STORE)) {
         // Key: `${sessionId}:${index}` → { key, sessionId, index, blob }
         db.createObjectStore(SEGMENT_BLOB_STORE, { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains(SEGMENT_TRANSCRIPT_STORE)) {
+        // Key: `${sessionId}:${index}` → { key, sessionId, index, transcript, completedAt }
+        db.createObjectStore(SEGMENT_TRANSCRIPT_STORE, { keyPath: 'key' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -492,5 +501,164 @@ export async function purgeStaleSegmentManifests(): Promise<void> {
     }
   } catch (err) {
     console.warn('[Recovery] Failed to purge stale segment manifests:', err);
+  }
+}
+
+// ─── Phase 3: per-segment transcripts (live transcription) ───────────────────
+// Written by services/liveTranscription.ts as each segment finishes
+// transcribing DURING the recording. The post-Finish pipeline reads these first
+// and only transcribes the segments that have no entry (typically just the
+// final partial segment, plus any that failed live). All best-effort: a failure
+// here only costs re-transcription later, it never breaks a recording.
+
+export interface SegmentTranscriptRecord {
+  key: string; // `${sessionId}:${index}`
+  sessionId: string;
+  index: number;
+  transcript: string;
+  completedAt: number;
+}
+
+const segTranscriptKey = (sessionId: string, index: number) => `${sessionId}:${index}`;
+
+/** Persist a finished segment transcript. */
+export async function saveSegmentTranscript(
+  sessionId: string,
+  index: number,
+  transcript: string,
+): Promise<void> {
+  if (!sessionId) return;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(SEGMENT_TRANSCRIPT_STORE, 'readwrite');
+    const record: SegmentTranscriptRecord = {
+      key: segTranscriptKey(sessionId, index),
+      sessionId,
+      index,
+      transcript,
+      completedAt: Date.now(),
+    };
+    tx.objectStore(SEGMENT_TRANSCRIPT_STORE).put(record);
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch (err) {
+    console.warn('[Recovery] Failed to save segment transcript:', err);
+  }
+}
+
+/** Read one segment's live transcript, or null when it was never transcribed. */
+export async function getSegmentTranscript(
+  sessionId: string,
+  index: number,
+): Promise<string | null> {
+  if (!sessionId) return null;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(SEGMENT_TRANSCRIPT_STORE, 'readonly');
+    const record: SegmentTranscriptRecord | undefined = await new Promise((resolve, reject) => {
+      const req = tx.objectStore(SEGMENT_TRANSCRIPT_STORE).get(segTranscriptKey(sessionId, index));
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    // An empty-string transcript is a legitimately silent segment — keep it.
+    return record ? (record.transcript ?? '') : null;
+  } catch (err) {
+    console.warn('[Recovery] Failed to read segment transcript:', err);
+    return null;
+  }
+}
+
+/** All live transcripts for a session, keyed by segment index. */
+export async function getSegmentTranscripts(
+  sessionId: string,
+): Promise<Record<number, string>> {
+  if (!sessionId) return {};
+  try {
+    const db = await openDB();
+    const tx = db.transaction(SEGMENT_TRANSCRIPT_STORE, 'readonly');
+    const all: SegmentTranscriptRecord[] = await new Promise((resolve, reject) => {
+      const req = tx.objectStore(SEGMENT_TRANSCRIPT_STORE).getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    const out: Record<number, string> = {};
+    for (const rec of all || []) {
+      if (rec.sessionId === sessionId) out[rec.index] = rec.transcript ?? '';
+    }
+    return out;
+  } catch (err) {
+    console.warn('[Recovery] Failed to list segment transcripts:', err);
+    return {};
+  }
+}
+
+/** Remove every live transcript for a session (cleanup / delete / discard). */
+export async function clearSegmentTranscripts(sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(SEGMENT_TRANSCRIPT_STORE, 'readwrite');
+    const store = tx.objectStore(SEGMENT_TRANSCRIPT_STORE);
+    const all: SegmentTranscriptRecord[] = await new Promise((resolve, reject) => {
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    for (const rec of all || []) {
+      if (rec.sessionId === sessionId) store.delete(rec.key);
+    }
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch (err) {
+    console.warn('[Recovery] Failed to clear segment transcripts:', err);
+  }
+}
+
+/** Wipe every live transcript (used when discarding all recovery data). */
+export async function clearAllSegmentTranscripts(): Promise<void> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(SEGMENT_TRANSCRIPT_STORE, 'readwrite');
+    tx.objectStore(SEGMENT_TRANSCRIPT_STORE).clear();
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch (err) {
+    console.warn('[Recovery] Failed to clear all segment transcripts:', err);
+  }
+}
+
+/** Purge live transcripts older than 7 days. Call once on app load. */
+export async function purgeStaleSegmentTranscripts(): Promise<void> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(SEGMENT_TRANSCRIPT_STORE, 'readwrite');
+    const store = tx.objectStore(SEGMENT_TRANSCRIPT_STORE);
+    const all: SegmentTranscriptRecord[] = await new Promise((resolve, reject) => {
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    const cutoff = Date.now() - SEVEN_DAYS_MS;
+    for (const rec of all || []) {
+      if (!rec.completedAt || rec.completedAt < cutoff) store.delete(rec.key);
+    }
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch (err) {
+    console.warn('[Recovery] Failed to purge stale segment transcripts:', err);
   }
 }

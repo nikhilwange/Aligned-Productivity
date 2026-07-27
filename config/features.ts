@@ -13,6 +13,17 @@
 // the pre-Phase-2 path.
 export const USE_SEGMENTED_RECORDING = true;
 
+// Phase 3: live transcription DURING recording. When TRUE, each ~5-minute
+// segment is transcribed in the background as soon as it is finalized, while
+// the meeting is still going — so pressing Finish leaves only the final partial
+// segment plus Gemini analysis (~2-3 min to notes regardless of meeting
+// length). When FALSE, behaviour is exactly Phase 2's: segments still record
+// and upload live, but ALL transcription happens after Finish.
+//
+// Requires USE_SEGMENTED_RECORDING (the master switch above): with segmentation
+// off there are no segments to transcribe early, and this flag has no effect.
+export const LIVE_TRANSCRIPTION = true;
+
 // Billing / paywall (Razorpay subscriptions + usage caps). When FALSE, the app
 // ships the billing code but keeps it fully dormant: no usage cap or paywall
 // gate on recording, no upgrade modal, no Billing/Pricing views or nav entry.

@@ -234,9 +234,13 @@ export async function retryOperation<T>(
     if (retries > 0 && isRetryable) {
       // Honor a server-supplied Retry-After (attached as `retryAfterMs` on 429s)
       // instead of the fixed exponential backoff; fall back to `delay` otherwise.
-      const wait = typeof error.retryAfterMs === 'number' && Number.isFinite(error.retryAfterMs)
-        ? error.retryAfterMs
-        : delay;
+      const honored = typeof error.retryAfterMs === 'number' && Number.isFinite(error.retryAfterMs);
+      const wait = honored ? error.retryAfterMs : delay;
+      // Rate limits are the single most common cause of slow transcription —
+      // log them distinctly so a console screenshot is enough to diagnose.
+      if (error.status === 429) {
+        console.warn(`[Sarvam] 429, waiting ${wait}ms (Retry-After honored: ${honored ? 'yes' : 'no'})`);
+      }
       console.warn(`[Retry] ${operationName} failed, retrying in ${wait}ms... (${retries} attempts left)`);
       await new Promise(resolve => setTimeout(resolve, wait));
       return retryOperation(operation, retries - 1, delay * 2, operationName, timeoutMs);

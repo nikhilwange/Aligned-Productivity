@@ -7,8 +7,9 @@ import {
   updateRecoveryDuration,
   clearRecoverySession,
 } from '../services/recordingRecovery';
-import { USE_SEGMENTED_RECORDING } from '../config/features';
+import { USE_SEGMENTED_RECORDING, LIVE_TRANSCRIPTION } from '../config/features';
 import { SegmentRecorder } from '../services/segmentRecorder';
+import { subscribeLiveProgress, type LiveProgress } from '../services/liveTranscription';
 
 interface AudioRecorderProps {
   appState: AppState;
@@ -36,6 +37,9 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
   const [inputMode, setInputMode] = useState<InputMode>('mic');
   const [isScreenCaptureSupported, setIsScreenCaptureSupported] = useState<boolean>(true);
   const [silenceSeconds, setSilenceSeconds] = useState(0);
+  // Phase 3: how many finalized segments have been transcribed live so far.
+  // Component state only — never persisted.
+  const [liveProgress, setLiveProgress] = useState<LiveProgress | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const segmentRecorderRef = useRef<SegmentRecorder | null>(null);
@@ -49,6 +53,15 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
   const analyserRef = useRef<AnalyserNode | null>(null);
   const silenceSecondsRef = useRef(0);
   const audioContextRef = useRef<AudioContext | null>(null);
+
+  // Phase 3: mirror live-transcription progress into component state for the
+  // reassurance line under the timer. Only listens to THIS tab's recording.
+  useEffect(() => {
+    if (!USE_SEGMENTED_RECORDING || !LIVE_TRANSCRIPTION) return;
+    return subscribeLiveProgress((p) => {
+      if (p.sessionId === recoveryIdRef.current) setLiveProgress(p);
+    });
+  }, []);
 
   useEffect(() => {
     const isMobile = isNativeApp() || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
@@ -212,6 +225,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
       if (USE_SEGMENTED_RECORDING) {
         const segRecoveryId = `rec-${Date.now()}`;
         recoveryIdRef.current = segRecoveryId;
+        setLiveProgress(null); // clear any readout left from a previous recording
         const segSource = inputMode === 'meeting' ? 'virtual-meeting' : inputMode === 'call' ? 'phone-call' : 'in-person';
         const controller = new SegmentRecorder({
           stream: finalStream,
@@ -584,6 +598,15 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
               <div className={`text-[10px] font-bold z-10 transition-colors duration-500 ${getRemainingColor()}`}>
                 {formatTime(remainingTime)} remaining
               </div>
+
+              {/* Phase 3: quiet reassurance that transcription is already
+                  running in the background. Deliberately understated — no
+                  spinner, no prominence. */}
+              {liveProgress && liveProgress.total > 0 && (
+                <div className="text-[10px] font-medium text-[var(--text-tertiary)] z-10 mt-1.5">
+                  Transcribed {liveProgress.done} of {liveProgress.total} segments
+                </div>
+              )}
 
               {/* Stop button */}
               <button
