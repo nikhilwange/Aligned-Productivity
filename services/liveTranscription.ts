@@ -185,12 +185,23 @@ async function pump(s: LiveSession): Promise<void> {
   }
 }
 
+// Hard ceiling on one segment's live transcription. A ~5-minute segment
+// normally finishes in 1-3 minutes; anything past this is stuck (or so far
+// behind it is no longer useful, since the next segment is already waiting).
+// Without this, ONE hung segment blocks the queue for the whole meeting and
+// the readout sits at "Transcribed 0 of N" — the failure this guards against.
+const SEGMENT_WATCHDOG_MS = 6 * 60 * 1000;
+
 async function transcribeOneSegment(
   s: LiveSession,
   index: number,
   signal: AbortSignal,
 ): Promise<void> {
   const startedAt = Date.now();
+  // Hoisted so the catch below can tell "watchdog fired" apart from a real
+  // failure — aborting makes transcribeAudioWithSarvam throw, so the check
+  // has to live outside the try.
+  let timedOut = false;
   try {
     // Already transcribed (e.g. resumed after a reload)? Nothing to do.
     const existing = await getSegmentTranscript(s.sessionId, index);
@@ -219,14 +230,33 @@ async function transcribeOneSegment(
     console.log(`[LiveTx] seg ${index} started`);
     let chunksDone = 0;
     let chunksTotal = 0;
-    // Reuses the Phase 1 chunk cache under the SAME key the finisher uses, so
-    // partial work survives an abort and is resumed rather than repeated.
-    const transcript = await transcribeAudioWithSarvam(blob, {
-      recoveryId: `${s.sessionId}:seg${index}`,
-      signal,
-      onProgress: (done, total) => { chunksDone = done; chunksTotal = total; },
-    });
 
+    // Watchdog: a per-segment controller that aborts on EITHER the session
+    // handoff or the ceiling above, so a stuck segment is abandoned instead of
+    // stalling every segment behind it.
+    const segController = new AbortController();
+    const onSessionAbort = () => segController.abort(signal.reason);
+    signal.addEventListener('abort', onSessionAbort, { once: true });
+    const watchdog = setTimeout(() => {
+      timedOut = true;
+      segController.abort(new DOMException('Segment watchdog timeout', 'AbortError'));
+    }, SEGMENT_WATCHDOG_MS);
+
+    let transcript: string;
+    try {
+      // Reuses the Phase 1 chunk cache under the SAME key the finisher uses, so
+      // partial work survives an abort and is resumed rather than repeated.
+      transcript = await transcribeAudioWithSarvam(blob, {
+        recoveryId: `${s.sessionId}:seg${index}`,
+        signal: segController.signal,
+        onProgress: (done, total) => { chunksDone = done; chunksTotal = total; },
+      });
+    } finally {
+      clearTimeout(watchdog);
+      signal.removeEventListener('abort', onSessionAbort);
+    }
+
+    if (timedOut) return; // watchdog fired without throwing — nothing to save
     if (signal.aborted) return; // superseded mid-flight — let the finisher own it
 
     await saveSegmentTranscript(s.sessionId, index, transcript);
@@ -239,9 +269,17 @@ async function transcribeOneSegment(
       `(chunks: ${chunksDone} done, ${Math.max(0, chunksTotal - chunksDone)} failed)`,
     );
   } catch (err: any) {
-    // TOTALLY non-fatal by design. Rate limits, network drops, decode errors —
-    // all of them just mean this segment gets transcribed after Finish instead.
+    // TOTALLY non-fatal by design. Rate limits, network drops, decode errors,
+    // a stuck segment — all just mean this segment is transcribed after Finish.
+    // Partial chunk work is already cached, so the finisher resumes from there.
     if (signal.aborted) return; // handoff/discard, not a real failure
+    if (timedOut) {
+      console.warn(
+        `[LiveTx] segment ${index} exceeded ${SEGMENT_WATCHDOG_MS / 1000}s, deferring to finish ` +
+        `(partial chunk work is cached, so the finisher resumes from where this stopped)`,
+      );
+      return;
+    }
     console.log(
       `[LiveTx] segment ${index} failed, deferring to finish:`,
       err?.message ?? err,

@@ -198,17 +198,47 @@ const transcribeChunkViaStorage = async (
 // Probe the file's true duration via a transient <audio> element. Reads the
 // container metadata only — no PCM decode, so it works reliably even on
 // very long files where decodeAudioData runs out of memory.
+//
+// MUST be bounded. Browsers throttle (and in background tabs may indefinitely
+// suspend) media-element loading, so neither `loadedmetadata` nor `error` is
+// guaranteed to fire — most reliably reproduced by live transcription, whose
+// segments are probed while the tab sits behind a video-call window. An
+// unbounded wait here hangs the whole transcription pipeline with no error.
+// The probe is only a sanity check, so timing out and returning null is safe:
+// the caller simply skips the decode-truncation comparison.
+const PROBE_DURATION_TIMEOUT_MS = 15_000;
+
 const probeBlobDuration = (blob: Blob): Promise<number | null> => {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(blob);
     const audio = new Audio();
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const finish = (value: number | null) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      audio.onloadedmetadata = null;
+      audio.onerror = null;
+      // Detach the source so a suspended load doesn't keep the element alive.
+      try { audio.src = ''; } catch { /* ignore */ }
+      URL.revokeObjectURL(url);
+      resolve(value);
+    };
+
     audio.preload = "metadata";
     audio.onloadedmetadata = () => {
-      const d = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : null;
-      URL.revokeObjectURL(url);
-      resolve(d);
+      finish(Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : null);
     };
-    audio.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    audio.onerror = () => finish(null);
+    timer = setTimeout(() => {
+      console.warn(
+        `[Sarvam] Duration probe timed out after ${PROBE_DURATION_TIMEOUT_MS}ms ` +
+        `(tab likely backgrounded) — continuing without the truncation check.`,
+      );
+      finish(null);
+    }, PROBE_DURATION_TIMEOUT_MS);
     audio.src = url;
   });
 };
