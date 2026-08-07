@@ -206,6 +206,18 @@ export const fetchActionItems = async (userId: string): Promise<TrackedActionIte
 };
 
 /**
+ * Outcome of an "add to tracker" attempt. `inserted` and `skipped` are reported
+ * separately because they mean very different things to the user: "already in
+ * your tracker" is a no-op, not a failure. Collapsing both into an empty array
+ * is what produced the old, misleading "no rows were inserted" error.
+ */
+export interface SyncActionItemsResult {
+  inserted: TrackedActionItem[];
+  /** Requested indices that were already present for this recording. */
+  skipped: number[];
+}
+
+/**
  * Adds selected action items from a recording's actionPoints array into the action_items table.
  * Idempotent: uses source_index + recording_id to avoid duplicates.
  *
@@ -217,16 +229,30 @@ export const syncActionItemsFromRecording = async (
   recording: RecordingSession,
   userId: string,
   selectedIndices?: number[]
-): Promise<TrackedActionItem[]> => {
+): Promise<SyncActionItemsResult> => {
   const points = recording.analysis?.actionPoints ?? [];
-  if (points.length === 0) return [];
+  if (points.length === 0) return { inserted: [], skipped: [] };
 
-  // Find which source_indices are already synced
-  const { data: existing } = await supabase
+  // Find which source_indices are already synced.
+  //
+  // This read is load-bearing, so its error is NOT swallowed. There is no
+  // UNIQUE constraint on (user_id, recording_id, source_index) in the DB —
+  // this client-side check is the only thing standing between a retry and a
+  // duplicate row. Treating a failed read as "nothing exists yet" is how the
+  // table accumulated ~330 duplicates during the auto-sync era. If we can't
+  // establish what's already there, we must not insert.
+  const { data: existing, error: existingError } = await supabase
     .from('action_items')
     .select('source_index')
     .eq('user_id', userId)
     .eq('recording_id', recording.id);
+
+  if (existingError) {
+    console.error('[Supabase] Error reading existing action items:', existingError);
+    throw new Error(
+      `Couldn't check what's already in your tracker: ${existingError.message}. Nothing was added.`
+    );
+  }
 
   const existingIndices = new Set(
     (existing ?? [])
@@ -234,26 +260,28 @@ export const syncActionItemsFromRecording = async (
       .filter((v): v is number => typeof v === 'number')
   );
 
-  const selectedSet = selectedIndices ? new Set(selectedIndices) : null;
+  // Requested set, clamped to real positions and de-duplicated, so a stale
+  // index from the caller can never widen the insert.
+  const requested = Array.from(
+    new Set(selectedIndices ?? points.map((_, i) => i))
+  )
+    .filter(i => Number.isInteger(i) && i >= 0 && i < points.length)
+    .sort((a, b) => a - b);
 
-  const toInsert = points
-    .map((text, i) => ({ index: i, text }))
-    .filter(({ index }) => {
-      if (existingIndices.has(index)) return false;
-      if (selectedSet && !selectedSet.has(index)) return false;
-      return true;
-    })
-    .map(({ index, text }) => ({
-      user_id: userId,
-      recording_id: recording.id,
-      text,
-      status: 'not_started',
-      source_index: index,
-      function_tag: null,
-      assignee: null,
-    }));
+  const skipped = requested.filter(i => existingIndices.has(i));
+  const pending = requested.filter(i => !existingIndices.has(i));
 
-  if (toInsert.length === 0) return [];
+  if (pending.length === 0) return { inserted: [], skipped };
+
+  const toInsert = pending.map(index => ({
+    user_id: userId,
+    recording_id: recording.id,
+    text: points[index],
+    status: 'not_started',
+    source_index: index,
+    function_tag: null,
+    assignee: null,
+  }));
 
   const { data, error } = await supabase
     .from('action_items')
@@ -266,13 +294,19 @@ export const syncActionItemsFromRecording = async (
     // of silently reporting "0 added".
     throw new Error(error.message || 'Failed to add action items to tracker.');
   }
-  return (data ?? []).map(mapActionItemRow);
+  return { inserted: (data ?? []).map(mapActionItemRow), skipped };
 };
 
 /**
  * Returns the current set of source_index values already present in
  * action_items for a given (user, recording). Used by the session view to
  * refresh "already tracked" state when the in-memory prop may be stale.
+ *
+ * Throws on failure rather than returning []. An empty array is a meaningful
+ * answer ("nothing tracked yet"), so reporting it for a failed read made a
+ * transient network blip look like data loss — that mismatch is exactly what
+ * produced the old "No new rows were inserted. Try clicking Add again."
+ * Callers must decide for themselves how to handle an unavailable read.
  */
 export const fetchTrackedSourceIndicesForRecording = async (
   userId: string,
@@ -285,7 +319,7 @@ export const fetchTrackedSourceIndicesForRecording = async (
     .eq('recording_id', recordingId);
   if (error) {
     console.error('[Supabase] Error fetching tracked indices:', error);
-    return [];
+    throw new Error(error.message || 'Could not read tracker state.');
   }
   return (data ?? [])
     .map((r: any) => r.source_index)

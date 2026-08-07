@@ -14,9 +14,10 @@ interface ResultsViewProps {
   userId?: string;
   actionItems?: TrackedActionItem[];
   onActionItemsAdded?: (items: TrackedActionItem[]) => void;
+  onNavigateToActionItems?: () => void;
 }
 
-const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userId, actionItems, onActionItemsAdded }) => {
+const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userId, actionItems, onActionItemsAdded, onNavigateToActionItems }) => {
   const [activeTab, setActiveTab] = useState<'notes' | 'transcript' | 'strategist' | 'chat'>('notes');
   const [title, setTitle] = useState(session.title);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
@@ -34,7 +35,10 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
   const [selectedTrackerIndices, setSelectedTrackerIndices] = useState<Set<number>>(new Set());
   const [isAddingToTracker, setIsAddingToTracker] = useState(false);
   const [trackerError, setTrackerError] = useState<string | null>(null);
-  const [trackerJustAdded, setTrackerJustAdded] = useState(0); // count, for confirmation banner
+  // Informational outcome (e.g. "already tracked") — distinct from trackerError
+  // so a no-op doesn't get red error styling.
+  const [trackerNotice, setTrackerNotice] = useState<string | null>(null);
+  const [trackerJustAdded, setTrackerJustAdded] = useState<string | null>(null); // confirmation banner text
 
   // Live "already tracked" indices for this session — seeded from the parent's
   // action_items prop, but refreshed from the DB every time the modal opens.
@@ -48,9 +52,20 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
   }, [actionItems, session.id]);
   const [liveTrackedIndices, setLiveTrackedIndices] = useState<Set<number>>(propTrackedIndices);
 
-  // Keep liveTrackedIndices in sync when the prop changes (e.g. after we add)
+  // Merge, never overwrite. `propTrackedIndices` is derived from the parent's
+  // in-memory list, which can legitimately be missing rows that exist in the
+  // DB (added from another tab, or loaded before this session's rows landed).
+  // openTracker() seeds this set from the DB — the authoritative source — so
+  // letting a stale prop overwrite it would un-grey items that really are
+  // tracked. Within a mounted session the tracked set only ever grows; it is
+  // re-seeded from the DB on every open, which is the correct refresh point.
   useEffect(() => {
-    setLiveTrackedIndices(propTrackedIndices);
+    setLiveTrackedIndices(prev => {
+      let changed = false;
+      const next = new Set(prev);
+      propTrackedIndices.forEach(i => { if (!next.has(i)) { next.add(i); changed = true; } });
+      return changed ? next : prev;
+    });
   }, [propTrackedIndices]);
 
   const totalPoints = session.analysis?.actionPoints?.length ?? 0;
@@ -62,6 +77,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
 
   const openTracker = async () => {
     setTrackerError(null);
+    setTrackerNotice(null);
     setTrackerOpen(true);
     setExportOpen(false);
 
@@ -83,8 +99,12 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
           prev.forEach(i => { if (!freshSet.has(i)) next.add(i); });
           return next;
         });
-      } catch (err) {
+      } catch (err: any) {
+        // The refresh is best-effort — we keep whatever we already knew from
+        // the parent rather than pretending nothing is tracked. Say so, so a
+        // stale "Already in tracker" badge isn't silently misleading.
         console.warn('[ResultsView] Could not refresh tracker state:', err);
+        setTrackerNotice("Couldn't refresh what's already tracked, so this list may be out of date. Adding is still safe — duplicates are filtered out.");
       }
     }
   };
@@ -112,43 +132,49 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
     if (selectedTrackerIndices.size === 0) { setTrackerError('Select at least one action to add.'); return; }
     setIsAddingToTracker(true);
     setTrackerError(null);
+    setTrackerNotice(null);
     try {
       const indices = Array.from(selectedTrackerIndices);
-      const inserted = await syncActionItemsFromRecording(session, userId, indices);
-      if (inserted.length === 0) {
-        // Server filtered everything out — re-pull truth and update modal so
-        // the user immediately sees what's actually tracked.
-        try {
-          const fresh = await fetchTrackedSourceIndicesForRecording(userId, session.id);
-          const freshSet = new Set(fresh);
-          setLiveTrackedIndices(freshSet);
-          setSelectedTrackerIndices(new Set());
-          const stillNew = indices.filter(i => !freshSet.has(i));
-          if (stillNew.length === 0) {
-            setTrackerError(`These actions are already in your tracker (from a previous session sync). Look in Action Items for session "${session.title}".`);
-          } else {
-            setTrackerError('No new rows were inserted. Try clicking Add again.');
-          }
-        } catch {
-          setTrackerError('No rows were inserted, and we could not re-check the tracker state. Please retry.');
-        }
-      } else {
+      // `skipped` is reported separately from `inserted`, so "already tracked"
+      // is no longer indistinguishable from "the insert failed".
+      const { inserted, skipped } = await syncActionItemsFromRecording(session, userId, indices);
+
+      // Whatever came back is now authoritative for those positions.
+      setLiveTrackedIndices(prev => {
+        const next = new Set(prev);
+        inserted.forEach(it => { if (typeof it.sourceIndex === 'number') next.add(it.sourceIndex); });
+        skipped.forEach(i => next.add(i));
+        return next;
+      });
+      setSelectedTrackerIndices(new Set());
+
+      if (inserted.length > 0) {
         const withMeta = inserted.map(item => ({ ...item, sessionTitle: session.title, sessionDate: session.date }));
         onActionItemsAdded?.(withMeta);
-        // Locally extend the "tracked" set so the modal reflects the addition
-        setLiveTrackedIndices(prev => {
-          const next = new Set(prev);
-          inserted.forEach(it => { if (typeof it.sourceIndex === 'number') next.add(it.sourceIndex); });
-          return next;
-        });
-        setSelectedTrackerIndices(new Set());
-        setTrackerJustAdded(inserted.length);
+        setTrackerJustAdded(
+          skipped.length > 0
+            ? `Added ${inserted.length}. ${skipped.length} ${skipped.length === 1 ? 'was' : 'were'} already in your tracker.`
+            : `Added ${inserted.length} ${inserted.length === 1 ? 'action' : 'actions'} to your tracker`
+        );
         setTrackerOpen(false);
-        setTimeout(() => setTrackerJustAdded(0), 3000);
+        setTimeout(() => setTrackerJustAdded(null), 4000);
+      } else if (skipped.length > 0) {
+        // Not an error — every selected action was already tracked. Keep the
+        // modal open so the "Already in tracker" badges are visible, and offer
+        // a way to go look rather than just saying so.
+        setTrackerNotice(
+          skipped.length === 1
+            ? 'That action is already in your tracker.'
+            : `All ${skipped.length} selected actions are already in your tracker.`
+        );
+      } else {
+        // Nothing selected survived clamping — the notes changed underneath us.
+        setTrackerNotice('Those actions are no longer part of this session’s notes. Reopen this dialog to see the current list.');
       }
     } catch (err: any) {
       console.error('[ResultsView] Add to tracker failed:', err);
-      setTrackerError(err?.message || 'Could not add actions to tracker. Please try again.');
+      // Surface the real reason. Never tell the user to click Add again.
+      setTrackerError(err?.message || 'Could not add actions to tracker.');
     } finally {
       setIsAddingToTracker(false);
     }
@@ -1216,13 +1242,13 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
       )}
 
       {/* "Added to tracker" toast */}
-      {trackerJustAdded > 0 && ReactDOM.createPortal(
+      {trackerJustAdded && ReactDOM.createPortal(
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-3 px-5 py-3 rounded-2xl bg-teal-500/95 text-white shadow-2xl backdrop-blur-xl border border-white/10 animate-fade-in">
           <svg className="w-5 h-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
           </svg>
           <span className="text-sm font-bold">
-            Added {trackerJustAdded} {trackerJustAdded === 1 ? 'action' : 'actions'} to your tracker
+            {trackerJustAdded}
           </span>
         </div>,
         document.body
@@ -1333,6 +1359,19 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
               {trackerError && (
                 <div className="text-xs font-semibold text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
                   {trackerError}
+                </div>
+              )}
+              {trackerNotice && (
+                <div className="flex items-center gap-3 text-xs font-semibold text-teal-300 bg-teal-500/10 border border-teal-500/20 rounded-lg px-3 py-2">
+                  <span className="flex-1">{trackerNotice}</span>
+                  {onNavigateToActionItems && (
+                    <button
+                      onClick={() => { setTrackerOpen(false); onNavigateToActionItems(); }}
+                      className="shrink-0 px-2.5 py-1 rounded-md bg-teal-500/20 hover:bg-teal-500/30 text-teal-200 transition-colors"
+                    >
+                      Go to Action Items
+                    </button>
+                  )}
                 </div>
               )}
               <div className="flex items-center gap-3">

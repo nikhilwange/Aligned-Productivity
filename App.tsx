@@ -1567,7 +1567,14 @@ const App: React.FC = () => {
               onUpdateTitle={handleUpdateTitle}
               userId={user?.id}
               actionItems={actionItems}
-              onActionItemsAdded={(newItems) => setActionItems(prev => [...prev, ...newItems])}
+              onActionItemsAdded={(newItems) => setActionItems(prev => {
+                // Dedup by row id — the tracker modal can fire this more than
+                // once for the same rows (retry, double-click), and there is
+                // no UNIQUE constraint in the DB to fall back on.
+                const seen = new Set(prev.map(i => i.id));
+                return [...prev, ...newItems.filter(i => !seen.has(i.id))];
+              })}
+              onNavigateToActionItems={() => setActiveRecordingId('actions')}
             />
           ) : isRecordingMode ? (
             <div className="h-full flex flex-col items-center justify-center bg-[var(--surface-950)] p-6 relative">
