@@ -310,9 +310,13 @@ const HomeView: React.FC<HomeViewProps> = ({
             <div className="flex flex-col items-end gap-1.5 shrink-0">
               <button
                 onClick={() => {
-                  const connectorUrl = encodeURIComponent('https://getitaligned.com/api/mcp');
-                  const url = `https://claude.ai/settings/connectors?modal=add-custom-connector&connectorName=Aligned&connectorUrl=${connectorUrl}`;
-                  window.open(url, '_blank', 'noopener,noreferrer');
+                  const MCP_SERVER_URL = 'https://getitaligned.com/api/mcp';
+                  const CONNECTOR_NAME = 'Aligned';
+                  const connectUrl =
+                    `https://claude.ai/customize/connectors?modal=add-custom-connector` +
+                    `&connectorName=${encodeURIComponent(CONNECTOR_NAME)}` +
+                    `&connectorUrl=${encodeURIComponent(MCP_SERVER_URL)}`;
+                  window.open(connectUrl, '_blank', 'noopener,noreferrer');
                 }}
                 className="px-5 py-2.5 rounded-full text-[13.5px] font-semibold hover:opacity-90 active:scale-[0.98] transition"
                 style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
@@ -320,7 +324,7 @@ const HomeView: React.FC<HomeViewProps> = ({
                 Add to Claude
               </button>
               <div className="text-[11px] text-[var(--text-tertiary)]">
-                Requires a Claude Pro, Max, Team, or Enterprise plan.
+                Requires a Claude Pro, Max, Team, or Enterprise plan. You'll be asked to review and confirm on Claude's side.
               </div>
             </div>
           </div>
