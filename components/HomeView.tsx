@@ -283,6 +283,49 @@ const HomeView: React.FC<HomeViewProps> = ({
           </>
         )}
 
+        {/* Connect to Claude — deep-links into Claude.ai's Add Custom Connector flow,
+           prefilled with Aligned's MCP server URL. Only worth pitching once there's
+           data for Claude to actually see. */}
+        {completedRecordings.length > 0 && (
+          <div className="glass-card rounded-[18px] px-6 py-5 mt-9 flex items-center justify-between flex-wrap gap-4">
+            <div className="flex items-center gap-4 min-w-0">
+              <div
+                className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
+                style={{ background: 'var(--accent-soft)' }}
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="var(--accent)" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3m-9 3h12a1 1 0 011 1v2a5 5 0 01-5 5h-4a5 5 0 01-5-5v-2a1 1 0 011-1z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 16v4m-3 0h6" />
+                </svg>
+              </div>
+              <div className="min-w-0">
+                <div className="text-[15px] font-semibold text-[var(--text-primary)]">
+                  Connect to Claude
+                </div>
+                <div className="text-[13px] text-[var(--text-tertiary)] mt-0.5">
+                  Ask Claude about your meetings, action items, and decisions — right from Claude.ai or Claude Desktop.
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-col items-end gap-1.5 shrink-0">
+              <button
+                onClick={() => {
+                  const connectorUrl = encodeURIComponent('https://getitaligned.com/api/mcp');
+                  const url = `https://claude.ai/settings/connectors?modal=add-custom-connector&connectorName=Aligned&connectorUrl=${connectorUrl}`;
+                  window.open(url, '_blank', 'noopener,noreferrer');
+                }}
+                className="px-5 py-2.5 rounded-full text-[13.5px] font-semibold hover:opacity-90 active:scale-[0.98] transition"
+                style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+              >
+                Add to Claude
+              </button>
+              <div className="text-[11px] text-[var(--text-tertiary)]">
+                Requires a Claude Pro, Max, Team, or Enterprise plan.
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Empty state */}
         {completedRecordings.length === 0 && (
           <EmptyState
