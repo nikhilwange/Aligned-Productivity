@@ -27,7 +27,15 @@ interface AudioRecorderProps {
 
 type InputMode = 'mic' | 'meeting' | 'call';
 
-const MAX_RECORDING_SECONDS = 7200; // 2 Hours limit for API stability
+// Runaway guard, not a quality limit. The old 2-hour value dated from the
+// pre-Phase-2 recorder, when the whole meeting was one blob handed to the
+// transcription API and 2h was where that broke. Segmented recording removed
+// that ceiling — the API never sees more than one ~5-minute segment — and
+// analysis is now chunked too, so meeting length no longer drives any single
+// call. What actually protects against a forgotten recording is
+// SILENCE_AUTO_STOP_SECONDS below, which is far more precise than a wall-clock
+// cap. This exists only so a truly stuck session cannot record forever.
+const MAX_RECORDING_SECONDS = 6 * 60 * 60; // 6 hours
 const SILENCE_THRESHOLD = 0.01; // RMS below this = silence
 const SILENCE_AUTO_STOP_SECONDS = 300; // 5 minutes of continuous silence → auto-stop
 const CHECKPOINT_INTERVAL_CHUNKS = 10; // checkpoint to IndexedDB every ~10s (since timeslice=1000ms)
@@ -366,10 +374,16 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
     }
   };
 
+  // MM:SS under an hour, H:MM:SS at or above it. Without the hours branch a
+  // long session reads as "215:43", and at the 6-hour cap the "remaining"
+  // counter would start at "360:00".
   const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
     const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    const mm = mins.toString().padStart(2, '0');
+    const ss = secs.toString().padStart(2, '0');
+    return hrs > 0 ? `${hrs}:${mm}:${ss}` : `${mm}:${ss}`;
   };
 
   const isRecording = appState === AppState.RECORDING || appState === AppState.PAUSED;

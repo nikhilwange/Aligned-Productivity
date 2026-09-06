@@ -337,8 +337,20 @@ Example format:
   let analysisPrompt: string;
 
   if (pass === 'actions') {
-    // Pass 1 of 2: the cheap, fast half. No `notes`, so the output is small
-    // (~6k tokens rather than ~15k) and the call lands well inside the limit.
+    // Pass 1 of 2. Output volume is what costs time here, and unbounded
+    // "be exhaustive" extraction was producing roughly one action point per 35
+    // seconds of meeting — 213 for a 3.5h transcript. That made this pass slow
+    // (97.9s on the worst chunk) AND the downstream notes pass slow (123.5s,
+    // since it has to render every one of them), for a list longer than anyone
+    // reads. Capping it is the single lever that speeds up both halves.
+    //
+    // ~1 action per 400 words (≈1 per 3 minutes of speech), clamped so a short
+    // meeting still gets a useful list and a long one stays bounded. The cap is
+    // stated AFTER the rules above so it overrides their "err on the side of
+    // including borderline items" pressure.
+    const wordCount = transcript.split(/\s+/).length;
+    const maxActions = Math.max(15, Math.min(35, Math.round(wordCount / 400)));
+
     analysisPrompt = `${PREAMBLE}
 
 The JSON must match this exact shape:
@@ -351,6 +363,12 @@ The JSON must match this exact shape:
 Do NOT include a "notes" field — it is produced by a separate call.
 
 ${ACTION_POINT_RULES}
+
+BUDGET (overrides the "be exhaustive" guidance above where they conflict):
+- Return AT MOST ${maxActions} action points.
+- If there are more candidates than that, keep the ${maxActions} most concrete and consequential — prefer items with a named owner, a specific deliverable, or a date attached.
+- Drop vague intentions, restatements of the same commitment, and anything that is really just discussion rather than a commitment.
+- Fewer, sharper items are BETTER than a long list. Do not pad to reach the limit.
 
 IMPORTANT:
 - Write ALL action points entirely in English — translate any Hindi, Marathi, or other non-English content

@@ -455,17 +455,23 @@ export const extractTranscript = async (
 //
 // Measured end-to-end on a 40k-word (~3.5h) transcript:
 //
-//   4 'actions' chunks, 3 in parallel : 32.1s / 45.9s / 53.8s / 97.9s
-//   1 'notes' call over the full text : 123.5s
-//   total wall time                   : 221.3s, worst single call 123.5s
+//   4 'actions' chunks, all in parallel : 36.7s / 46.2s / 47.5s / 52.6s
+//   1 'notes' call over the full text   : 75.7s
+//   total wall time                     : 128.3s, worst single call 75.7s
 //
-// Slower overall than the old single call (~142s) but that call was dying;
-// here nothing goes near the limit. Note the notes call came in at 123.5s
-// rather than the 71s measured in isolation: chunking makes the model more
-// granular, yielding ~213 action points instead of ~170, and the notes pass
-// has to render all of them. That is the thinnest remaining margin (~27s), so
-// if it ever starts failing, cap the action points per chunk before anything
-// else — the notes call's cost is driven by how many there are.
+// So the long path is now FASTER than the old single call (~142s) as well as
+// reliable, with roughly 2x margin on every call. Getting there took two
+// levers beyond the split itself, both of which matter if this is ever tuned:
+//
+//   1. Capping action points per chunk (server side). Unbounded extraction
+//      produced ~213 for a 3.5h meeting, which made the actions pass slow
+//      (97.9s worst chunk) AND the notes pass slow (123.5s, rendering them
+//      all). Capping cut the total to ~105 and both halves got faster.
+//   2. Running all chunks in one parallel wave rather than two.
+//
+// Note when re-measuring: Portkey caches identical prompts. Re-running the
+// same transcript returned a full 3.5h analysis in 0.7s, which measures
+// nothing. Vary the transcript between runs.
 //
 // The 'notes' call is handed the merged action points and told to use exactly
 // those, preserving the guarantee that the notes' ✅ Action Items section and
@@ -475,14 +481,28 @@ export const extractTranscript = async (
 // Streaming (NDJSON keepalives) is layered on top; it removes the separate
 // 150s idle-timeout failure mode but cannot extend a wall clock.
 
-// Transcript words per 'actions' call. 12k measured at 51.6s — roughly a 3x
-// margin against the 150s limit, which leaves room for the provider-side
-// variance we see (the same input has come back anywhere from 110s to 133s).
+// Below this, ONE combined call is both safe and faster, so we use it and skip
+// the split entirely. Measured combined: 85.4s @12k (65s margin) but 132.8s and
+// 109.8s @23k — that upper band is too close to the limit to trust, so the
+// threshold sits nearer the measured-safe end.
+//
+// This matters for UX far more than it looks: the overwhelming majority of
+// meetings land under it, so they keep today's speed AND today's richer,
+// uncapped action list. Only genuinely long recordings — the ones that were
+// failing outright — pay the slower multi-call cost.
+const SINGLE_CALL_MAX_WORDS = 14000;
+
+// Transcript words per 'actions' call once we do split. 12k measured at 51.6s —
+// roughly a 3x margin against the 150s limit, which leaves room for the
+// provider-side variance we see (the same input has come back anywhere from
+// 110s to 133s).
 const ACTION_CHUNK_WORDS = 12000;
 
-// Parallel 'actions' calls in flight. Kept modest so a long meeting can't fan
-// out into a rate-limit storm against Portkey.
-const ACTION_CHUNK_CONCURRENCY = 3;
+// Parallel 'actions' calls in flight. 4 covers a 3.5h meeting in a single wave
+// (its 4 chunks all start at once, so the phase costs one slow chunk rather
+// than two rounds), while still being modest enough not to fan a very long
+// recording out into a rate-limit storm against Portkey.
+const ACTION_CHUNK_CONCURRENCY = 4;
 
 /**
  * Split a transcript into chunks of at most `maxWords`, breaking on sentence
@@ -550,6 +570,16 @@ export const analyzeTranscript = async (
       LARGE_AUDIO_TIMEOUT_MS, // generous 10-min client-side timeout per call
     );
 
+  // ── Fast path: short enough for one combined call ───────────────────────
+  // Keeps the common case at its original speed and output. It also means an
+  // older function (which ignores `pass`) behaves identically here.
+  const totalWords = transcript.split(/\s+/).length;
+  if (totalWords <= SINGLE_CALL_MAX_WORDS) {
+    const data = await callPass({ transcript }, 'Pass 2: Analysis generation');
+    if (!data.responseText) throw new Error('Empty analysis response from Gemini.');
+    return { ...parseJsonResponse(data.responseText), isTruncated: !!data.isTruncated };
+  }
+
   // ── Pass 1: action points, one call per transcript chunk, in parallel ───
   const chunks = chunkTranscript(transcript, ACTION_CHUNK_WORDS);
 
@@ -559,20 +589,12 @@ export const analyzeTranscript = async (
     async (chunk, i) => {
       const data = await callPass(
         { transcript: chunk, pass: 'actions' },
-        `Pass 2a: Action extraction${chunks.length > 1 ? ` (${i + 1}/${chunks.length})` : ''}`,
+        `Pass 2a: Action extraction (${i + 1}/${chunks.length})`,
       );
       if (!data.responseText) throw new Error('Empty analysis response from Gemini.');
       return { parsed: parseJsonResponse(data.responseText), isTruncated: !!data.isTruncated };
     },
   );
-
-  // Backward compatibility: an older function ignores `pass` and returns the
-  // combined shape, notes included. If notes came back, the split never
-  // happened — use that single response as-is rather than calling again.
-  const firstWithNotes = chunkResults.find(r => r.parsed.summary?.trim());
-  if (firstWithNotes && chunks.length === 1) {
-    return { ...firstWithNotes.parsed, isTruncated: firstWithNotes.isTruncated };
-  }
 
   // Merge chunk results. Actions are concatenated in transcript order and
   // de-duplicated (a commitment restated near a chunk boundary can surface
