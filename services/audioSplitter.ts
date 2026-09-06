@@ -78,6 +78,8 @@ const SAMPLE_RATES: Record<number, number[]> = {
 interface Mp3Frame {
   length: number;     // bytes, including this header
   durationMs: number;
+  versionId: number;  // 3 = MPEG1, 2 = MPEG2, 0 = MPEG2.5
+  isMono: boolean;
 }
 
 /** Decode an MP3 frame header, or null if these 4 bytes aren't one. */
@@ -117,7 +119,38 @@ function parseMp3Frame(b0: number, b1: number, b2: number, b3: number): Mp3Frame
     : Math.floor((samples / 8 * bitrate) / sampleRate) + padding;
 
   if (length < 4) return null;
-  return { length, durationMs: (samples / sampleRate) * 1000 };
+  return {
+    length,
+    durationMs: (samples / sampleRate) * 1000,
+    versionId,
+    isMono: ((b3 >> 6) & 0x03) === 3, // channel mode 11 = single channel
+  };
+}
+
+/**
+ * Is the frame at `off` a Xing/Info/VBRI header frame rather than audio?
+ *
+ * The first frame of a VBR MP3 is a metadata frame declaring the file's TOTAL
+ * frame count and duration. It decodes to silence, and crucially it describes
+ * the WHOLE original file — so if it is left at the head of a 5-minute slice,
+ * every player and probe reports that slice as the full recording. Observed in
+ * production: segment 0 of a 3.5h upload probed as 12683s (211 minutes), a
+ * 97.6% apparent decode loss, and the segment was dropped.
+ *
+ * The tag sits at a fixed offset after the frame header that depends on MPEG
+ * version and channel mode (it lives in the frame's side-information area).
+ */
+function isXingFrame(buf: Uint8Array, off: number, frame: Mp3Frame): boolean {
+  const isV1 = frame.versionId === 3;
+  const sideInfo = isV1 ? (frame.isMono ? 17 : 32) : (frame.isMono ? 9 : 17);
+  const at = (o: number, s: string) => {
+    if (o + s.length > buf.length) return false;
+    for (let i = 0; i < s.length; i++) if (buf[o + i] !== s.charCodeAt(i)) return false;
+    return true;
+  };
+  const tag = off + 4 + sideInfo;
+  // VBRI (Fraunhofer) always sits 32 bytes after the header, ignoring side info.
+  return at(tag, 'Xing') || at(tag, 'Info') || at(off + 4 + 32, 'VBRI');
 }
 
 /**
@@ -161,6 +194,7 @@ async function scanMp3Cuts(
 
   let lastProgress = 0;
   let resyncs = 0;
+  let firstFrame = true;
 
   while (pos + 4 <= size) {
     await ensure(pos, 4);
@@ -168,6 +202,21 @@ async function scanMp3Cuts(
     if (o + 4 > win.length) break; // ran off the end of a short final window
 
     const frame = parseMp3Frame(win[o], win[o + 1], win[o + 2], win[o + 3]);
+
+    if (frame && firstFrame) {
+      firstFrame = false;
+      // Drop a leading Xing/Info/VBRI frame. It carries the ORIGINAL file's
+      // duration, so leaving it at the head of segment 0 makes that segment
+      // claim to be the whole recording. It decodes to silence, so nothing of
+      // the audio is lost by skipping it.
+      await ensure(pos, Math.min(frame.length, 64));
+      const o2 = pos - winStart;
+      if (o2 + 4 <= win.length && isXingFrame(win, o2, frame)) {
+        pos += frame.length;
+        segStart = pos;
+        continue;
+      }
+    }
 
     if (!frame) {
       // Not a frame header — most often an ID3/Xing blob or padding between
