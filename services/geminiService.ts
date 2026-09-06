@@ -62,104 +62,16 @@ export const invokeEdgeFunction = async <T>(
   return res.json() as Promise<T>;
 };
 
-// ─── Streaming (NDJSON) invoke ────────────────────────────────────────────────
-// Same contract as invokeEdgeFunction, but asks the function to stream an
-// NDJSON body and keep the connection alive while it works.
-//
-// Why: Supabase's gateway applies a 150s *request idle timeout* to a request
-// that sends no bytes, on every plan. Analysis measured 132.8s for a 2-hour
-// transcript and 142.1s for a 3.5-hour one — clearing that limit by seconds.
-// The function now emits a keepalive line every 10s, which resets the idle
-// clock and makes the 400s worker wall clock the real ceiling instead.
-//
-// Wire format — one JSON object per line:
-//   {"type":"start"}                                  once, immediately
-//   {"type":"ping"}                                   every ~10s while working
-//   {"type":"result","responseText":"…"}              terminal, success
-//   {"type":"error","error":"…"}                      terminal, failure
-//
-// Falls back to plain JSON if the response isn't NDJSON, so a newer client
-// deployed against an older function keeps working.
-const invokeEdgeFunctionStreaming = async <T>(
-  name: string,
-  body: unknown,
-): Promise<T> => {
-  const token = await getAuthToken();
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/x-ndjson',
-      Authorization: `Bearer ${token}`,
-      apikey: SUPABASE_ANON_KEY,
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    const error = new Error(err.error || `${name} failed (${res.status})`);
-    (error as any).status = res.status;
-    (error as any).body = err;
-    throw error;
-  }
-
-  // Older deployment (or any non-streaming intermediary) — read it as before.
-  const contentType = res.headers.get('content-type') || '';
-  if (!contentType.includes('application/x-ndjson') || !res.body) {
-    return res.json() as Promise<T>;
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let result: T | null = null;
-  let streamedError: string | null = null;
-
-  // Handle one complete NDJSON line. Unknown types (including future ones)
-  // are ignored rather than treated as failures.
-  const handleLine = (line: string) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    let msg: any;
-    try {
-      msg = JSON.parse(trimmed);
-    } catch {
-      return; // a partial or malformed line is never fatal on its own
-    }
-    if (msg.type === 'result') result = msg as T;
-    else if (msg.type === 'error') streamedError = msg.error || 'Analysis failed';
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let newlineAt: number;
-    while ((newlineAt = buffer.indexOf('\n')) !== -1) {
-      handleLine(buffer.slice(0, newlineAt));
-      buffer = buffer.slice(newlineAt + 1);
-    }
-  }
-  handleLine(buffer + decoder.decode()); // flush any unterminated final line
-
-  if (streamedError) {
-    // The stream had already returned HTTP 200 by the time this failed, so
-    // re-raise it as a 500 to keep retryOperation behaving exactly as it did
-    // on the buffered path.
-    const error = new Error(streamedError);
-    (error as any).status = 500;
-    throw error;
-  }
-  if (!result) {
-    // Connection closed without a terminal line — a dropped or truncated
-    // stream. Retryable, same as a transient server failure.
-    const error = new Error(`${name} stream ended without a result`);
-    (error as any).status = 500;
-    throw error;
-  }
-  return result;
-};
+// NOTE: an NDJSON streaming variant of the above lived here. It emitted
+// keepalives so a long analysis could not trip Supabase's 150s request idle
+// timeout. It was removed once analysis was chunked: no single call now
+// exceeds ~76s, so the idle timeout is no longer reachable, and streaming
+// cannot help with the OTHER limit (the 150s WallClockTime kill) anyway.
+// Meanwhile it added a real failure mode -- a long-held streaming response is
+// exactly what an intercepting corporate proxy mangles, and a 3.5h upload died
+// with "TypeError: Failed to fetch" inside it after every segment had already
+// transcribed. The edge function still honours Accept: application/x-ndjson,
+// so this can be reinstated if a future call ever needs it.
 
 // ─── Blob helper ──────────────────────────────────────────────────────────────
 const blobToBase64 = (blob: Blob): Promise<string> => {
@@ -323,14 +235,26 @@ export async function retryOperation<T>(
   try {
     return await withTimeout(operation(), timeoutMs, operationName);
   } catch (error: any) {
+    // A browser network failure (connection reset, proxy hiccup, DNS blip,
+    // CORS rejection) surfaces as `TypeError` with a message that differs per
+    // engine: Chrome "Failed to fetch", Safari "Load failed", Node/undici
+    // "fetch failed". Only the Node spelling was listed here, so a real
+    // browser network blip was treated as fatal and skipped retries entirely —
+    // which cost a 3.5h upload its entire analysis after all 43 segments had
+    // already transcribed successfully.
+    const msg: string = error?.message ?? '';
+    const isNetworkError =
+      error instanceof TypeError ||
+      /failed to fetch|fetch failed|load failed|network ?error|networkerror/i.test(msg);
+
     const isRetryable =
       error.status === 500 ||
       error.status === 503 ||
       error.status === 429 ||
-      error.message?.includes('xhr error') ||
-      error.message?.includes('fetch failed') ||
-      error.message?.includes('timed out') ||
-      error.message?.includes('code: 6');
+      isNetworkError ||
+      msg.includes('xhr error') ||
+      msg.includes('timed out') ||
+      msg.includes('code: 6');
 
     if (retries > 0 && isRetryable) {
       // Honor a server-supplied Retry-After (attached as `retryAfterMs` on 429s)
@@ -560,7 +484,7 @@ export const analyzeTranscript = async (
     label: string,
   ) =>
     retryOperation(
-      () => invokeEdgeFunctionStreaming<{ responseText: string; isTruncated?: boolean }>(
+      () => invokeEdgeFunction<{ responseText: string; isTruncated?: boolean }>(
         'gemini-analyze',
         { recordingDate, ...body },
       ),
