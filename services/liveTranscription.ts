@@ -212,14 +212,15 @@ async function transcribeOneSegment(
     }
     if (signal.aborted) return;
 
-    // Prefer the locally cached blob; fall back to the uploaded copy.
+    // Prefer the locally cached blob; fall back to the uploaded copy. The
+    // manifest entry is read either way for its duration, which is passed to
+    // the transcriber so it doesn't have to probe (see knownDurationMs — the
+    // <audio> probe mis-reads a VBR MP3 slice badly).
+    const manifest = await getSegmentManifest(s.sessionId);
+    const entry = manifest?.segments.find((seg) => seg.index === index);
     let blob = await getSegmentBlob(s.sessionId, index);
-    if (!blob) {
-      const manifest = await getSegmentManifest(s.sessionId);
-      const entry = manifest?.segments.find((seg) => seg.index === index);
-      if (entry?.storagePath) {
-        blob = await downloadAudioFromStorage(entry.storagePath);
-      }
+    if (!blob && entry?.storagePath) {
+      blob = await downloadAudioFromStorage(entry.storagePath);
     }
     if (!blob) {
       console.log(`[LiveTx] seg ${index} blob unavailable, deferring to finish`);
@@ -249,6 +250,7 @@ async function transcribeOneSegment(
       transcript = await transcribeAudioWithSarvam(blob, {
         recoveryId: `${s.sessionId}:seg${index}`,
         signal: segController.signal,
+        knownDurationMs: entry?.durationMs,
         onProgress: (done, total) => { chunksDone = done; chunksTotal = total; },
       });
     } finally {

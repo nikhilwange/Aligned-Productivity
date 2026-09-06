@@ -16,6 +16,17 @@ export interface SarvamTranscribeOptions {
   // starts (Retry / auto-resume), the previous run's signal is aborted so its
   // in-flight chunk fetches cancel and the pipeline exits without writing state.
   signal?: AbortSignal;
+  // True duration of this blob, when the caller already knows it, used INSTEAD
+  // of probing with an <audio> element for the decode-truncation check below.
+  //
+  // Why this matters: a segment sliced out of a VBR MP3 carries no Xing/Info
+  // header (that lives in the original file's first frame only), so browsers
+  // fall back to estimating duration as size x 8 / first-frame-bitrate. On VBR
+  // that estimate can be wildly high — a real 5-minute segment probed as 8 or
+  // 13 minutes — which made the truncation check below fire on perfectly good
+  // audio and drop the segment. Callers holding a segment manifest know the
+  // real duration from the frame headers, so they should pass it.
+  knownDurationMs?: number;
 }
 
 const CHUNK_DURATION_MS = 25000; // 25 seconds per chunk (Sarvam REST API limit is 30s)
@@ -280,15 +291,24 @@ async function decodeForChunking(arrayBuffer: ArrayBuffer): Promise<AudioBuffer>
 }
 
 // Split an audio blob into time-based WAV chunks using OfflineAudioContext.
-const splitAudioBlob = async (audioBlob: Blob, chunkDurationMs: number): Promise<Blob[]> => {
+const splitAudioBlob = async (
+  audioBlob: Blob,
+  chunkDurationMs: number,
+  knownDurationMs?: number,
+): Promise<Blob[]> => {
   const durationEstimateMs = (audioBlob.size / 16000) * 1000;
   if (durationEstimateMs <= 30000 || audioBlob.size < 500000) {
     return [audioBlob];
   }
 
-  // Probe the source's true duration BEFORE decoding so we can detect
-  // silent truncation afterwards.
-  const probedDurationS = await probeBlobDuration(audioBlob);
+  // Establish the source's true duration BEFORE decoding so we can detect
+  // silent truncation afterwards. A caller-supplied duration always wins: it
+  // comes from the segment manifest (MP3 frame headers for a split upload) and
+  // is authoritative, whereas the <audio> probe guesses from bitrate and is
+  // badly wrong for a VBR slice with no Xing header. See knownDurationMs.
+  const probedDurationS = knownDurationMs && knownDurationMs > 0
+    ? knownDurationMs / 1000
+    : await probeBlobDuration(audioBlob);
   const arrayBuffer = await audioBlob.arrayBuffer();
 
   let audioBuffer: AudioBuffer;
@@ -382,7 +402,7 @@ export const transcribeAudioWithSarvam = async (
 
   console.log(`[Sarvam] Transcribing audio (${(audioBlob.size / 1024).toFixed(1)} KB)...`);
   const token = await getAuthToken();
-  const chunks = await splitAudioBlob(audioBlob, CHUNK_DURATION_MS);
+  const chunks = await splitAudioBlob(audioBlob, CHUNK_DURATION_MS, opts?.knownDurationMs);
   console.log(`[Sarvam] Split into ${chunks.length} chunk(s)`);
 
   // Single-chunk fast path: send inline as base64 — no storage needed

@@ -1086,6 +1086,10 @@ const App: React.FC = () => {
           const text = await transcribeAudioWithSarvam(blob, {
             recoveryId: `${recoveryId}:seg${seg.index}`,
             signal,
+            // The manifest's duration is authoritative; without it the <audio>
+            // probe mis-reads a VBR MP3 slice (no Xing header) as much longer
+            // than it is and the truncation check drops good audio.
+            knownDurationMs: seg.durationMs,
             onProgress: (done, total) => { if (!signal.aborted) setChunkProgress({ done, total }); },
           });
           transcripts.push(text);
