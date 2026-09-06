@@ -21,6 +21,10 @@ interface ManualEntryViewProps {
   onSubmit: (data: ManualEntrySubmitData) => void;
   onCancel: () => void;
   isProcessing: boolean;
+  // Replaces the generic "Uploading & transcribing…" label while a large audio
+  // file is being split and its segments uploaded. A 3.5h file produces ~42
+  // uploads, so a static label would look hung for minutes.
+  progressLabel?: string | null;
 }
 
 const IconMonitor = (
@@ -86,7 +90,7 @@ const formatDurationLabel = (totalSeconds: number): string => {
   return `${s}s`;
 };
 
-const ManualEntryView: React.FC<ManualEntryViewProps> = ({ onSubmit, onCancel, isProcessing }) => {
+const ManualEntryView: React.FC<ManualEntryViewProps> = ({ onSubmit, onCancel, isProcessing, progressLabel }) => {
   const now = new Date();
   const localDatetime = new Date(now.getTime() - now.getTimezoneOffset() * 60000)
     .toISOString().slice(0, 16);
@@ -174,7 +178,7 @@ const ManualEntryView: React.FC<ManualEntryViewProps> = ({ onSubmit, onCancel, i
   };
 
   const submitLabel = isProcessing
-    ? (mode === 'audio' ? 'Uploading & transcribing…' : 'Analysing transcript…')
+    ? (progressLabel || (mode === 'audio' ? 'Uploading & transcribing…' : 'Analysing transcript…'))
     : (mode === 'audio' ? 'Upload & Transcribe' : 'Generate Notes & Insights');
 
   return (

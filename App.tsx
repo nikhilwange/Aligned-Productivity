@@ -23,7 +23,7 @@ import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage } from './services/storageService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems } from './services/supabaseService';
 import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery, clearChunkTranscripts, clearAllChunkTranscripts, purgeStaleChunkTranscripts, getSegmentManifest, getAllSegmentManifests, getSegmentBlob, clearSegmentManifest, purgeStaleSegmentManifests, getSegmentTranscripts, clearSegmentTranscripts, clearAllSegmentTranscripts, purgeStaleSegmentTranscripts, SegmentManifest } from './services/recordingRecovery';
-import { reuploadPendingSegments, getActiveSegmentSessionId } from './services/segmentRecorder';
+import { reuploadPendingSegments, getActiveSegmentSessionId, ingestFileAsSegments } from './services/segmentRecorder';
 import { USE_SEGMENTED_RECORDING, BILLING_ENABLED } from './config/features';
 import { startHeartbeat, clearHeartbeat, isHeartbeatFresh, HEARTBEAT_STALE_MS } from './services/processingHeartbeat';
 import { beginPipelineRun, endPipelineRun } from './services/pipelineRuns';
@@ -103,6 +103,12 @@ const App: React.FC = () => {
   const [preTranscribed, setPreTranscribed] = useState<{ done: number; total: number } | null>(null);
   // "Download audio" gather progress for a failed segmented session ("Preparing download… 3 of 12").
   const [audioDownload, setAudioDownload] = useState<{ sessionId: string; done: number; total: number } | null>(null);
+  // Client-side split progress for a manual audio upload. A 3.5h MP3 scans in
+  // well under a second, but the per-segment upload that follows is network-
+  // bound and worth showing. Component state only.
+  const [uploadSplit, setUploadSplit] = useState<
+    { sessionId: string; phase: 'splitting' | 'saving' | 'uploading'; percent: number } | null
+  >(null);
 
   // Keep the device awake while any session is actively processing (fresh
   // recording, manual upload, retry, or auto-resume). Feature-detected + safe.
@@ -512,6 +518,7 @@ const App: React.FC = () => {
     // users can re-process a failed long recording: download the archived
     // audio from Supabase Storage and re-upload it here.
     if (data.audioBlob) {
+      const uploadRecoveryId = `upl-${Date.now()}`;
       const audioSession: RecordingSession = {
         id: uuidv4(),
         title: data.title,
@@ -521,13 +528,51 @@ const App: React.FC = () => {
         status: 'processing',
         source: data.source,
         processingStep: 'transcribing',
+        recoveryId: uploadRecoveryId,
       };
       setRecordings(prev => [audioSession, ...prev]);
       setActiveRecordingId(audioSession.id);
       setProcessingSessionId(audioSession.id);
       setIsManualProcessing(true);
       try {
-        await runProcessingForSession(audioSession, data.audioBlob);
+        // ── Segmented upload path ────────────────────────────────────────
+        // Cut the file into ~5-minute segments client-side and run the SAME
+        // pipeline a live recording uses. Without this a long upload takes the
+        // monolithic path: one whole-file PUT (a 813 MB / 3.5h MP3 came back
+        // 413 EntityTooLarge) plus a single transcription call over the lot.
+        //
+        // Only MP3 and WAV can be cut without re-encoding; anything else
+        // returns null and falls through to the original path below, which is
+        // still fine for the smaller files it can already handle.
+        let manifest: SegmentManifest | null = null;
+        if (USE_SEGMENTED_RECORDING && data.audioBlob instanceof File) {
+          try {
+            manifest = await ingestFileAsSegments(
+              data.audioBlob,
+              uploadRecoveryId,
+              data.source,
+              (phase, fraction) => {
+                setUploadSplit({
+                  sessionId: audioSession.id,
+                  phase,
+                  percent: Math.round(fraction * 100),
+                });
+              },
+            );
+          } catch (err: any) {
+            // A malformed file that claimed to be MP3/WAV. Fall back rather
+            // than fail the import outright — the whole-file path may cope.
+            console.warn('[App] Upload split failed, using whole-file path:', err?.message);
+          } finally {
+            setUploadSplit(null);
+          }
+        }
+
+        if (manifest && manifest.segments.length > 0) {
+          await runSegmentedProcessingForSession(audioSession, manifest);
+        } else {
+          await runProcessingForSession(audioSession, data.audioBlob);
+        }
       } finally {
         setIsManualProcessing(false);
       }
@@ -1532,6 +1577,15 @@ const App: React.FC = () => {
               onSubmit={handleManualEntry}
               onCancel={handleGoHome}
               isProcessing={isManualProcessing}
+              progressLabel={
+                uploadSplit
+                  ? uploadSplit.phase === 'splitting'
+                    ? `Splitting audio… ${uploadSplit.percent}%`
+                    : uploadSplit.phase === 'saving'
+                      ? `Preparing segments… ${uploadSplit.percent}%`
+                      : 'Uploading segments…'
+                  : null
+              }
             />
           ) : activeRecordingId === 'settings' ? (
             <SettingsView

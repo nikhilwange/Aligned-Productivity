@@ -21,6 +21,7 @@ import {
 } from './recordingRecovery';
 import { LIVE_TRANSCRIPTION } from '../config/features';
 import { startLiveTranscription, enqueueSegment } from './liveTranscription';
+import { splitAudioFile } from './audioSplitter';
 
 // ~5 minutes per segment. Exported so callers/tests can reference it.
 export const SEGMENT_DURATION_MS = 5 * 60 * 1000;
@@ -248,6 +249,70 @@ export class SegmentRecorder {
     await reuploadPendingSegments(this.sessionId);
     return this.sessionId;
   }
+}
+
+/**
+ * Turn an UPLOADED audio file into the same segment manifest a live recording
+ * produces, so a manual upload can use the identical downstream pipeline
+ * (per-segment upload, per-segment transcription, stitched into one transcript,
+ * one session).
+ *
+ * Why this exists: the manual-upload path previously PUT the whole file to
+ * Storage in one request, which is how a 813 MB / 3.5h MP3 came back
+ * `413 EntityTooLarge`, and then transcribed it as a single blob. Splitting
+ * client-side means we upload ~42 small objects instead of one huge one — each
+ * individually retryable and crash-recoverable through the machinery already
+ * built for recordings.
+ *
+ * Returns null when the file's format can't be cut safely (see audioSplitter:
+ * m4a/mp4/webm/ogg need real remuxing). The caller should fall back to the
+ * whole-file path rather than risk corrupt audio.
+ *
+ * Uploads are deliberately left to `reuploadPendingSegments`, which already
+ * handles per-segment retry — segments are cached and written to the manifest
+ * as `uploaded: false` first, so a failure mid-upload is resumable rather than
+ * losing the import.
+ */
+export async function ingestFileAsSegments(
+  file: File,
+  sessionId: string,
+  source: string,
+  onProgress?: (phase: 'splitting' | 'saving' | 'uploading', fraction: number) => void,
+): Promise<SegmentManifest | null> {
+  const segments = await splitAudioFile(file, SEGMENT_DURATION_MS / 1000, (f) =>
+    onProgress?.('splitting', f),
+  );
+  if (!segments || segments.length === 0) return null;
+
+  const mimeType = segments[0].ext === 'wav' ? 'audio/wav' : 'audio/mpeg';
+  const manifest: SegmentManifest = {
+    sessionId,
+    source,
+    startedAt: Date.now(),
+    mimeType,
+    segments: [],
+    updatedAt: Date.now(),
+  };
+
+  // Cache every segment first (crash safety), then persist the manifest once.
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    await saveSegmentBlob(sessionId, seg.index, seg.blob);
+    manifest.segments.push({
+      index: seg.index,
+      ext: seg.ext,
+      uploaded: false,
+      durationMs: seg.durationMs,
+    });
+    onProgress?.('saving', (i + 1) / segments.length);
+  }
+  await saveSegmentManifest(manifest);
+
+  onProgress?.('uploading', 0);
+  await reuploadPendingSegments(sessionId);
+  onProgress?.('uploading', 1);
+
+  return (await getSegmentManifest(sessionId)) ?? manifest;
 }
 
 /**
