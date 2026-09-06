@@ -162,10 +162,14 @@ Deno.serve(async (req) => {
 
   let transcript: unknown;
   let recordingDate: unknown;
+  let body_pass: unknown;
+  let body_actionPoints: unknown;
   try {
     const body = await req.json();
     transcript = body?.transcript;
     recordingDate = body?.recordingDate;
+    body_pass = body?.pass;
+    body_actionPoints = body?.actionPoints;
   } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
       status: 400,
@@ -189,23 +193,46 @@ Deno.serve(async (req) => {
   });
 
   // ──────────────────────────────────────────────────────────────────────
+  // PASS SELECTION
+  //
+  // The analysis can run as ONE call producing everything, or as TWO calls:
+  //   pass 'actions' → meetingType, detectedLanguages, actionPoints
+  //   pass 'notes'   → notes, built from the actionPoints pass 'actions' found
+  //
+  // Why split: each edge function invocation gets its own wall-clock budget,
+  // and this project is being terminated at 150s (reason: WallClockTime, even
+  // though the org is on Pro, where 400s is documented). A single combined
+  // call measured 132.8-142.6s for 2-3.5h of transcript — close enough to the
+  // limit that it was intermittently killed and the result lost. Two calls of
+  // ~50-90s each are comfortably clear of it. Total wall time is roughly
+  // unchanged, because latency tracks how much the model WRITES and the two
+  // passes write the same content between them.
+  //
+  // The passes run SEQUENTIALLY, with 'notes' receiving the action points from
+  // 'actions'. This is deliberate: generating them independently would let the
+  // ✅ Action Items section of the notes drift from the actionPoints array,
+  // and downstream (action-item promotion, grouping by owner) relies on those
+  // being the same set.
+  //
+  // No `pass` field → the original combined prompt, unchanged, so an older
+  // deployed client keeps working exactly as before.
+  // ──────────────────────────────────────────────────────────────────────
+  const pass = typeof (body_pass) === 'string' ? body_pass : null;
+  const providedActions = Array.isArray(body_actionPoints)
+    ? body_actionPoints.filter((a): a is string => typeof a === 'string')
+    : [];
+
+  // ──────────────────────────────────────────────────────────────────────
   // ANALYSIS PROMPT — copied verbatim from api/gemini/analyze.ts.
   // Do NOT paraphrase or "improve" this. The frontend's section parser
   // (components/ResultsView.tsx) keys off these exact emoji headers and the
   // JSON shape; downstream consumers (action-item promotion, grouping by
   // owner) depend on the exact "actionPoints" rules below.
+  //
+  // The rule blocks are shared constants so the combined prompt and the two
+  // split passes cannot drift apart in wording.
   // ──────────────────────────────────────────────────────────────────────
-  const analysisPrompt = `You are an expert meeting assistant. Analyze the transcript below and respond with a single valid JSON object — no markdown fences, no extra text outside the JSON.
-
-The JSON must match this exact shape:
-{
-  "meetingType": "<inferred type: standup | planning | brainstorm | review | 1on1 | all-hands | other>",
-  "detectedLanguages": ["<language1>", "<language2>"],
-  "actionPoints": ["<plain text action item>", "..."],
-  "notes": "<full rich-markdown meeting notes document — see format below>"
-}
-
-RULES FOR actionPoints (CRITICAL — be exhaustive and balanced):
+  const ACTION_POINT_RULES = `RULES FOR actionPoints (CRITICAL — be exhaustive and balanced):
 - Capture EVERY action, commitment, deliverable, follow-up, decision-to-execute, or task assigned in the transcript. Do not silently drop any. Err on the side of including borderline items — it is better to list a soft commitment than to miss a real one.
 - Do NOT merge two distinct actions into one item. If two people committed to two things, write two items.
 - Do NOT skip actions just because they sound informal ("let's also check…", "we should…", "can you also…"). If something was committed to, it counts.
@@ -216,9 +243,12 @@ RULES FOR actionPoints (CRITICAL — be exhaustive and balanced):
 - Too concise is WRONG: "Samir to track BOM" lacks context. Write "Samir to start tracking BOM readiness for the production schedule and report status weekly to the planning review."
 - Too verbose is WRONG: don't pad with filler ("It was discussed that…", "going forward we should…"). Get to the action.
 - Plain strings only — no "- [ ]" checkbox prefix.
-- Empty array [] only if the transcript truly contains zero actions/commitments.
+- Empty array [] only if the transcript truly contains zero actions/commitments.`;
 
-RULES FOR notes (the full markdown document to show users):
+  // `actionsSource` names where the ✅ Action Items section must draw from:
+  // the same response's actionPoints array (combined pass) or the list handed
+  // in by the preceding 'actions' call (split pass).
+  const notesRules = (actionsSource: string) => `RULES FOR notes (the full markdown document to show users):
 Write a comprehensive meeting notes document in this exact format. The notes value must be a valid JSON string (escape newlines as \\n, quotes as \\"):
 
 📋 Meeting Overview
@@ -252,7 +282,7 @@ Group action items by the person responsible. For each owner:
 
 For any action item that does not have a clear assignee, list it as a plain checkbox bullet at the very top of this section, with no header above it. Do NOT invent an "Unassigned", "Team", "All", or "Everyone" group — items without an owner just appear as bare bullets.
 
-The set of actions here MUST be exactly the same set as in the actionPoints array — same count, same coverage — just regrouped and de-prefixed. Do not drop any.
+The set of actions here MUST be exactly the same set as ${actionsSource} — same count, same coverage — just regrouped and de-prefixed. Do not drop any.
 
 Example format:
 ✅ Action Items
@@ -294,15 +324,86 @@ Example format:
 [Priority-ordered next steps]
 
 📌 Additional Notes
-[Any other relevant info]
+[Any other relevant info]`;
 
-IMPORTANT:
+  const IMPORTANT_TAIL = `IMPORTANT:
 - Write ALL notes entirely in English — translate any Hindi, Marathi, or other non-English content
 - Professional tone throughout
-- Do NOT include the full transcript in the notes field
+- Do NOT include the full transcript in the notes field`;
+
+  const PREAMBLE = 'You are an expert meeting assistant. Analyze the transcript below and respond with a single valid JSON object — no markdown fences, no extra text outside the JSON.';
+
+  // ─── Prompt assembly, one variant per pass ────────────────────────────
+  let analysisPrompt: string;
+
+  if (pass === 'actions') {
+    // Pass 1 of 2: the cheap, fast half. No `notes`, so the output is small
+    // (~6k tokens rather than ~15k) and the call lands well inside the limit.
+    analysisPrompt = `${PREAMBLE}
+
+The JSON must match this exact shape:
+{
+  "meetingType": "<inferred type: standup | planning | brainstorm | review | 1on1 | all-hands | other>",
+  "detectedLanguages": ["<language1>", "<language2>"],
+  "actionPoints": ["<plain text action item>", "..."]
+}
+
+Do NOT include a "notes" field — it is produced by a separate call.
+
+${ACTION_POINT_RULES}
+
+IMPORTANT:
+- Write ALL action points entirely in English — translate any Hindi, Marathi, or other non-English content
+- Professional tone throughout
 
 TRANSCRIPT:
 ${transcript}`;
+  } else if (pass === 'notes') {
+    // Pass 2 of 2: the notes document, built around the action points pass 1
+    // already extracted. Handing them in (rather than re-deriving them) is
+    // what keeps the ✅ Action Items section and the actionPoints array in
+    // agreement — the guarantee the single combined call used to provide.
+    const actionsList = providedActions.length > 0
+      ? providedActions.map((a) => `- ${a}`).join('\n')
+      : '(none were identified)';
+
+    analysisPrompt = `${PREAMBLE}
+
+The JSON must match this exact shape:
+{
+  "notes": "<full rich-markdown meeting notes document — see format below>"
+}
+
+ACTION POINTS (already extracted from this transcript — treat as authoritative):
+${actionsList}
+
+${notesRules('the ACTION POINTS list given above')}
+
+${IMPORTANT_TAIL}
+
+TRANSCRIPT:
+${transcript}`;
+  } else {
+    // Combined pass — the original single-call prompt, byte-for-byte.
+    analysisPrompt = `${PREAMBLE}
+
+The JSON must match this exact shape:
+{
+  "meetingType": "<inferred type: standup | planning | brainstorm | review | 1on1 | all-hands | other>",
+  "detectedLanguages": ["<language1>", "<language2>"],
+  "actionPoints": ["<plain text action item>", "..."],
+  "notes": "<full rich-markdown meeting notes document — see format below>"
+}
+
+${ACTION_POINT_RULES}
+
+${notesRules('the actionPoints array')}
+
+${IMPORTANT_TAIL}
+
+TRANSCRIPT:
+${transcript}`;
+  }
 
   const configId = Deno.env.get('PORTKEY_CONFIG_STRATEGIC') ?? '';
 

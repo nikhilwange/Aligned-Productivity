@@ -433,33 +433,183 @@ export const extractTranscript = async (
 // Vercel Hobby's 60s timeout, which is why this moved to a Supabase Edge
 // Function.
 //
-// It streams (NDJSON + keepalives) rather than returning a buffered body: the
-// gateway kills any request that sends no bytes for 150s, and analysis measured
-// 132.8s at 2 hours of transcript and 142.1s at 3.5 hours. Streaming keeps the
-// connection provably alive so the 400s worker wall clock is the real ceiling.
+// Analysis is split across several edge function calls rather than one, because
+// each invocation gets its own wall-clock budget and this project is terminated
+// at 150s (reason: WallClockTime, despite the org being on Pro where 400s is
+// documented). A single combined call measured 132.8-142.6s for 2-3.5h of
+// transcript — close enough that it was intermittently killed outright and the
+// analysis lost.
 //
-// Analysis time is driven by how much the model WRITES, not how long the
-// meeting was — 74% more transcript cost only 7% more time — so this ceiling
-// applies about equally at every meeting length.
+// Measured behaviour of the two halves (see ACTION_CHUNK_WORDS below):
+//
+//   'notes'   ~71s at BOTH 12k and 40k words — essentially flat, always safe.
+//   'actions' 36.7s @5k · 51.6s @12k · 56.3s @24k · 133.4s @40k · killed @40k
+//
+// So only action extraction scales dangerously: a 3.5h meeting yields ~170
+// action points and writing that list is what approaches the limit. The notes
+// document does not need splitting at all.
+//
+// Hence: chunk the transcript for the 'actions' pass only, run those chunks in
+// parallel (they are independent), then ONE 'notes' call over the whole
+// transcript using the merged action list.
+//
+// Measured end-to-end on a 40k-word (~3.5h) transcript:
+//
+//   4 'actions' chunks, 3 in parallel : 32.1s / 45.9s / 53.8s / 97.9s
+//   1 'notes' call over the full text : 123.5s
+//   total wall time                   : 221.3s, worst single call 123.5s
+//
+// Slower overall than the old single call (~142s) but that call was dying;
+// here nothing goes near the limit. Note the notes call came in at 123.5s
+// rather than the 71s measured in isolation: chunking makes the model more
+// granular, yielding ~213 action points instead of ~170, and the notes pass
+// has to render all of them. That is the thinnest remaining margin (~27s), so
+// if it ever starts failing, cap the action points per chunk before anything
+// else — the notes call's cost is driven by how many there are.
+//
+// The 'notes' call is handed the merged action points and told to use exactly
+// those, preserving the guarantee that the notes' ✅ Action Items section and
+// the actionPoints array are the same set — something downstream (action-item
+// promotion, grouping by owner) relies on.
+//
+// Streaming (NDJSON keepalives) is layered on top; it removes the separate
+// 150s idle-timeout failure mode but cannot extend a wall clock.
+
+// Transcript words per 'actions' call. 12k measured at 51.6s — roughly a 3x
+// margin against the 150s limit, which leaves room for the provider-side
+// variance we see (the same input has come back anywhere from 110s to 133s).
+const ACTION_CHUNK_WORDS = 12000;
+
+// Parallel 'actions' calls in flight. Kept modest so a long meeting can't fan
+// out into a rate-limit storm against Portkey.
+const ACTION_CHUNK_CONCURRENCY = 3;
+
+/**
+ * Split a transcript into chunks of at most `maxWords`, breaking on sentence
+ * boundaries so an action isn't cut in half across two chunks.
+ */
+const chunkTranscript = (text: string, maxWords: number): string[] => {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) return [text];
+
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < words.length) {
+    let end = Math.min(start + maxWords, words.length);
+    // Prefer to end on a sentence boundary, looking back up to 10% of a chunk.
+    if (end < words.length) {
+      const floor = end - Math.floor(maxWords * 0.1);
+      for (let i = end - 1; i > floor; i--) {
+        if (/[.!?]$/.test(words[i])) { end = i + 1; break; }
+      }
+    }
+    chunks.push(words.slice(start, end).join(' '));
+    start = end;
+  }
+  return chunks;
+};
+
+/** Case/punctuation-insensitive key for de-duplicating action points. */
+const actionKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/** Run `tasks` with at most `limit` in flight, preserving result order. */
+const mapWithConcurrency = async <T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> => {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+};
+
 export const analyzeTranscript = async (
   transcript: string,
   recordingDate?: number,
 ): Promise<Omit<MeetingAnalysis, 'transcript'>> => {
-  const data = await retryOperation(
-    () => invokeEdgeFunctionStreaming<{ responseText: string; isTruncated?: boolean }>(
-      'gemini-analyze',
-      { transcript, recordingDate },
-    ),
-    3,
-    1000,
-    'Pass 2: Analysis generation',
-    LARGE_AUDIO_TIMEOUT_MS, // give analysis a generous 10-min client-side timeout
+  const callPass = (
+    body: Record<string, unknown>,
+    label: string,
+  ) =>
+    retryOperation(
+      () => invokeEdgeFunctionStreaming<{ responseText: string; isTruncated?: boolean }>(
+        'gemini-analyze',
+        { recordingDate, ...body },
+      ),
+      3,
+      1000,
+      label,
+      LARGE_AUDIO_TIMEOUT_MS, // generous 10-min client-side timeout per call
+    );
+
+  // ── Pass 1: action points, one call per transcript chunk, in parallel ───
+  const chunks = chunkTranscript(transcript, ACTION_CHUNK_WORDS);
+
+  const chunkResults = await mapWithConcurrency(
+    chunks,
+    ACTION_CHUNK_CONCURRENCY,
+    async (chunk, i) => {
+      const data = await callPass(
+        { transcript: chunk, pass: 'actions' },
+        `Pass 2a: Action extraction${chunks.length > 1 ? ` (${i + 1}/${chunks.length})` : ''}`,
+      );
+      if (!data.responseText) throw new Error('Empty analysis response from Gemini.');
+      return { parsed: parseJsonResponse(data.responseText), isTruncated: !!data.isTruncated };
+    },
   );
 
-  if (!data.responseText) throw new Error("Empty analysis response from Gemini.");
+  // Backward compatibility: an older function ignores `pass` and returns the
+  // combined shape, notes included. If notes came back, the split never
+  // happened — use that single response as-is rather than calling again.
+  const firstWithNotes = chunkResults.find(r => r.parsed.summary?.trim());
+  if (firstWithNotes && chunks.length === 1) {
+    return { ...firstWithNotes.parsed, isTruncated: firstWithNotes.isTruncated };
+  }
 
-  const analysis = parseJsonResponse(data.responseText);
-  return { ...analysis, isTruncated: !!data.isTruncated };
+  // Merge chunk results. Actions are concatenated in transcript order and
+  // de-duplicated (a commitment restated near a chunk boundary can surface
+  // twice); languages are unioned; meetingType comes from the first chunk that
+  // inferred one, since chunks later in a long meeting drift off-topic.
+  const seen = new Set<string>();
+  const actionPoints: string[] = [];
+  for (const r of chunkResults) {
+    for (const a of r.parsed.actionPoints ?? []) {
+      const key = actionKey(a);
+      if (key && !seen.has(key)) { seen.add(key); actionPoints.push(a); }
+    }
+  }
+  const detectedLanguages = [
+    ...new Set(chunkResults.flatMap(r => r.parsed.detectedLanguages ?? [])),
+  ];
+  const meetingType = chunkResults.find(r => r.parsed.meetingType)?.parsed.meetingType;
+
+  // ── Pass 2: one notes call over the FULL transcript + merged actions ────
+  // Measured flat at ~71s regardless of transcript length, so this half never
+  // needs chunking — and keeping the whole transcript here is what lets the
+  // notes stay a single coherent document rather than stitched fragments.
+  const notesData = await callPass(
+    { transcript, pass: 'notes', actionPoints },
+    'Pass 2b: Notes generation',
+  );
+  if (!notesData.responseText) throw new Error('Empty notes response from Gemini.');
+
+  const notesParsed = parseJsonResponse(notesData.responseText);
+
+  return {
+    summary: notesParsed.summary,
+    actionPoints,
+    meetingType,
+    detectedLanguages: detectedLanguages.length > 0 ? detectedLanguages : undefined,
+    isTruncated: !!(chunkResults.some(r => r.isTruncated) || notesData.isTruncated),
+  };
 };
 
 
