@@ -25,7 +25,7 @@
 // ─── Inlined from _shared/cors.ts ─────────────────────────────────────────
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, accept',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
@@ -124,6 +124,11 @@ async function callPortkey(
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────────
+
+// Keepalive cadence for the streaming path. Comfortably under the gateway's
+// 150s idle timeout — small enough that a stalled connection is still spotted
+// quickly, large enough that a ~140s analysis emits only ~14 lines.
+const KEEPALIVE_MS = 10_000;
 
 Deno.serve(async (req) => {
   // Preflight — browsers send OPTIONS before the actual POST because of
@@ -299,25 +304,106 @@ IMPORTANT:
 TRANSCRIPT:
 ${transcript}`;
 
-  try {
-    const configId = Deno.env.get('PORTKEY_CONFIG_STRATEGIC') ?? '';
+  const configId = Deno.env.get('PORTKEY_CONFIG_STRATEGIC') ?? '';
 
-    // max_tokens kept at 65536 to match the original Gemini-direct behaviour.
-    // Meetings here routinely run 1–2 hours, and the rich-markdown `notes`
-    // document plus a complete `actionPoints` array can easily exceed 8k
-    // tokens. Gemini 2.5 Flash accepts 65536 natively; the Portkey config
-    // (PORTKEY_CONFIG_STRATEGIC) is responsible for clamping or routing
-    // around any fallback provider that can't honour this ceiling.
-    const responseText = await callPortkey(
-      configId,
-      [{ role: 'user', content: analysisPrompt }],
-      {
-        max_tokens: 65536,
-        temperature: 0.1,
-        response_format: { type: 'json_object' },
+  // max_tokens kept at 65536 to match the original Gemini-direct behaviour.
+  // Meetings here routinely run 1–2 hours, and the rich-markdown `notes`
+  // document plus a complete `actionPoints` array can easily exceed 8k
+  // tokens. Gemini 2.5 Flash accepts 65536 natively; the Portkey config
+  // (PORTKEY_CONFIG_STRATEGIC) is responsible for clamping or routing
+  // around any fallback provider that can't honour this ceiling.
+  const runAnalysis = () => callPortkey(
+    configId,
+    [{ role: 'user', content: analysisPrompt }],
+    {
+      max_tokens: 65536,
+      temperature: 0.1,
+      response_format: { type: 'json_object' },
+    },
+    { user_id: userId, app: 'aligned' },
+  );
+
+  // ──────────────────────────────────────────────────────────────────────
+  // STREAMING (NDJSON) PATH — opt-in via `Accept: application/x-ndjson`.
+  //
+  // Why this exists: Supabase's gateway enforces a 150s *request idle
+  // timeout* — a request that sends no bytes for 150s gets a 504, and that
+  // limit applies on every plan (the larger 400s figure is the worker's
+  // wall clock, which only helps once bytes are flowing). This analysis
+  // call measured 132.8s for a 2-hour transcript and 142.1s for a 3.5-hour
+  // one, so the old buffered response was clearing the timeout by ~8-17s.
+  //
+  // Emitting a keepalive line every 10s while awaiting Portkey resets that
+  // idle clock, so the binding limit becomes the 400s wall clock instead.
+  // The Portkey call is deliberately UNCHANGED — we are not streaming model
+  // tokens, only proving liveness — so the JSON contract, the fallback
+  // routing, and the response shape all stay exactly as they were.
+  //
+  // Latency does not improve; the cliff does. Analysis still takes ~140s.
+  //
+  // Opt-in keeps rollout safe in both directions: an older deployed client
+  // sends no Accept header and gets the original buffered response, and a
+  // newer client falls back to plain JSON if it reaches an older function.
+  //
+  // NOTE: once the stream opens, headers are already sent, so a failure
+  // cannot be an HTTP 500 any more. It is delivered as a terminal
+  // `{"type":"error"}` line and the client re-raises it with status 500 so
+  // the existing retry policy behaves identically.
+  // ──────────────────────────────────────────────────────────────────────
+  const wantsStream = (req.headers.get('accept') ?? '').includes('application/x-ndjson');
+
+  if (wantsStream) {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        let closed = false;
+        const send = (obj: unknown) => {
+          if (closed) return;
+          try {
+            controller.enqueue(encoder.encode(JSON.stringify(obj) + '\n'));
+          } catch {
+            // The client hung up. Stop writing — the keepalive interval would
+            // otherwise throw on every tick with nothing to catch it.
+            closed = true;
+          }
+        };
+
+        // First byte goes out before Portkey is even called, so the idle
+        // clock is reset from the very start rather than after the model.
+        send({ type: 'start' });
+        const keepalive = setInterval(() => send({ type: 'ping' }), KEEPALIVE_MS);
+
+        try {
+          const responseText = await runAnalysis();
+          send({ type: 'result', responseText, isTruncated: false });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Analysis failed';
+          console.log('[API /gemini-analyze] error (streamed):', message);
+          send({ type: 'error', error: message });
+        } finally {
+          clearInterval(keepalive);
+          closed = true;
+          controller.close();
+        }
       },
-      { user_id: userId, app: 'aligned' },
-    );
+    });
+
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        ...corsHeaders,
+        'Content-Type': 'application/x-ndjson',
+        // Discourage any intermediary from buffering the body, which would
+        // defeat the keepalive entirely.
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no',
+      },
+    });
+  }
+
+  // ─── Original buffered path (unchanged) ───────────────────────────────
+  try {
+    const responseText = await runAnalysis();
 
     // We no longer have access to provider-specific `finishReason`, so we
     // can't detect MAX_TOKENS truncation reliably across providers. The

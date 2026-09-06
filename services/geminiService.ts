@@ -8,9 +8,11 @@ import { usageLimitFromBody } from "./usageLimit";
 // (slower upload + preprocessing) instead of inline base64, so we extend the
 // client timeout accordingly.
 //
-// Why 6 MB and not 15 MB any more: on Supabase Edge (free tier, 150s wall
-// clock), inline-base64 of audio over ~25 min routinely hits the wall and
-// the gateway returns HTTP 546 ("worker limit exceeded"). The Files API
+// Why 6 MB and not 15 MB any more: on Supabase Edge, inline-base64 of audio
+// over ~25 min routinely hits the wall and the gateway returns HTTP 546
+// ("worker limit exceeded"). The limit in play is the 150s request idle
+// timeout, which applies on every plan — NOT the plan-dependent wall clock
+// (150s free / 400s paid; this project is on Pro). The Files API
 // path is more reliable in that band because Gemini preprocesses the audio
 // up front rather than processing it inside a single generateContent call.
 // For files long enough to defeat Files API too, App.tsx has a silent
@@ -58,6 +60,105 @@ export const invokeEdgeFunction = async <T>(
     throw error;
   }
   return res.json() as Promise<T>;
+};
+
+// ─── Streaming (NDJSON) invoke ────────────────────────────────────────────────
+// Same contract as invokeEdgeFunction, but asks the function to stream an
+// NDJSON body and keep the connection alive while it works.
+//
+// Why: Supabase's gateway applies a 150s *request idle timeout* to a request
+// that sends no bytes, on every plan. Analysis measured 132.8s for a 2-hour
+// transcript and 142.1s for a 3.5-hour one — clearing that limit by seconds.
+// The function now emits a keepalive line every 10s, which resets the idle
+// clock and makes the 400s worker wall clock the real ceiling instead.
+//
+// Wire format — one JSON object per line:
+//   {"type":"start"}                                  once, immediately
+//   {"type":"ping"}                                   every ~10s while working
+//   {"type":"result","responseText":"…"}              terminal, success
+//   {"type":"error","error":"…"}                      terminal, failure
+//
+// Falls back to plain JSON if the response isn't NDJSON, so a newer client
+// deployed against an older function keeps working.
+const invokeEdgeFunctionStreaming = async <T>(
+  name: string,
+  body: unknown,
+): Promise<T> => {
+  const token = await getAuthToken();
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/x-ndjson',
+      Authorization: `Bearer ${token}`,
+      apikey: SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    const error = new Error(err.error || `${name} failed (${res.status})`);
+    (error as any).status = res.status;
+    (error as any).body = err;
+    throw error;
+  }
+
+  // Older deployment (or any non-streaming intermediary) — read it as before.
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/x-ndjson') || !res.body) {
+    return res.json() as Promise<T>;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let result: T | null = null;
+  let streamedError: string | null = null;
+
+  // Handle one complete NDJSON line. Unknown types (including future ones)
+  // are ignored rather than treated as failures.
+  const handleLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let msg: any;
+    try {
+      msg = JSON.parse(trimmed);
+    } catch {
+      return; // a partial or malformed line is never fatal on its own
+    }
+    if (msg.type === 'result') result = msg as T;
+    else if (msg.type === 'error') streamedError = msg.error || 'Analysis failed';
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newlineAt: number;
+    while ((newlineAt = buffer.indexOf('\n')) !== -1) {
+      handleLine(buffer.slice(0, newlineAt));
+      buffer = buffer.slice(newlineAt + 1);
+    }
+  }
+  handleLine(buffer + decoder.decode()); // flush any unterminated final line
+
+  if (streamedError) {
+    // The stream had already returned HTTP 200 by the time this failed, so
+    // re-raise it as a 500 to keep retryOperation behaving exactly as it did
+    // on the buffered path.
+    const error = new Error(streamedError);
+    (error as any).status = 500;
+    throw error;
+  }
+  if (!result) {
+    // Connection closed without a terminal line — a dropped or truncated
+    // stream. Retryable, same as a transient server failure.
+    const error = new Error(`${name} stream ended without a result`);
+    (error as any).status = 500;
+    throw error;
+  }
+  return result;
 };
 
 // ─── Blob helper ──────────────────────────────────────────────────────────────
@@ -329,13 +430,23 @@ export const extractTranscript = async (
 
 // ─── Pass 2: Analyze transcript via Supabase Edge Function ────────────────────
 // Long transcripts (Zoom/Teams pastes, 60+ minute meetings) routinely exceed
-// Vercel Hobby's 60s timeout. Edge Function on Supabase gets 150s.
+// Vercel Hobby's 60s timeout, which is why this moved to a Supabase Edge
+// Function.
+//
+// It streams (NDJSON + keepalives) rather than returning a buffered body: the
+// gateway kills any request that sends no bytes for 150s, and analysis measured
+// 132.8s at 2 hours of transcript and 142.1s at 3.5 hours. Streaming keeps the
+// connection provably alive so the 400s worker wall clock is the real ceiling.
+//
+// Analysis time is driven by how much the model WRITES, not how long the
+// meeting was — 74% more transcript cost only 7% more time — so this ceiling
+// applies about equally at every meeting length.
 export const analyzeTranscript = async (
   transcript: string,
   recordingDate?: number,
 ): Promise<Omit<MeetingAnalysis, 'transcript'>> => {
   const data = await retryOperation(
-    () => invokeEdgeFunction<{ responseText: string; isTruncated?: boolean }>(
+    () => invokeEdgeFunctionStreaming<{ responseText: string; isTruncated?: boolean }>(
       'gemini-analyze',
       { transcript, recordingDate },
     ),
