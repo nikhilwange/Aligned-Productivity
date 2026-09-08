@@ -166,13 +166,11 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
     setTitle(session.title);
   }, [session.id, session.title]);
 
-  useEffect(() => {
-    if (session.status === 'completed' && session.analysis?.meetingType && session.title.startsWith('Recording ')) {
-      const newTitle = session.analysis.meetingType;
-      onUpdateTitle(session.id, newTitle);
-      setTitle(newTitle);
-    }
-  }, [session.status, session.analysis?.meetingType, session.id]);
+  // Auto-naming deliberately does NOT live here any more. This used to rename
+  // any session still called "Recording <date>" to its bare meetingType
+  // ("planning") the moment it was opened, which meant old sessions were
+  // renamed retroactively just by viewing them. Naming now happens once, in
+  // App.tsx, when a recording finishes analysing — see utils/sessionTitle.ts.
 
   // Auto-switch tabs during progressive processing
   useEffect(() => {

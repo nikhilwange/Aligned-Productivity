@@ -138,6 +138,24 @@ Deno.serve(async (req) => {
 - Plain strings only — no "- [ ]" checkbox prefix.
 - Empty array [] only if the transcript truly contains zero actions/commitments.`;
 
+  // The session's display name. Only the passes that see the FULL transcript
+  // ask for this — never the chunked 'actions' pass, whose chunks each see a
+  // fragment and would name the meeting after its opening minutes.
+  const TITLE_RULES = `RULES FOR title (the short name this session is filed under):
+- 3-8 words naming the SPECIFIC subject of this meeting, the way a busy manager would file it.
+- House style is "<specific subject> <activity>", optionally "with <key person>". Real examples:
+    • "July PD Miss Review with Samir"
+    • "PDSL Improvement Action Plan Review"
+    • "Capacity Growth Day 2027-29 Ambernath Deck Review"
+    • "Supplier Performance & Capacity Review with Procurement"
+    • "Mahesh's Automation Project Review"
+- Lead with the concrete subject — the project, plant, customer, metric, product, or decision actually discussed. Keep distinctive proper nouns and figures when they are what the meeting was about ("Trinergy PD Correction", "6100+ Target Plan", "NPDI Delays from Jhajjar").
+- Add "with <Name>" only for a 1:1, or when one other person clearly drove the discussion. Never list more than one name.
+- Do NOT include the date or time — the app appends those itself.
+- Do NOT return a bare category ("Meeting", "Discussion", "Planning", "Review", "Other") — those carry no information. If the transcript has no identifiable subject, describe what actually happened instead ("Informal Team Catch-up", "Mic Test").
+- Title Case. No quotes, no trailing punctuation, no emoji, no markdown.
+- Write it in English even when the meeting was held in Hindi or Marathi.`;
+
   // `actionsSource` names where the ✅ Action Items section must draw from:
   // the same response's actionPoints array (combined pass) or the list handed
   // in by the preceding 'actions' call (split pass).
@@ -282,11 +300,14 @@ ${transcript}`;
 
 The JSON must match this exact shape:
 {
+  "title": "<short specific name for this session — see rules below>",
   "notes": "<full rich-markdown meeting notes document — see format below>"
 }
 
 ACTION POINTS (already extracted from this transcript — treat as authoritative):
 ${actionsList}
+
+${TITLE_RULES}
 
 ${notesRules('the ACTION POINTS list given above')}
 
@@ -300,6 +321,7 @@ ${transcript}`;
 
 The JSON must match this exact shape:
 {
+  "title": "<short specific name for this session — see rules below>",
   "meetingType": "<inferred type: standup | planning | brainstorm | review | 1on1 | all-hands | other>",
   "detectedLanguages": ["<language1>", "<language2>"],
   "actionPoints": ["<plain text action item>", "..."],
@@ -307,6 +329,8 @@ The JSON must match this exact shape:
 }
 
 ${ACTION_POINT_RULES}
+
+${TITLE_RULES}
 
 ${notesRules('the actionPoints array')}
 

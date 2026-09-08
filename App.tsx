@@ -19,6 +19,7 @@ import { AppState, RecordingSession, AudioRecording, User, ChatMessage, Recordin
 import { isUsageLimitError } from './services/usageLimit';
 import { minutesToHoursLabel } from './config/tiers';
 import { extractTranscript, analyzeTranscript } from './services/geminiService';
+import { buildSessionTitle } from './utils/sessionTitle';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage } from './services/storageService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems } from './services/supabaseService';
@@ -909,15 +910,24 @@ const App: React.FC = () => {
       if (signal.aborted) return; // superseded during analysis — don't finalize
       const fullAnalysis = { ...analysisResult, transcript };
 
+      // Name the session after what was actually discussed, e.g.
+      //   "Trinergy PD Correction & 6100+ Target Plan_25 Aug 3:30 PM"
+      // Returns null — leaving the name alone — when the user has already
+      // titled this session, or when the model gave us nothing more useful
+      // than the "Recording <date> <time>" fallback it already carries.
+      const autoTitle = buildSessionTitle(session.title, fullAnalysis.title, session.date);
+      const titlePatch = autoTitle ? { title: autoTitle } : {};
+
       const completedSession: RecordingSession = {
         ...session,
+        ...titlePatch,
         analysis: fullAnalysis,
         status: 'completed',
         processingStep: undefined,
         errorMessage: undefined,
         recoveryId: undefined, // clear from DB row — blob is about to be removed from IndexedDB
       };
-      updateSession({ analysis: fullAnalysis, status: 'completed', processingStep: undefined, errorMessage: undefined, recoveryId: undefined });
+      updateSession({ ...titlePatch, analysis: fullAnalysis, status: 'completed', processingStep: undefined, errorMessage: undefined, recoveryId: undefined });
       await saveRecording(completedSession, user.id);
 
       // Privacy: once notes are safely saved the server audio archive is no

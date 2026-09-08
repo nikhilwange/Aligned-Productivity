@@ -14,6 +14,8 @@ export interface MeetingAnalysis {
   detectedLanguages?: string[];
   isTruncated?: boolean;
   meetingType?: string;
+  /** Short content-derived topic used to auto-name the session. See utils/sessionTitle.ts */
+  title?: string;
 }
 
 export interface RecordingSession {

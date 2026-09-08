@@ -44,3 +44,11 @@ export const formatDuration = (seconds: number): string => {
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m`;
 };
+
+/** "25 Aug 3:30 PM" — the date+time stamp appended to auto-named sessions. */
+export const formatTitleStamp = (ts: number): string => {
+  const d = new Date(ts);
+  const date = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
+  return `${date} ${time}`;
+};

@@ -94,13 +94,18 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 //
 // Gemini is asked to return:
 // {
+//   "title": string,                // short content-derived session name, no date
 //   "meetingType": string,
 //   "detectedLanguages": string[],
 //   "actionPoints": string[],       // plain text, no "- [ ]" prefix
 //   "notes": string                 // full rich-markdown meeting notes document
 // }
+//
+// `title` is only requested from the passes that see the WHOLE transcript (the
+// combined pass and the 'notes' pass) — never from the chunked 'actions' pass.
 
 interface GeminiAnalysisJSON {
+  title?: string;
   meetingType?: string;
   detectedLanguages?: string[];
   actionPoints?: string[];
@@ -173,6 +178,7 @@ const parseJsonResponse = (raw: string): MeetingAnalysis => {
       summary: notes,
       actionPoints: (parsed.actionPoints ?? []).map(a => a.replace(/^- \[[ x]\]\s*/, '').trim()).filter(Boolean),
       meetingType: parsed.meetingType,
+      title: parsed.title,
       detectedLanguages: parsed.detectedLanguages?.filter(Boolean),
       transcript: '',
     };
@@ -181,6 +187,7 @@ const parseJsonResponse = (raw: string): MeetingAnalysis => {
   console.warn('[parseJsonResponse] All JSON parse strategies failed, extracting fields manually.');
 
   const notes = extractNotesFromRaw(raw);
+  const titleMatch = raw.match(/"?title"?\s*:\s*"([^"\n]+)"/i);
   const meetingTypeMatch = raw.match(/"?meetingType"?\s*:\s*"?([^",}\n]+)/i);
   const languagesMatch = raw.match(/"?detectedLanguages"?\s*:\s*\[([^\]]*)\]/i);
   const actionItemsMatch = raw.match(/"?actionPoints"?\s*:\s*\[([\s\S]*?)\]/i);
@@ -196,6 +203,7 @@ const parseJsonResponse = (raw: string): MeetingAnalysis => {
   const summary = notes || raw
     .replace(/^\s*\{/, '')
     .replace(/\}\s*$/, '')
+    .replace(/"title"\s*:\s*"[^"]*"\s*,?/g, '')
     .replace(/"meetingType"\s*:\s*"[^"]*"\s*,?/g, '')
     .replace(/"detectedLanguages"\s*:\s*\[[^\]]*\]\s*,?/g, '')
     .replace(/"actionPoints"\s*:\s*\[[^\]]*\]\s*,?/g, '')
@@ -208,6 +216,7 @@ const parseJsonResponse = (raw: string): MeetingAnalysis => {
     summary,
     actionPoints,
     meetingType: meetingTypeMatch?.[1]?.trim(),
+    title: titleMatch?.[1]?.trim(),
     detectedLanguages: languagesMatch?.[1]?.split(',').map(l => l.trim().replace(/["\]]/g, '')).filter(Boolean),
     transcript: '',
   };
@@ -553,6 +562,11 @@ export const analyzeTranscript = async (
     summary: notesParsed.summary,
     actionPoints,
     meetingType,
+    // The title comes from the notes pass, which is the only call in this path
+    // that sees the whole transcript. Taking it from a chunk (the way
+    // meetingType has to) would name a 3-hour meeting after its first 20
+    // minutes.
+    title: notesParsed.title,
     detectedLanguages: detectedLanguages.length > 0 ? detectedLanguages : undefined,
     isTruncated: !!(chunkResults.some(r => r.isTruncated) || notesData.isTruncated),
   };

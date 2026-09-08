@@ -31,11 +31,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
 The JSON must match this exact shape:
 {
+  "title": "<short specific name for this session — see rules below>",
   "meetingType": "<inferred type: standup | planning | brainstorm | review | 1on1 | all-hands | other>",
   "detectedLanguages": ["<language1>", "<language2>"],
   "actionPoints": ["<plain text action item>", "..."],
   "notes": "<full rich-markdown meeting notes document — see format below>"
 }
+
+RULES FOR title (the short name this session is filed under):
+- 3-8 words naming the SPECIFIC subject of this meeting, the way a busy manager would file it.
+- House style is "<specific subject> <activity>", optionally "with <key person>". Real examples:
+    • "July PD Miss Review with Samir"
+    • "PDSL Improvement Action Plan Review"
+    • "Capacity Growth Day 2027-29 Ambernath Deck Review"
+    • "Supplier Performance & Capacity Review with Procurement"
+    • "Mahesh's Automation Project Review"
+- Lead with the concrete subject — the project, plant, customer, metric, product, or decision actually discussed. Keep distinctive proper nouns and figures when they are what the meeting was about ("Trinergy PD Correction", "6100+ Target Plan", "NPDI Delays from Jhajjar").
+- Add "with <Name>" only for a 1:1, or when one other person clearly drove the discussion. Never list more than one name.
+- Do NOT include the date or time — the app appends those itself.
+- Do NOT return a bare category ("Meeting", "Discussion", "Planning", "Review", "Other") — those carry no information. If the transcript has no identifiable subject, describe what actually happened instead ("Informal Team Catch-up", "Mic Test").
+- Title Case. No quotes, no trailing punctuation, no emoji, no markdown.
+- Write it in English even when the meeting was held in Hindi or Marathi.
 
 RULES FOR actionPoints (CRITICAL — be exhaustive and balanced):
 - Capture EVERY action, commitment, deliverable, follow-up, decision-to-execute, or task assigned in the transcript. Do not silently drop any. Err on the side of including borderline items — it is better to list a soft commitment than to miss a real one.
