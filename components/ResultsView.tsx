@@ -922,7 +922,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
           <SessionChatPanel session={session} />
         </div>
       ) : (
-      <div className="flex-1 overflow-y-auto bg-[var(--surface-950)] pt-8 md:pt-12 pb-32 px-4 md:px-6 scrollbar-hide">
+      <div className="flex-1 overflow-y-auto bg-[var(--surface-950)] pt-8 md:pt-12 pb-32 px-4 md:px-6 content-scroll">
         <article className="max-w-2xl mx-auto">
           {/* Title Section */}
           <div className="mb-12">
