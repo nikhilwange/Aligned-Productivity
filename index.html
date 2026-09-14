@@ -357,6 +357,37 @@
         scrollbar-width: none;
       }
 
+      /* Primary reading pane. Multi-hour transcripts run to hundreds of
+         paragraphs, so this keeps a visible, draggable scrollbar — the
+         global one is too faint to grab, and min-height stops the thumb
+         collapsing to a few pixels on very long content. */
+      .content-scroll {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+      }
+      .content-scroll::-webkit-scrollbar {
+        width: 12px;
+      }
+      .content-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .content-scroll::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.22);
+        border-radius: var(--radius-full);
+        border: 3px solid transparent;
+        background-clip: content-box;
+        min-height: 44px;
+        transition: background 160ms ease;
+      }
+      .content-scroll::-webkit-scrollbar-thumb:hover {
+        background: rgba(255, 255, 255, 0.4);
+        background-clip: content-box;
+      }
+      .content-scroll::-webkit-scrollbar-thumb:active {
+        background: rgba(255, 255, 255, 0.55);
+        background-clip: content-box;
+      }
+
       /* ─── Skeleton shimmer ─── */
       @keyframes skeleton-shimmer {
         0%   { background-position: -200% 0; }

@@ -1120,7 +1120,12 @@ const App: React.FC = () => {
       // Superseded mid-run → stop before writing any transcript/analysis state.
       if (signal.aborted) return;
 
-      const fullTranscript = transcripts.join(' ').replace(/\s+/g, ' ').trim();
+      // Join segments with a blank line, not a space. Collapsing on /\s+/ used to
+      // eat every newline, leaving multi-hour meetings as one unbroken line.
+      const fullTranscript = transcripts
+        .map(t => t.replace(/[ \t]+/g, ' ').trim())
+        .filter(Boolean)
+        .join('\n\n');
       const transcriptionMs = Date.now() - finishStartedAt;
 
       // Show transcript immediately, then analyze (unchanged path).

@@ -16,6 +16,135 @@ interface ResultsViewProps {
   onActionItemsAdded?: (items: TrackedActionItem[]) => void;
 }
 
+// ─── Transcript rendering helpers ────────────────────────────────────────────
+// Segmented recordings arrive as a single newline-free string (see App.tsx,
+// where the per-segment transcripts are joined). Rendering that naively used to
+// treat everything before the first colon as a speaker name and clip it into an
+// 80px box, hiding most of the transcript. These helpers make the read path
+// safe for any transcript shape, old rows included.
+
+const PARAGRAPH_TARGET_CHARS = 700;
+// Latin sentence enders plus the Devanagari danda — transcripts here are
+// routinely mixed Hindi/Marathi/English. Kept as a capturing split rather than
+// a lookbehind, which older Safari fails to parse at module load.
+const SENTENCE_END = /([.!?।]+\s+)/;
+
+/**
+ * A speaker label is a *short* prefix at the start of a line, not "everything
+ * before the first colon" — these transcripts use `Speaker 1 (00:14): text` and
+ * `Speaker 2 [50:05 - 50:31]: text`, where the first colon sits inside the
+ * timestamp. The label therefore ends at the first colon followed by whitespace
+ * or end-of-line (timestamp colons are always followed by a digit), capped at
+ * 40 chars. Sentence-ending punctuation in the candidate means it is prose that
+ * merely contains a colon ("So the plan is: ship Friday").
+ */
+const parseSpeakerLine = (line: string): { speaker: string | null; text: string } => {
+  const match = line.match(/^(.{1,40}?):(?=\s|$)\s*([\s\S]*)$/);
+  if (match && !/[.!?।]/.test(match[1])) {
+    return { speaker: match[1].trim(), text: match[2].trim() };
+  }
+  return { speaker: null, text: line.trim() };
+};
+
+/**
+ * The 80px gutter can't show `Speaker 1 (00:14)`, so drop a trailing
+ * parenthesised/bracketed timestamp for display. The full line is still what
+ * Copy and Download emit.
+ */
+const speakerDisplayName = (speaker: string): string =>
+  speaker.replace(/\s*[([][^)\]]*[)\]]\s*$/, '').trim() || speaker;
+
+/** Hard-slice a run with no usable sentence breaks, so it can't render as one giant block. */
+const hardWrap = (run: string): string[] => {
+  const out: string[] = [];
+  for (let i = 0; i < run.length; i += PARAGRAPH_TARGET_CHARS) {
+    out.push(run.slice(i, i + PARAGRAPH_TARGET_CHARS));
+  }
+  return out;
+};
+
+/** Normalize any transcript into renderable blocks. */
+const toDisplayBlocks = (transcript: string): string[] => {
+  if (!transcript) return [];
+
+  // Already structured (most sessions) — preserve the existing line breaks.
+  if (transcript.includes('\n')) {
+    return transcript.split('\n').map(l => l.trim()).filter(Boolean);
+  }
+
+  // Newline-free: pack sentences into readable paragraphs. The capturing split
+  // interleaves [text, delimiter, text, delimiter, ...], so pair them back up to
+  // keep the sentence-ending punctuation attached.
+  const parts = transcript.split(SENTENCE_END);
+  const sentences: string[] = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    const joined = `${parts[i] ?? ''}${parts[i + 1] ?? ''}`;
+    if (joined.trim()) sentences.push(joined);
+  }
+
+  const blocks: string[] = [];
+  let buffer = '';
+
+  for (const sentence of sentences) {
+    const piece = sentence.trim();
+    if (!piece) continue;
+
+    if (piece.length > PARAGRAPH_TARGET_CHARS * 2) {
+      if (buffer) { blocks.push(buffer); buffer = ''; }
+      blocks.push(...hardWrap(piece));
+      continue;
+    }
+
+    buffer = buffer ? `${buffer} ${piece}` : piece;
+    if (buffer.length >= PARAGRAPH_TARGET_CHARS) {
+      blocks.push(buffer);
+      buffer = '';
+    }
+  }
+  if (buffer) blocks.push(buffer);
+
+  return blocks;
+};
+
+/**
+ * Copy with a real result. navigator.clipboard can reject (insecure context,
+ * permissions, focus loss) — callers must not show "Copied!" on failure.
+ */
+const copyText = async (text: string): Promise<boolean> => {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (err) {
+    console.warn('[ResultsView] Clipboard API failed, trying fallback:', err);
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (fallbackErr) {
+      console.error('[ResultsView] Copy fallback failed:', fallbackErr);
+      return false;
+    }
+  }
+};
+
+/** Download a string as a file. */
+const downloadBlob = (content: string, filename: string, mime: string) => {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
 const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userId, actionItems, onActionItemsAdded }) => {
   const [activeTab, setActiveTab] = useState<'notes' | 'transcript' | 'strategist' | 'chat'>('notes');
   const [title, setTitle] = useState(session.title);
@@ -52,6 +181,12 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
   useEffect(() => {
     setLiveTrackedIndices(propTrackedIndices);
   }, [propTrackedIndices]);
+
+  // 158K-char transcripts: never re-split on every render.
+  const transcriptBlocks = useMemo(
+    () => toDisplayBlocks(session.analysis?.transcript ?? ''),
+    [session.analysis?.transcript]
+  );
 
   const totalPoints = session.analysis?.actionPoints?.length ?? 0;
   const newlyTrackableCount = useMemo(() => {
@@ -186,10 +321,10 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
     if (title.trim() !== session.title) onUpdateTitle(session.id, title);
   };
 
-  const copyToClipboard = () => {
+  const copyToClipboard = async () => {
     if (!session.analysis) return;
     const fullText = `${session.title}\n\nSummary & Notes:\n${session.analysis.summary}\n\nFull transcript:\n${session.analysis.transcript}`;
-    navigator.clipboard.writeText(fullText);
+    if (!(await copyText(fullText))) return;
     setGlobalCopied(true);
     setTimeout(() => setGlobalCopied(false), 2000);
   };
@@ -217,10 +352,14 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
     }
   };
 
-  const exportAsMarkdown = () => {
-    if (!session.analysis) return;
+  const exportFileStem = () => {
     const date = new Date(session.date).toLocaleDateString('en-CA');
     const safeTitle = session.title.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+    return `${date}-${safeTitle}`;
+  };
+
+  const exportAsMarkdown = () => {
+    if (!session.analysis) return;
     const content = [
       `# ${session.title}`,
       `**Date:** ${new Date(session.date).toLocaleDateString()}`,
@@ -230,36 +369,40 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
       '',
       session.analysis.transcript ? `---\n\n## Full Transcript\n\n${session.analysis.transcript}` : '',
     ].filter(Boolean).join('\n');
-    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${date}-${safeTitle}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(content, `${exportFileStem()}.md`, 'text/markdown;charset=utf-8');
     setExportOpen(false);
   };
 
-  const copyNotes = () => {
+  /** Verbatim transcript on its own, with no notes wrapper. */
+  const downloadTranscript = () => {
+    if (!session.analysis?.transcript) return;
+    downloadBlob(
+      session.analysis.transcript,
+      `${exportFileStem()}-transcript.txt`,
+      'text/plain;charset=utf-8'
+    );
+  };
+
+  const copyNotes = async () => {
     if (!session.analysis) return;
-    navigator.clipboard.writeText(session.analysis.summary);
-    setCopiedSection('notes');
+    const ok = await copyText(session.analysis.summary);
+    setCopiedSection(ok ? 'notes' : 'notes-error');
     setTimeout(() => setCopiedSection(null), 2000);
     setExportOpen(false);
   };
 
-  const copyActionItems = () => {
+  const copyActionItems = async () => {
     if (!session.analysis?.actionPoints?.length) return;
     const text = session.analysis.actionPoints.map(a => `- [ ] ${a}`).join('\n');
-    navigator.clipboard.writeText(text);
-    setCopiedSection('actions');
+    const ok = await copyText(text);
+    setCopiedSection(ok ? 'actions' : 'actions-error');
     setTimeout(() => setCopiedSection(null), 2000);
     setExportOpen(false);
   };
 
-  const copySection = (sectionName: string, content: string) => {
-    navigator.clipboard.writeText(content);
-    setCopiedSection(sectionName);
+  const copySection = async (sectionName: string, content: string) => {
+    const ok = await copyText(content);
+    setCopiedSection(ok ? sectionName : `${sectionName}-error`);
     setTimeout(() => setCopiedSection(null), 2000);
   };
 
@@ -779,7 +922,7 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
           <SessionChatPanel session={session} />
         </div>
       ) : (
-      <div className="flex-1 overflow-y-auto bg-[var(--surface-950)] pt-8 md:pt-12 pb-32 px-4 md:px-6 scrollbar-hide">
+      <div className="flex-1 overflow-y-auto bg-[var(--surface-950)] pt-8 md:pt-12 pb-32 px-4 md:px-6 content-scroll">
         <article className="max-w-2xl mx-auto">
           {/* Title Section */}
           <div className="mb-12">
@@ -854,43 +997,52 @@ const ResultsView: React.FC<ResultsViewProps> = ({ session, onUpdateTitle, userI
               <div className="animate-fade-in space-y-8">
                 <div className="flex items-center justify-between pb-5 border-b border-white/[0.06]">
                   <h2 className="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Verbatim transcript</h2>
-                  <button
-                    onClick={() => {
-                      if (!session.analysis?.transcript) return;
-                      navigator.clipboard.writeText(session.analysis.transcript);
-                      setCopiedSection('transcript');
-                      setTimeout(() => setCopiedSection(null), 2000);
-                    }}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${copiedSection === 'transcript'
-                      ? 'bg-teal-500/20 text-teal-300'
-                      : 'glass glass-hover opacity-60 hover:opacity-100'
-                    }`}
-                  >
-                    <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                    </svg>
-                    {copiedSection === 'transcript' ? 'Copied!' : 'Copy'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={async () => {
+                        if (!session.analysis?.transcript) return;
+                        const ok = await copyText(session.analysis.transcript);
+                        setCopiedSection(ok ? 'transcript' : 'transcript-error');
+                        setTimeout(() => setCopiedSection(null), 2000);
+                      }}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${copiedSection === 'transcript'
+                        ? 'bg-teal-500/20 text-teal-300'
+                        : copiedSection === 'transcript-error'
+                        ? 'bg-red-500/20 text-red-300'
+                        : 'glass glass-hover opacity-60 hover:opacity-100'
+                      }`}
+                    >
+                      <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                      </svg>
+                      {copiedSection === 'transcript' ? 'Copied!' : copiedSection === 'transcript-error' ? 'Copy failed' : 'Copy'}
+                    </button>
+                    <button
+                      onClick={downloadTranscript}
+                      className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all glass glass-hover opacity-60 hover:opacity-100"
+                    >
+                      <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                      Download .txt
+                    </button>
+                  </div>
                 </div>
                 <div className="space-y-6 pl-4 border-l-2 border-white/[0.06]">
-                  {session.analysis.transcript.split('\n').filter(l => l.trim()).map((line, i) => {
-                    const hasSpeakerLabel = line.includes(':');
-                    let speaker = "Dictation";
-                    let text = line.trim();
-
-                    if (hasSpeakerLabel) {
-                      const parts = line.split(':');
-                      speaker = parts[0].trim();
-                      text = parts.slice(1).join(':').trim();
-                    }
-
+                  {transcriptBlocks.map((block, i) => {
+                    const { speaker, text } = parseSpeakerLine(block);
                     return (
                       <div key={i} className="group flex gap-6">
                         <div className="w-20 shrink-0">
-                          <div className={`text-xs font-bold text-purple-300 truncate ${!hasSpeakerLabel && 'opacity-0'}`}>{speaker}</div>
+                          <div
+                            className={`text-xs font-bold text-purple-300 truncate ${!speaker && 'opacity-0'}`}
+                            title={speaker ?? undefined}
+                          >
+                            {speaker ? speakerDisplayName(speaker) : 'Dictation'}
+                          </div>
                         </div>
-                        <div className="flex-1">
-                          <p className="text-[var(--text-secondary)] leading-relaxed text-base font-medium opacity-80">{text}</p>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[var(--text-secondary)] leading-relaxed text-base font-medium opacity-80 whitespace-pre-wrap break-words">{text}</p>
                         </div>
                       </div>
                     );
