@@ -1142,8 +1142,16 @@ const App: React.FC = () => {
         `analysis ${(analysisMs / 1000).toFixed(1)}s, total ${((Date.now() - finishStartedAt) / 1000).toFixed(1)}s`,
       );
       const fullAnalysis = { ...analysisResult, transcript: fullTranscript };
+
+      // Name the session after what was discussed, exactly as the monolithic
+      // pipeline does. Segmentation is the default path for in-app recordings
+      // and split uploads, so without this the auto-name rarely reached a session.
+      const autoTitle = buildSessionTitle(session.title, fullAnalysis.title, session.date);
+      const titlePatch = autoTitle ? { title: autoTitle } : {};
+
       const completedSession: RecordingSession = {
         ...session,
+        ...titlePatch,
         analysis: fullAnalysis,
         status: 'completed',
         processingStep: undefined,
@@ -1151,7 +1159,7 @@ const App: React.FC = () => {
         recoveryId: undefined,
         audioPath: undefined,
       };
-      updateSession({ analysis: fullAnalysis, status: 'completed', processingStep: undefined, errorMessage: undefined, recoveryId: undefined });
+      updateSession({ ...titlePatch, analysis: fullAnalysis, status: 'completed', processingStep: undefined, errorMessage: undefined, recoveryId: undefined });
       await saveRecording(completedSession, user.id);
 
       if (unclearCount > 0) {
