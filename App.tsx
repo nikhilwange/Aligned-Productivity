@@ -56,6 +56,16 @@ const isElectron = typeof window !== 'undefined' && !!(window as any).ipcRendere
 // live transcription worker can register in the SAME map (single authority for
 // "who may do Sarvam work right now"). Behaviour is unchanged.
 
+type ProgressMap = Record<string, { done: number; total: number }>;
+
+// Set (or, with null, clear) one session's entry in a progress map.
+const withProgress = (map: ProgressMap, id: string, value: { done: number; total: number } | null): ProgressMap => {
+  if (value) return { ...map, [id]: value };
+  if (!(id in map)) return map;
+  const { [id]: _removed, ...rest } = map;
+  return rest;
+};
+
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [recordings, setRecordings] = useState<RecordingSession[]>([]);
@@ -84,7 +94,13 @@ const App: React.FC = () => {
   const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; reason?: string; offerTiers?: PlanTier[] }>({ open: false });
 
   // ─── Processing UX State ──────────────────────────────────────────────────
-  const [processingSessionId, setProcessingSessionId] = useState<string | null>(null);
+  // Every session whose pipeline we're watching for a "ready"/"failed" toast.
+  // Several can run at once — e.g. a new recording starts while the previous
+  // one is still being summarized.
+  const [processingSessionIds, setProcessingSessionIds] = useState<string[]>([]);
+  const trackProcessing = useCallback((id: string) => {
+    setProcessingSessionIds(prev => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
   const [toasts, setToasts] = useState<ToastData[]>([]);
   const [recoveryData, setRecoveryData] = useState<{
     durationStr: string;
@@ -94,14 +110,16 @@ const App: React.FC = () => {
     recoveryId: string;
   } | null>(null);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
-  // Sarvam chunk progress for the processing banner (component state only — never persisted).
-  const [chunkProgress, setChunkProgress] = useState<{ done: number; total: number } | null>(null);
-  // Segment progress for segmented processing ("Transcribing segment 4 of 22"). Component state only.
-  const [segmentProgress, setSegmentProgress] = useState<{ done: number; total: number } | null>(null);
+  // Banner progress, keyed by session id so concurrent pipelines don't clobber
+  // each other. Component state only — never persisted.
+  // Sarvam chunk progress ("26 of 144").
+  const [chunkProgress, setChunkProgress] = useState<ProgressMap>({});
+  // Segment progress for segmented processing ("Transcribing segment 4 of 22").
+  const [segmentProgress, setSegmentProgress] = useState<ProgressMap>({});
   // How many segments the live worker had already transcribed when Finish ran.
   // When most of the work is pre-done the banner says "Finalizing your notes…"
-  // instead of a raw segment count. Component state only.
-  const [preTranscribed, setPreTranscribed] = useState<{ done: number; total: number } | null>(null);
+  // instead of a raw segment count.
+  const [preTranscribed, setPreTranscribed] = useState<ProgressMap>({});
   // "Download audio" gather progress for a failed segmented session ("Preparing download… 3 of 12").
   const [audioDownload, setAudioDownload] = useState<{ sessionId: string; done: number; total: number } | null>(null);
   // Client-side split progress for a manual audio upload. A 3.5h MP3 scans in
@@ -141,50 +159,50 @@ const App: React.FC = () => {
 
   // ─── Detect when processing finishes (success or error) ───────────────────
   useEffect(() => {
-    if (!processingSessionId) return;
-    const session = recordings.find(r => r.id === processingSessionId);
-    if (!session) return;
+    if (processingSessionIds.length === 0) return;
+    const finished: string[] = [];
+    let anyCompleted = false;
 
-    if (session.status === 'completed') {
-      const actionCount = session.analysis?.actionPoints?.length || 0;
-      const isViewingSession = activeRecordingId === processingSessionId;
+    for (const id of processingSessionIds) {
+      const session = recordings.find(r => r.id === id);
+      if (!session) continue;
+      const isViewingSession = activeRecordingId === id;
+      const openSession = () => {
+        setIsRecordingMode(false);
+        setActiveRecordingId(id);
+      };
 
-      if (!isViewingSession) {
-        addToast(
-          `"${session.title}" is ready` + (actionCount > 0 ? ` — ${actionCount} action item${actionCount !== 1 ? 's' : ''} found` : ''),
-          'success',
-          {
-            actionLabel: 'View session',
-            onAction: () => {
-              setIsRecordingMode(false);
-              setActiveRecordingId(processingSessionId);
-            },
-          }
-        );
+      if (session.status === 'completed') {
+        const actionCount = session.analysis?.actionPoints?.length || 0;
+        if (!isViewingSession) {
+          addToast(
+            `"${session.title}" is ready` + (actionCount > 0 ? ` — ${actionCount} action item${actionCount !== 1 ? 's' : ''} found` : ''),
+            'success',
+            { actionLabel: 'View session', onAction: openSession }
+          );
+        }
+        finished.push(id);
+        anyCompleted = true;
+      } else if (session.status === 'error') {
+        const isRetryable = Boolean(session.recoveryId || session.audioPath);
+        if (!isViewingSession) {
+          addToast(
+            `Processing failed for "${session.title}"` + (isRetryable ? ' — tap to retry' : ''),
+            'error',
+            isRetryable ? { actionLabel: 'View & retry', onAction: openSession } : undefined
+          );
+        }
+        finished.push(id);
       }
-      setProcessingSessionId(null);
-      // A completed session may have consumed audio-minutes → refresh the
-      // usage meter / tier state so the sidebar + gates reflect it.
-      subscriptionState.refetch();
-    } else if (session.status === 'error') {
-      const isViewingSession = activeRecordingId === processingSessionId;
-      const isRetryable = Boolean(session.recoveryId || session.audioPath);
-      if (!isViewingSession) {
-        addToast(
-          `Processing failed for "${session.title}"` + (isRetryable ? ' — tap to retry' : ''),
-          'error',
-          isRetryable ? {
-            actionLabel: 'View & retry',
-            onAction: () => {
-              setIsRecordingMode(false);
-              setActiveRecordingId(processingSessionId);
-            },
-          } : undefined
-        );
-      }
-      setProcessingSessionId(null);
     }
-  }, [recordings, processingSessionId, activeRecordingId, addToast, subscriptionState.refetch]);
+
+    if (finished.length > 0) {
+      setProcessingSessionIds(prev => prev.filter(id => !finished.includes(id)));
+    }
+    // A completed session may have consumed audio-minutes → refresh the
+    // usage meter / tier state so the sidebar + gates reflect it.
+    if (anyCompleted) subscriptionState.refetch();
+  }, [recordings, processingSessionIds, activeRecordingId, addToast, subscriptionState.refetch]);
 
   const handleEngineChange = (engine: 'gemini' | 'sarvam') => {
     setTranscriptionEngine(engine);
@@ -363,7 +381,7 @@ const App: React.FC = () => {
               analysis: null,
             };
             setRecordings(prev => prev.map(r => r.id === cand.id ? resetSession : r));
-            setProcessingSessionId(cand.id);
+            trackProcessing(cand.id);
             // Fire-and-forget: do not await, so load doesn't block on full processing.
             runProcessingForSession(resetSession, rec.blob);
             break; // At most one auto-resume per load.
@@ -470,7 +488,7 @@ const App: React.FC = () => {
                 setRecordings(prev => existing
                   ? prev.map(r => r.id === resumeSession.id ? resumeSession : r)
                   : [resumeSession, ...prev]);
-                setProcessingSessionId(resumeSession.id);
+                trackProcessing(resumeSession.id);
                 // Fire-and-forget: don't block load on full processing.
                 runSegmentedProcessingForSession(resumeSession, manifest);
                 break;
@@ -533,7 +551,7 @@ const App: React.FC = () => {
       };
       setRecordings(prev => [audioSession, ...prev]);
       setActiveRecordingId(audioSession.id);
-      setProcessingSessionId(audioSession.id);
+      trackProcessing(audioSession.id);
       setIsManualProcessing(true);
       try {
         // ── Segmented upload path ────────────────────────────────────────
@@ -601,7 +619,7 @@ const App: React.FC = () => {
 
     setRecordings(prev => [newSession, ...prev]);
     setActiveRecordingId(newSession.id);
-    setProcessingSessionId(newSession.id);
+    trackProcessing(newSession.id);
     // Heartbeat so a reload during analysis isn't stamped "interrupted".
     startHeartbeat(newSession.id);
 
@@ -643,7 +661,8 @@ const App: React.FC = () => {
     if (!checkRecordingAllowed()) return;
     setActiveRecordingId(null);
     setIsRecordingMode(true);
-    setAppState(AppState.IDLE);
+    // Don't knock a live recording out of RECORDING if "New" is clicked mid-capture.
+    setAppState(prev => (prev === AppState.RECORDING || prev === AppState.PAUSED ? prev : AppState.IDLE));
   };
 
   const handleGoHome = () => {
@@ -849,7 +868,7 @@ const App: React.FC = () => {
       const sarvamOpts = {
         recoveryId: session.recoveryId,
         signal,
-        onProgress: (done: number, total: number) => { if (!signal.aborted) setChunkProgress({ done, total }); },
+        onProgress: (done: number, total: number) => { if (!signal.aborted) setChunkProgress(p => withProgress(p, session.id, { done, total })); },
       };
       if (transcriptionEngine === 'sarvam' && hasSarvamKey) {
         try {
@@ -859,7 +878,7 @@ const App: React.FC = () => {
           // A usage-cap 402 is terminal — don't burn a Gemini call on it.
           if (isUsageLimitError(sarvamError)) throw sarvamError;
           console.error('[App] ⚠️ Sarvam STT failed — falling back to Gemini transcription.', sarvamError.message);
-          setChunkProgress(null);
+          setChunkProgress(p => withProgress(p, session.id, null));
           updateSession({ processingStep: 'transcribing' });
           transcript = await extractTranscript(blob, { audioPath: archivedAudioPath });
         }
@@ -889,7 +908,7 @@ const App: React.FC = () => {
       }
 
       // Transcription done — clear the chunk-progress indicator.
-      setChunkProgress(null);
+      setChunkProgress(p => withProgress(p, session.id, null));
 
       // Superseded mid-run → stop before writing any transcript/analysis state.
       if (signal.aborted) return;
@@ -994,8 +1013,7 @@ const App: React.FC = () => {
       // one — a superseding run has already taken ownership of all three.
       if (endPipelineRun(session.id, controller)) {
         clearHeartbeat(session.id);
-        setChunkProgress(null);
-        setAppState(AppState.IDLE);
+        setChunkProgress(p => withProgress(p, session.id, null));
       }
     }
   }, [user, transcriptionEngine, hasSarvamKey]);
@@ -1061,12 +1079,12 @@ const App: React.FC = () => {
       const liveTranscripts = await getSegmentTranscripts(recoveryId);
       const preDone = segments.filter(s => liveTranscripts[s.index] !== undefined).length;
       console.log(`[Pipeline] finish started: ${preDone} of ${segments.length} segments pre-transcribed`);
-      setPreTranscribed({ done: preDone, total: segments.length });
+      setPreTranscribed(p => withProgress(p, session.id, { done: preDone, total: segments.length }));
 
       for (let i = 0; i < segments.length; i++) {
         if (signal.aborted) return; // superseded — stop before the next segment
         const seg = segments[i];
-        setSegmentProgress({ done: i, total: segments.length });
+        setSegmentProgress(p => withProgress(p, session.id, { done: i, total: segments.length }));
         updateSession({ processingStep: 'transcribing' });
 
         // Phase 3: reuse the transcript the live worker already produced.
@@ -1100,7 +1118,7 @@ const App: React.FC = () => {
             // probe mis-reads a VBR MP3 slice (no Xing header) as much longer
             // than it is and the truncation check drops good audio.
             knownDurationMs: seg.durationMs,
-            onProgress: (done, total) => { if (!signal.aborted) setChunkProgress({ done, total }); },
+            onProgress: (done, total) => { if (!signal.aborted) setChunkProgress(p => withProgress(p, session.id, { done, total })); },
           });
           transcripts.push(text);
         } catch (e: any) {
@@ -1113,9 +1131,9 @@ const App: React.FC = () => {
           unclearCount++;
         }
         if (signal.aborted) return;
-        setChunkProgress(null);
+        setChunkProgress(p => withProgress(p, session.id, null));
       }
-      setSegmentProgress(null);
+      setSegmentProgress(p => withProgress(p, session.id, null));
 
       // Superseded mid-run → stop before writing any transcript/analysis state.
       if (signal.aborted) return;
@@ -1193,10 +1211,9 @@ const App: React.FC = () => {
       // Only tear down if this run is still current (a superseding run may own it).
       if (endPipelineRun(session.id, controller)) {
         clearHeartbeat(session.id);
-        setChunkProgress(null);
-        setSegmentProgress(null);
-        setPreTranscribed(null);
-        setAppState(AppState.IDLE);
+        setChunkProgress(p => withProgress(p, session.id, null));
+        setSegmentProgress(p => withProgress(p, session.id, null));
+        setPreTranscribed(p => withProgress(p, session.id, null));
       }
     }
   }, [user, addToast, cleanupSegmentedSession]);
@@ -1219,8 +1236,10 @@ const App: React.FC = () => {
     setRecordings(prev => [newSession, ...prev]);
     setActiveRecordingId(newSession.id);
     setIsRecordingMode(false);
-    setAppState(AppState.PROCESSING);
-    setProcessingSessionId(newSession.id);
+    // The recorder is done — processing runs in the background and never owns
+    // appState, so a new recording can start while this one is summarized.
+    setAppState(AppState.IDLE);
+    trackProcessing(newSession.id);
 
     // Segmented handoff: if this recording produced a segment manifest, process
     // it segment-by-segment. The recovery-modal recover path (real blob, no
@@ -1235,7 +1254,6 @@ const App: React.FC = () => {
         setRecordings(prev => prev.map(r => r.id === newSession.id
           ? { ...r, status: 'error', errorMessage: 'Recording captured no audio. Please try again.', processingStep: undefined }
           : r));
-        setAppState(AppState.IDLE);
         return;
       }
     }
@@ -1264,8 +1282,7 @@ const App: React.FC = () => {
         };
         setRecordings(prev => prev.map(r => r.id === sessionId ? resetSession : r));
         setActiveRecordingId(sessionId);
-        setAppState(AppState.PROCESSING);
-        setProcessingSessionId(sessionId);
+        trackProcessing(sessionId);
         await runSegmentedProcessingForSession(resetSession, manifest);
         return;
       }
@@ -1303,8 +1320,7 @@ const App: React.FC = () => {
     };
     setRecordings(prev => prev.map(r => r.id === sessionId ? resetSession : r));
     setActiveRecordingId(sessionId);
-    setAppState(AppState.PROCESSING);
-    setProcessingSessionId(sessionId);
+    trackProcessing(sessionId);
 
     await runProcessingForSession(resetSession, blob);
   }, [user, recordings, runProcessingForSession, runSegmentedProcessingForSession]);
@@ -1554,21 +1570,23 @@ const App: React.FC = () => {
 
         <div className="flex-1 overflow-hidden relative pb-16 md:pb-0">
           {/* Processing Banner — visible on all views when a session is processing */}
-          {processingSessionId && activeRecordingId !== processingSessionId && (() => {
-            const ps = recordings.find(r => r.id === processingSessionId);
+          {processingSessionIds.map(id => {
+            if (id === activeRecordingId) return null;
+            const ps = recordings.find(r => r.id === id);
             return ps && ps.status === 'processing' ? (
               <ProcessingBanner
+                key={id}
                 session={ps}
-                progress={ps.id === processingSessionId ? chunkProgress : null}
-                segmentProgress={ps.id === processingSessionId ? segmentProgress : null}
-                preTranscribed={ps.id === processingSessionId ? preTranscribed : null}
+                progress={chunkProgress[id] ?? null}
+                segmentProgress={segmentProgress[id] ?? null}
+                preTranscribed={preTranscribed[id] ?? null}
                 onTap={() => {
                   setIsRecordingMode(false);
-                  setActiveRecordingId(processingSessionId);
+                  setActiveRecordingId(id);
                 }}
               />
             ) : null;
-          })()}
+          })}
           {activeRecordingId === 'home' ? (
             <HomeView
               user={user}
@@ -1664,6 +1682,7 @@ const App: React.FC = () => {
                 onEngineChange={handleEngineChange}
                 hasSarvamKey={hasSarvamKey}
                 sessionCapMinutes={BILLING_ENABLED ? subscriptionState.sessionCapMinutes : null}
+                backgroundProcessing={recordings.some(r => r.status === 'processing')}
                 onSessionCapWarning={(minsLeft) =>
                   addToast(`Free sessions are capped at 90 minutes — ${minsLeft} minute${minsLeft !== 1 ? 's' : ''} left. Recording will stop and be saved.`, 'error')
                 }

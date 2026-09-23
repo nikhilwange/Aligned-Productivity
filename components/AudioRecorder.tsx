@@ -23,6 +23,9 @@ interface AudioRecorderProps {
   // and processed normally. A warning fires 5 minutes before the cap.
   sessionCapMinutes?: number | null;
   onSessionCapWarning?: (minutesLeft: number) => void;
+  // True while an earlier session is still being summarized. Recording is not
+  // blocked by it — this only drives a reassurance line under the button.
+  backgroundProcessing?: boolean;
 }
 
 type InputMode = 'mic' | 'meeting' | 'call';
@@ -40,7 +43,7 @@ const SILENCE_THRESHOLD = 0.01; // RMS below this = silence
 const SILENCE_AUTO_STOP_SECONDS = 300; // 5 minutes of continuous silence → auto-stop
 const CHECKPOINT_INTERVAL_CHUNKS = 10; // checkpoint to IndexedDB every ~10s (since timeslice=1000ms)
 
-const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, onRecordingComplete, transcriptionEngine, onEngineChange, hasSarvamKey, sessionCapMinutes, onSessionCapWarning }) => {
+const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, onRecordingComplete, transcriptionEngine, onEngineChange, hasSarvamKey, sessionCapMinutes, onSessionCapWarning, backgroundProcessing }) => {
   const [timer, setTimer] = useState(0);
   const [inputMode, setInputMode] = useState<InputMode>('mic');
   const [isScreenCaptureSupported, setIsScreenCaptureSupported] = useState<boolean>(true);
@@ -644,6 +647,11 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
             : "Transform any multilingual dialogue into structured documentation with zero effort."
           }
         </p>
+        {backgroundProcessing && !isRecording && !isProcessing && (
+          <p className="mt-3 text-xs font-medium text-amber-500/80">
+            Previous session is still being summarized in the background.
+          </p>
+        )}
       </div>
     </div>
   );
