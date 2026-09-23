@@ -14,7 +14,7 @@
 // copied verbatim from api/gemini/strategic.ts.
 
 import { corsHeaders } from '../_shared/cors.ts';
-import { callPortkey, extractUserIdFromAuthHeader } from '../_shared/portkey.ts';
+import { buildPortkeyMetadata, callPortkey } from '../_shared/portkey.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -37,9 +37,9 @@ Deno.serve(async (req) => {
   }
 
   // Decode-only (no signature verification — Supabase already did that).
-  // We pass the resulting user_id to Portkey as metadata so per-user AI
-  // consumption shows up in the Portkey logs/analytics dashboard.
-  const userId = extractUserIdFromAuthHeader(authHeader);
+  // The metadata rides along on the Portkey call so per-user AI consumption
+  // shows up in the Portkey logs and analytics dashboards.
+  const portkeyMetadata = buildPortkeyMetadata(authHeader);
 
   let aggregatedData: unknown;
   let isSingleMeeting: unknown;
@@ -178,7 +178,7 @@ ${aggregatedData}`;
         max_tokens: 65536,
         temperature: 0.1,
       },
-      { user_id: userId, app: 'aligned' },
+      portkeyMetadata,
     );
 
     return new Response(

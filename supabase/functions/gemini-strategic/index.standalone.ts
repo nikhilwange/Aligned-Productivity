@@ -42,23 +42,43 @@ type PortkeyOpts = {
 };
 
 // Decode-only JWT helper. Supabase already verified the signature at the
-// gateway — we only need the `sub` claim to tag Portkey calls with the
-// originating user_id. Returns 'unknown' on any failure so we always send
-// some value to Portkey rather than dropping the metadata field.
-function extractUserIdFromAuthHeader(authHeader: string | null): string {
+// gateway — we only read the payload to tag Portkey calls with who made
+// them. Returns {} on any failure so we still send placeholder metadata.
+function decodeJwtClaims(authHeader: string | null): { sub?: string; email?: string } {
   try {
     const token = authHeader?.replace(/^Bearer\s+/i, '').trim();
-    if (!token) return 'unknown';
+    if (!token) return {};
     const parts = token.split('.');
-    if (parts.length < 2) return 'unknown';
+    if (parts.length < 2) return {};
     const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
     const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
-    const json = JSON.parse(new TextDecoder().decode(bytes)) as { sub?: string };
-    return typeof json.sub === 'string' && json.sub.length > 0 ? json.sub : 'unknown';
+    return JSON.parse(new TextDecoder().decode(bytes)) as { sub?: string; email?: string };
   } catch {
-    return 'unknown';
+    return {};
   }
+}
+
+// `_user` is Portkey's RESERVED metadata key and the only field its
+// Analytics → Users tab groups by — a custom tag like `user_id` is
+// filterable in Logs but leaves that tab reading "(not set)". We send both
+// so existing `user_id` filters keep working, plus `user_email` so the
+// dashboard rows name a teammate instead of a bare UUID.
+function buildPortkeyMetadata(authHeader: string | null): Record<string, string> {
+  const claims = decodeJwtClaims(authHeader);
+  const userId = typeof claims.sub === 'string' && claims.sub.length > 0
+    ? claims.sub
+    : 'unknown';
+
+  const metadata: Record<string, string> = {
+    _user: userId,
+    user_id: userId,
+    app: 'aligned',
+  };
+  if (typeof claims.email === 'string' && claims.email.length > 0) {
+    metadata.user_email = claims.email;
+  }
+  return metadata;
 }
 
 async function callPortkey(
@@ -144,9 +164,9 @@ Deno.serve(async (req) => {
   }
 
   // Decode-only (no signature verification — Supabase already did that).
-  // We pass the resulting user_id to Portkey as metadata so per-user AI
-  // consumption shows up in the Portkey logs/analytics dashboard.
-  const userId = extractUserIdFromAuthHeader(authHeader);
+  // The metadata rides along on the Portkey call so per-user AI consumption
+  // shows up in the Portkey logs and analytics dashboards.
+  const portkeyMetadata = buildPortkeyMetadata(authHeader);
 
   let aggregatedData: unknown;
   let isSingleMeeting: unknown;
@@ -285,7 +305,7 @@ ${aggregatedData}`;
         max_tokens: 65536,
         temperature: 0.1,
       },
-      { user_id: userId, app: 'aligned' },
+      portkeyMetadata,
     );
 
     return new Response(

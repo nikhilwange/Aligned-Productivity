@@ -33,31 +33,59 @@ export type PortkeyOpts = {
 };
 
 /**
- * Extract the Supabase user id (`sub` claim) from an Authorization header,
- * without verifying the signature. Supabase's gateway already validated the
- * JWT before this function ran — we only need the payload to attach a
- * user_id to outbound Portkey calls for per-user usage tracking.
+ * Decode — without verifying — the claims we need from an Authorization
+ * header. Supabase's gateway already validated the JWT before this function
+ * ran, so we only ever read the payload, never the signature.
  *
- * Returns 'unknown' on any failure (missing header, malformed JWT,
- * missing claim) so the caller can always supply *some* user_id to
- * Portkey rather than dropping the field.
+ * Returns an empty object on any failure (missing header, malformed JWT) so
+ * callers can substitute placeholders rather than throwing.
  */
-export function extractUserIdFromAuthHeader(authHeader: string | null): string {
+function decodeJwtClaims(authHeader: string | null): { sub?: string; email?: string } {
   try {
     const token = authHeader?.replace(/^Bearer\s+/i, '').trim();
-    if (!token) return 'unknown';
+    if (!token) return {};
     const parts = token.split('.');
-    if (parts.length < 2) return 'unknown';
+    if (parts.length < 2) return {};
     // JWT payload is base64url-encoded JSON. Convert URL alphabet → standard
     // base64 and pad to a multiple of 4 before atob.
     const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
     const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
-    const json = JSON.parse(new TextDecoder().decode(bytes)) as { sub?: string };
-    return typeof json.sub === 'string' && json.sub.length > 0 ? json.sub : 'unknown';
+    return JSON.parse(new TextDecoder().decode(bytes)) as { sub?: string; email?: string };
   } catch {
-    return 'unknown';
+    return {};
   }
+}
+
+/**
+ * Build the metadata map attached to every outbound Portkey call.
+ *
+ * `_user` is not an arbitrary tag — it is Portkey's reserved metadata key,
+ * and the only field its Analytics → Users tab groups by. We previously sent
+ * the id as a custom `user_id` tag, which is filterable in Logs but leaves
+ * the Users tab reading "(not set)": every account collapsed into a single
+ * anonymous row no matter how many people were actually calling.
+ *
+ * `user_id` is kept alongside it so any Portkey filter, config rule, or
+ * alert already written against that tag keeps working. `user_email` makes
+ * the rows legible — a bare Supabase UUID doesn't tell you which teammate
+ * ran the request.
+ */
+export function buildPortkeyMetadata(authHeader: string | null): Record<string, string> {
+  const claims = decodeJwtClaims(authHeader);
+  const userId = typeof claims.sub === 'string' && claims.sub.length > 0
+    ? claims.sub
+    : 'unknown';
+
+  const metadata: Record<string, string> = {
+    _user: userId,
+    user_id: userId,
+    app: 'aligned',
+  };
+  if (typeof claims.email === 'string' && claims.email.length > 0) {
+    metadata.user_email = claims.email;
+  }
+  return metadata;
 }
 
 /**
@@ -69,7 +97,8 @@ export function extractUserIdFromAuthHeader(authHeader: string | null): string {
  * @param opts      max_tokens / temperature / response_format passthrough.
  * @param metadata  Optional flat record of tags Portkey will surface in its
  *                  Logs / Analytics dashboards. Used here for per-user
- *                  consumption tracking — callers pass { user_id, app }.
+ *                  consumption tracking — callers pass the result of
+ *                  buildPortkeyMetadata().
  * @returns         The plain string content of the first choice's message.
  */
 export async function callPortkey(

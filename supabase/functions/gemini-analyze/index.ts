@@ -16,7 +16,7 @@
 // the higher-capability model lineup.
 
 import { corsHeaders } from '../_shared/cors.ts';
-import { callPortkey, extractUserIdFromAuthHeader } from '../_shared/portkey.ts';
+import { buildPortkeyMetadata, callPortkey } from '../_shared/portkey.ts';
 
 // Keepalive cadence for the streaming path. Comfortably under the gateway's
 // 150s idle timeout — small enough that a stalled connection is still spotted
@@ -49,9 +49,9 @@ Deno.serve(async (req) => {
   }
 
   // Decode-only (no signature verification — Supabase already did that).
-  // We pass the resulting user_id to Portkey as metadata so per-user AI
-  // consumption shows up in the Portkey logs/analytics dashboard.
-  const userId = extractUserIdFromAuthHeader(authHeader);
+  // The metadata rides along on the Portkey call so per-user AI consumption
+  // shows up in the Portkey logs and analytics dashboards.
+  const portkeyMetadata = buildPortkeyMetadata(authHeader);
 
   let transcript: unknown;
   let recordingDate: unknown;
@@ -356,7 +356,7 @@ ${transcript}`;
       temperature: 0.1,
       response_format: { type: 'json_object' },
     },
-    { user_id: userId, app: 'aligned' },
+    portkeyMetadata,
   );
 
   // ──────────────────────────────────────────────────────────────────────
