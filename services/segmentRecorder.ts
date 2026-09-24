@@ -12,7 +12,7 @@
 //
 // Lifetime is owned by services/recordingController.ts, never by a component.
 
-import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage } from './storageService';
+import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage, getRecordingFolderInfo } from './storageService';
 import {
   saveSegmentBlob,
   getSegmentBlob,
@@ -645,33 +645,47 @@ export async function reuploadPendingSegments(sessionId: string): Promise<void> 
   });
 }
 
+
 /**
- * 7-day cleanup of segmented recordings whose manifest hasn't changed in 7
- * days — Storage objects included (the old purge only cleared IndexedDB).
- * Subject to the hard rule: only a recording whose row is 'completed' with no
- * unclear/failed parts is deleted. One whose row is processing / interrupted /
- * error, has parts to re-transcribe, or has no row at all is KEPT (the user
- * can Save/Discard it from the leftover notice, or delete the session).
- * Skips anything live. Call once on load.
+ * Client retention pass over this device's segmented recordings (call once on
+ * load). Applies the SHARED retention rules (via segmentCleanupPolicy) to any
+ * recording whose local manifest hasn't changed for a day:
+ *   - Storage folder already emptied by the server sweep (retention ended) but
+ *     the recording HAD been uploaded → drop this device's local copy too.
+ *   - otherwise → an automatic deletion request anchored on the newest Storage
+ *     object, which the policy grants only for a completed recording whose
+ *     retention allows it (never processing / interrupted / error, never an
+ *     orphan — those are the server sweep's job).
+ * A recording that never reached Storage (e.g. recorded offline) is the only
+ * copy and is never touched here. Skips anything live.
  */
-export async function purgeStaleSegmentedRecordings(
+export async function applyLocalRetention(
   isLive: (recoveryId: string) => Promise<boolean | null>,
   describe: (recoveryId: string, manifest: SegmentManifest) => Promise<{ rowStatus: RecordingRowStatus | null; hasProblems: boolean }>,
 ): Promise<void> {
   try {
-    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const settledBefore = Date.now() - 24 * 60 * 60 * 1000;
     for (const m of await getAllSegmentManifests()) {
-      if (m.updatedAt && m.updatedAt >= cutoff) continue;
+      if (m.updatedAt && m.updatedAt >= settledBefore) continue;
       if ((await isLive(m.sessionId)) === true) continue;
+      const folder = await getRecordingFolderInfo(m.sessionId);
+      if (!folder) continue; // couldn't check Storage — do nothing
+      const everUploaded = m.segments.some((s) => s.uploaded || s.storagePath);
+      if (folder.count === 0 && everUploaded) {
+        await deleteSegmentedRecording(m.sessionId, m, { kind: 'local_only', reason: 'storage_already_deleted' });
+        continue;
+      }
+      if (folder.count === 0) continue; // never uploaded: this device holds the only copy
       const { rowStatus, hasProblems } = await describe(m.sessionId, m);
       await deleteSegmentedRecording(m.sessionId, m, {
         kind: 'automatic',
-        reason: 'seven_day_cleanup',
+        reason: 'retention_sweep',
         rowStatus,
         hasProblems,
+        lastUploadMs: folder.lastUploadMs,
       });
     }
   } catch (err) {
-    console.warn('[SegmentRecorder] 7-day cleanup failed:', err);
+    console.warn('[SegmentRecorder] retention pass failed:', err);
   }
 }

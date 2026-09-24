@@ -28,6 +28,28 @@ export const uploadAudioToStorage = async (
   return fullPath;
 };
 
+/**
+ * What Storage holds for a segmented recording (recordings/<recoveryId>/ under
+ * the user's folder): how many objects, and the newest object's time — the
+ * "kept since" anchor the retention rules count from (the same anchor the
+ * server sweep uses). Null if the listing failed.
+ */
+export const getRecordingFolderInfo = async (
+  recoveryId: string,
+): Promise<{ count: number; lastUploadMs: number | null } | null> => {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+  const { data, error } = await supabase.storage
+    .from(BUCKET)
+    .list(`${user.id}/recordings/${recoveryId}`, { limit: 1000 });
+  if (error || !data) return null;
+  const files = data.filter((f) => f.id); // folders have no id
+  const times = files
+    .map((f) => Date.parse(f.updated_at || f.created_at || ''))
+    .filter((t) => Number.isFinite(t));
+  return { count: files.length, lastUploadMs: times.length ? Math.max(...times) : null };
+};
+
 // Throws on failure so callers can surface the problem (orphan-audio risk).
 export const deleteAudioPaths = async (paths: string[]): Promise<void> => {
   if (paths.length === 0) return;

@@ -28,10 +28,11 @@ import { transcribeSegment, buildSegmentedTranscript, resultStatus, needsRetry, 
 import { extractTranscript, analyzeTranscript } from './services/geminiService';
 import { buildSessionTitle } from './utils/sessionTitle';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
-import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage } from './services/storageService';
+import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage, getRecordingFolderInfo } from './services/storageService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems } from './services/supabaseService';
 import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery, clearChunkTranscripts, clearAllChunkTranscripts, purgeStaleChunkTranscripts, getSegmentManifest, getAllSegmentManifests, getSegmentBlob, clearSegmentManifest, purgeStaleSegmentManifests, getSegmentTranscripts, getSegmentResults, clearSegmentTranscripts, clearAllSegmentTranscripts, purgeStaleSegmentTranscripts, SegmentManifest } from './services/recordingRecovery';
-import { reuploadPendingSegments, getActiveSegmentSessionId, ingestFileAsSegments, deleteSegmentedRecording, purgeStaleSegmentedRecordings } from './services/segmentRecorder';
+import { reuploadPendingSegments, getActiveSegmentSessionId, ingestFileAsSegments, deleteSegmentedRecording, applyLocalRetention } from './services/segmentRecorder';
+import { UNCLEAR_MARKER, segmentedAudioRetention, retentionWarningDaysLeft } from './supabase/functions/_shared/audioRetention.ts';
 import { USE_SEGMENTED_RECORDING, BILLING_ENABLED } from './config/features';
 import { startHeartbeat, clearHeartbeat, isHeartbeatFresh, HEARTBEAT_STALE_MS } from './services/processingHeartbeat';
 import { beginPipelineRun, endPipelineRun } from './services/pipelineRuns';
@@ -368,13 +369,14 @@ const App: React.FC = () => {
         // Housekeeping: drop chunk-transcript caches + segment manifests older than 7 days.
         purgeStaleChunkTranscripts();
         if (USE_SEGMENTED_RECORDING) {
-          // 7-day cleanup — deletes the Storage objects too, not just IndexedDB.
-          purgeStaleSegmentedRecordings(isRecordingLive, async (recoveryId, manifest) => {
+          // Retention (shared rules with the server's audio-retention sweep).
+          // "Unclear parts" is judged from the saved transcript, exactly as the
+          // server judges it.
+          applyLocalRetention(isRecordingLive, async (recoveryId) => {
             const row = data.find(r => r.recoveryId === recoveryId);
-            const results = await getSegmentResults(recoveryId);
             return {
               rowStatus: row ? row.status : null,
-              hasProblems: manifest.segments.some(s => needsRetry(resultStatus(results[s.index]))),
+              hasProblems: !!row?.analysis?.transcript?.includes(UNCLEAR_MARKER),
             };
           });
           purgeStaleSegmentTranscripts(); // Phase 3 live transcripts
@@ -496,7 +498,8 @@ const App: React.FC = () => {
                   console.log(`[App] Deleting leftover of completed session "${sess.title}" (${m.sessionId}) — never processed`);
                   clearLiveSession(m.sessionId);
                   await deleteSegmentedRecording(m.sessionId, m, {
-                    kind: 'automatic', reason: 'completed_leftover', rowStatus: sess.status, hasProblems: retryable,
+                    kind: 'automatic', reason: 'completed_leftover', rowStatus: sess.status,
+                    hasProblems: retryable || !!sess.analysis?.transcript?.includes(UNCLEAR_MARKER),
                   });
                 }
                 continue;
@@ -1443,7 +1446,7 @@ const App: React.FC = () => {
   // transcript in place from the stored per-segment results, re-runs the
   // analysis and, once nothing is left to fix, deletes the audio. The session
   // stays 'completed' throughout, so an interruption changes nothing saved.
-  const [retranscribeInfo, setRetranscribeInfo] = useState<{ sessionId: string; problems: number; total: number } | null>(null);
+  const [retranscribeInfo, setRetranscribeInfo] = useState<{ sessionId: string; problems: number; total: number; deleteInDays: number | null } | null>(null);
   const [retranscribeProgress, setRetranscribeProgress] = useState<{ sessionId: string; done: number; total: number } | null>(null);
 
   const refreshRetranscribeInfo = useCallback(async (session: RecordingSession | undefined) => {
@@ -1452,7 +1455,15 @@ const App: React.FC = () => {
     if (!manifest) { setRetranscribeInfo(null); return; } // audio not on this device
     const results = await getSegmentResults(session.recoveryId);
     const problems = manifest.segments.filter(s => needsRetry(resultStatus(results[s.index]))).length;
-    setRetranscribeInfo(problems > 0 ? { sessionId: session.id, problems, total: manifest.segments.length } : null);
+    if (problems === 0) { setRetranscribeInfo(null); return; }
+    // Countdown from the SHARED retention rules, anchored on the newest Storage
+    // object — the same anchor the server sweep deletes on.
+    const folder = await getRecordingFolderInfo(session.recoveryId);
+    const verdict = folder?.lastUploadMs
+      ? segmentedAudioRetention({ rowStatus: 'completed', hasUnclearParts: true, lastUploadMs: folder.lastUploadMs, nowMs: Date.now() })
+      : null;
+    const deleteInDays = retentionWarningDaysLeft(verdict?.deleteAtMs, Date.now());
+    setRetranscribeInfo({ sessionId: session.id, problems, total: manifest.segments.length, deleteInDays });
   }, []);
 
   const activeSessionForBanner = recordings.find(r => r.id === activeRecordingId);
@@ -1900,6 +1911,7 @@ const App: React.FC = () => {
             <RetranscribeBanner
               problems={retranscribeInfo.problems}
               total={retranscribeInfo.total}
+              deleteInDays={retranscribeInfo.deleteInDays}
               progress={retranscribeProgress?.sessionId === activeSession.id ? retranscribeProgress : null}
               onRetranscribe={() => void handleRetranscribeUnclear(activeSession)}
             />

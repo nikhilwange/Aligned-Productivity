@@ -1,21 +1,25 @@
-// ─── Segment deletion policy — the single chokepoint ────────────────────────
+// ─── Segment deletion policy — the single client chokepoint ─────────────────
 //
 // HARD RULE: a recording's Storage segments are deleted ONLY
-//   (a) automatically, after its recordings row is 'completed' with no
-//       unclear / failed parts, or
+//   (a) automatically, when the SHARED retention rules say so
+//       (supabase/functions/_shared/audioRetention.ts — the same rules the
+//       server's daily audio-retention sweep applies), or
 //   (b) by an explicit, user-confirmed Discard / Delete.
-// Never for a row that is 'processing', 'interrupted' or 'error' — or any
-// status other than 'completed' — and never automatically when the row
-// status is unknown (no row found): that audio may be the only copy of a
-// recording that still has to be processed or retried.
+// Never for a row that is 'processing', 'interrupted' or 'error' (or any
+// status other than 'completed').
 //
-// Every segment deletion in the app goes through deleteRecordingSegments()
+// On top of the shared rules the CLIENT is stricter in one way: it never
+// deletes Storage for a recording with no row (an orphan). "No row" here is
+// only as good as the row list this tab loaded; the server sweep, which reads
+// the database directly, handles orphans after ORPHAN_AUDIO_RETENTION_DAYS.
+//
+// Every segment deletion goes through deleteRecordingSegments()
 // (services/segmentRecorder.ts wires in the real Storage / IndexedDB calls),
-// which refuses — deleting nothing, not even the local copy — unless the
-// caller's declared reason satisfies the rule. Kept free of runtime imports
-// so tests/segmentCleanup.test.ts can run it directly under Node.
+// which refuses — deleting nothing — unless the declared reason satisfies the
+// rules. Only type imports + the pure shared rules, so tests run it under Node.
 
 import type { SegmentManifest } from './recordingRecovery';
+import { segmentedAudioRetention } from '../supabase/functions/_shared/audioRetention.ts';
 
 export type RecordingRowStatus = string; // 'processing' | 'completed' | 'error' | 'interrupted' | …
 
@@ -26,25 +30,38 @@ export type SegmentDeletion =
     }
   | {
       kind: 'automatic';
-      reason: 'completed_clean' | 'retranscribed_clean' | 'completed_leftover' | 'seven_day_cleanup';
+      reason: 'completed_clean' | 'retranscribed_clean' | 'completed_leftover' | 'retention_sweep';
       /** Status of the recordings row for this recoveryId; null/undefined = no row found. */
       rowStatus: RecordingRowStatus | null | undefined;
-      /** Any unclear / failed segment still worth a re-transcription. */
+      /** Unclear / failed parts still worth a re-transcription. */
       hasProblems: boolean;
+      /** Newest Storage object time for the recording (retention anchor); unknown = treated as now. */
+      lastUploadMs?: number | null;
+      nowMs?: number;
+    }
+  | {
+      // The server sweep already deleted the Storage copy (retention ended):
+      // drop this device's local copy too. Touches no Storage.
+      kind: 'local_only';
+      reason: 'storage_already_deleted';
     };
 
 export function mayDeleteSegments(d: SegmentDeletion): { allowed: boolean; why: string } {
   if (d.kind === 'user_confirmed') return { allowed: true, why: `user confirmed (${d.action})` };
+  if (d.kind === 'local_only') return { allowed: true, why: 'Storage copy already deleted by retention — local copy only' };
   if (d.rowStatus === null || d.rowStatus === undefined) {
-    return { allowed: false, why: `no recordings row found (${d.reason}) — audio may be the only copy` };
+    return { allowed: false, why: `no recordings row found (${d.reason}) — orphans are left to the server sweep` };
   }
-  if (d.rowStatus !== 'completed') {
-    return { allowed: false, why: `row is '${d.rowStatus}' (${d.reason}) — audio needed for retry` };
-  }
-  if (d.hasProblems) {
-    return { allowed: false, why: `row is completed but has unclear/failed parts (${d.reason}) — kept for re-transcription` };
-  }
-  return { allowed: true, why: `row completed with no unclear/failed parts (${d.reason})` };
+  const nowMs = d.nowMs ?? Date.now();
+  const verdict = segmentedAudioRetention({
+    rowStatus: d.rowStatus,
+    hasUnclearParts: d.hasProblems,
+    lastUploadMs: d.lastUploadMs ?? nowMs,
+    nowMs,
+  });
+  return verdict.action === 'delete'
+    ? { allowed: true, why: `${verdict.reason} (${d.reason})` }
+    : { allowed: false, why: `${verdict.reason} (${d.reason})` };
 }
 
 /** Every Storage path a manifest references, including files a header repair replaced. */
@@ -83,7 +100,7 @@ export async function deleteRecordingSegments(
   }
   if (manifest) {
     const paths = manifestStoragePaths(manifest);
-    if (paths.length > 0) {
+    if (paths.length > 0 && deletion.kind !== 'local_only') {
       await deps.deleteAudioPaths(paths).catch((err: any) =>
         warn(`[Cleanup] Storage delete failed for ${recoveryId}: ${err?.message ?? err}`));
     }
