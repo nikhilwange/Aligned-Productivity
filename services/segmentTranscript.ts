@@ -110,20 +110,20 @@ const wordCount = (t: string | null) =>
 /**
  * Stitch segment texts into one transcript, trimming trailing non-speech.
  *
- * A recording left running after the meeting ends (or one that died
- * mid-segment) tails off into segments with no real speech. They are dropped
- * from the transcript and from the saved duration when a trailing segment
- * has no words (empty, skipped, or only the unclear placeholder), or fewer
- * than TRAIL_MIN_WORDS words over at least TRAIL_SPARSE_MIN_MS of audio. A
- * short final segment with a few real words ("thanks, bye") is kept. A
- * 'failed' segment is never trimmed (its audio is kept for a retry), and the
- * first segment is never trimmed.
+ * A recording left running after the meeting ends tails off into segments
+ * with no real speech. They are dropped from the transcript and from the
+ * saved duration — but ONLY trailing segments whose status is 'ok' and whose
+ * text is empty, or has fewer than TRAIL_MIN_WORDS words over at least
+ * TRAIL_SPARSE_MIN_MS of audio. A short final segment with a few real words
+ * ("thanks, bye") is kept. Trimming stops at the first trailing segment that
+ * is 'unclear', 'failed' or 'skipped': unclear/failed ones are retryable (their
+ * audio is kept), so they are never trimmed. The first segment is never trimmed.
  */
 export function buildSegmentedTranscript(pieces: SegmentPiece[], fallbackDurationSec: number): BuiltTranscript {
   let keep = pieces.length;
   while (keep > 1) {
     const { seg, text, status } = pieces[keep - 1];
-    if (status === 'failed') break;
+    if (status !== 'ok') break;
     const words = wordCount(text);
     const sparse = words < TRAIL_MIN_WORDS && (seg.durationMs || 0) >= TRAIL_SPARSE_MIN_MS;
     if (words > 0 && !sparse) break;
