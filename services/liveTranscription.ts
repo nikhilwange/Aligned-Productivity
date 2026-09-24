@@ -29,6 +29,7 @@ import {
 } from './recordingRecovery';
 import { beginPipelineRun, abortPipelineRun } from './pipelineRuns';
 import { startHeartbeat, clearHeartbeat } from './processingHeartbeat';
+import { isSessionCeilingError } from './usageLimit';
 
 interface LiveSession {
   sessionId: string;
@@ -40,6 +41,8 @@ interface LiveSession {
   enqueued: Set<number>;
   /** Segment indices with a saved transcript (numerator for the UI readout). */
   done: Set<number>;
+  /** Server refused with `session_ceiling` — no further segments are sent. */
+  ceilingReached: boolean;
 }
 
 const sessions = new Map<string, LiveSession>();
@@ -71,6 +74,18 @@ function emitProgress(s: LiveSession): void {
   });
 }
 
+// ─── STT ceiling notification ────────────────────────────────────────────────
+// Fired once when the server refuses a segment because the recording reached
+// STT_SESSION_CEILING_MIN. The recorder listens and auto-stops + finalizes.
+type CeilingListener = (sessionId: string) => void;
+const ceilingListeners = new Set<CeilingListener>();
+
+/** Subscribe to "recording hit the STT ceiling". Returns an unsubscribe function. */
+export function subscribeLiveCeiling(listener: CeilingListener): () => void {
+  ceilingListeners.add(listener);
+  return () => ceilingListeners.delete(listener);
+}
+
 /** Current progress for a session, or null when it isn't live-transcribing. */
 export function getLiveProgress(sessionId: string): LiveProgress | null {
   const s = sessions.get(sessionId);
@@ -96,6 +111,7 @@ export function startLiveTranscription(sessionId: string): void {
     running: null,
     enqueued: new Set(),
     done: new Set(),
+    ceilingReached: false,
   });
   console.log(`[LiveTx] started for ${sessionId}`);
 }
@@ -106,7 +122,7 @@ export function startLiveTranscription(sessionId: string): void {
  */
 export function enqueueSegment(sessionId: string, index: number): void {
   const s = sessions.get(sessionId);
-  if (!s || s.controller.signal.aborted) return;
+  if (!s || s.controller.signal.aborted || s.ceilingReached) return;
   if (s.enqueued.has(index)) return; // already queued/processed
   s.enqueued.add(index);
   s.queue.push(index);
@@ -175,7 +191,7 @@ async function pump(s: LiveSession): Promise<void> {
 
   try {
     while (s.queue.length > 0) {
-      if (signal.aborted) return;
+      if (signal.aborted || s.ceilingReached) return;
       const index = s.queue.shift()!;
       await transcribeOneSegment(s, index, signal);
     }
@@ -275,6 +291,19 @@ async function transcribeOneSegment(
     // a stuck segment — all just mean this segment is transcribed after Finish.
     // Partial chunk work is already cached, so the finisher resumes from there.
     if (signal.aborted) return; // handoff/discard, not a real failure
+    // The server refused: this recording has used its whole STT ceiling. Stop
+    // sending anything more and tell the recorder to stop + finalize.
+    if (isSessionCeilingError(err)) {
+      if (!s.ceilingReached) {
+        s.ceilingReached = true;
+        s.queue.length = 0;
+        console.warn(`[LiveTx] seg ${index}: STT ceiling reached for ${s.sessionId} — live transcription stopped`);
+        ceilingListeners.forEach((l) => {
+          try { l(s.sessionId); } catch { /* a listener must never break the worker */ }
+        });
+      }
+      return;
+    }
     if (timedOut) {
       console.warn(
         `[LiveTx] segment ${index} exceeded ${SEGMENT_WATCHDOG_MS / 1000}s, deferring to finish ` +

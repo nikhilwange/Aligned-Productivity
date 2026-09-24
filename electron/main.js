@@ -1,7 +1,20 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain, powerSaveBlocker } = require('electron');
 const path = require('path');
 
 let win = null;
+
+// Keep the app from being suspended for the whole of a recording. The
+// renderer's recording controller sends 'start' when capture begins and
+// 'stop' when it is finalized or discarded.
+let powerBlockerId = null;
+ipcMain.on('power-blocker', (_event, action) => {
+    if (action === 'start' && powerBlockerId === null) {
+        powerBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+    } else if (action === 'stop' && powerBlockerId !== null) {
+        if (powerSaveBlocker.isStarted(powerBlockerId)) powerSaveBlocker.stop(powerBlockerId);
+        powerBlockerId = null;
+    }
+});
 
 function createMainWindow() {
     win = new BrowserWindow({

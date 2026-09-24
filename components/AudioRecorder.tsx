@@ -1,398 +1,94 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { AppState, AudioRecording } from '../types';
+import React, { useState, useEffect } from 'react';
 import { isNativeApp } from '../services/nativePermissions';
-import {
-  startRecoverySession,
-  checkpointChunks,
-  updateRecoveryDuration,
-  clearRecoverySession,
-} from '../services/recordingRecovery';
-import { USE_SEGMENTED_RECORDING, LIVE_TRANSCRIPTION } from '../config/features';
-import { SegmentRecorder } from '../services/segmentRecorder';
+import { LIVE_TRANSCRIPTION } from '../config/features';
+import { STT_SESSION_CEILING_MIN, SILENCE_AUTOSTOP_MIN } from '../config/sttLimits';
 import { subscribeLiveProgress, type LiveProgress } from '../services/liveTranscription';
+import { recordingController, type InputMode } from '../services/recordingController';
+import { useRecording } from '../hooks/useRecording';
+import { RecordingPromptCard, SleepNotice, formatRecordingTime } from './RecordingIndicator';
+
+// A VIEW of the app-level recording controller (services/recordingController.ts).
+// It owns no streams, recorders or timers: mounting / unmounting it — which
+// happens on every navigation — never affects a recording in progress.
 
 interface AudioRecorderProps {
-  appState: AppState;
-  setAppState: (state: AppState) => void;
-  onRecordingComplete: (recording: AudioRecording) => void;
   transcriptionEngine: 'gemini' | 'sarvam';
   onEngineChange: (engine: 'gemini' | 'sarvam') => void;
   hasSarvamKey: boolean;
   // Per-session recording cap in minutes (Free tier = 90; null = no cap).
-  // At the cap the recorder auto-stops; the audio up to that point is kept
-  // and processed normally. A warning fires 5 minutes before the cap.
+  // At the cap the recording stops and is saved; a warning fires 5 min before.
   sessionCapMinutes?: number | null;
-  onSessionCapWarning?: (minutesLeft: number) => void;
   // True while an earlier session is still being summarized. Recording is not
   // blocked by it — this only drives a reassurance line under the button.
   backgroundProcessing?: boolean;
+  /** Show a toast (e.g. "A recording is already running in another tab."). */
+  onNotice: (message: string, type?: 'info' | 'error') => void;
+  /** Ask the user to confirm discarding the current recording. */
+  onRequestDiscard: () => void;
 }
 
-type InputMode = 'mic' | 'meeting' | 'call';
+const IN_PERSON_TIP_KEY = 'aligned-tip-in-person-dismissed';
 
-// Runaway guard, not a quality limit. The old 2-hour value dated from the
-// pre-Phase-2 recorder, when the whole meeting was one blob handed to the
-// transcription API and 2h was where that broke. Segmented recording removed
-// that ceiling — the API never sees more than one ~5-minute segment — and
-// analysis is now chunked too, so meeting length no longer drives any single
-// call. What actually protects against a forgotten recording is
-// SILENCE_AUTO_STOP_SECONDS below, which is far more precise than a wall-clock
-// cap. This exists only so a truly stuck session cannot record forever.
-const MAX_RECORDING_SECONDS = 6 * 60 * 60; // 6 hours
-const SILENCE_THRESHOLD = 0.01; // RMS below this = silence
-const SILENCE_AUTO_STOP_SECONDS = 300; // 5 minutes of continuous silence → auto-stop
-const CHECKPOINT_INTERVAL_CHUNKS = 10; // checkpoint to IndexedDB every ~10s (since timeslice=1000ms)
-
-const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, onRecordingComplete, transcriptionEngine, onEngineChange, hasSarvamKey, sessionCapMinutes, onSessionCapWarning, backgroundProcessing }) => {
-  const [timer, setTimer] = useState(0);
-  const [inputMode, setInputMode] = useState<InputMode>('mic');
+const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEngineChange, hasSarvamKey, sessionCapMinutes, backgroundProcessing, onNotice, onRequestDiscard }) => {
+  const rec = useRecording();
+  const [selectedMode, setSelectedMode] = useState<InputMode>('mic');
   const [isScreenCaptureSupported, setIsScreenCaptureSupported] = useState<boolean>(true);
-  const [silenceSeconds, setSilenceSeconds] = useState(0);
   // Phase 3: how many finalized segments have been transcribed live so far.
   // Component state only — never persisted.
   const [liveProgress, setLiveProgress] = useState<LiveProgress | null>(null);
+  const [tipHidden, setTipHidden] = useState(false);
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const segmentRecorderRef = useRef<SegmentRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const uncheckpointedRef = useRef<Blob[]>([]); // chunks not yet saved to IndexedDB
-  const timerIntervalRef = useRef<number | null>(null);
-  const durationRef = useRef<number>(0);
-  const capWarnedRef = useRef(false); // session-cap warning fired once
-  const sourceStreamsRef = useRef<MediaStream[]>([]);
-  const recoveryIdRef = useRef<string>('');
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const silenceSecondsRef = useRef(0);
-  const audioContextRef = useRef<AudioContext | null>(null);
-
-  // Phase 3: mirror live-transcription progress into component state for the
-  // reassurance line under the timer. Only listens to THIS tab's recording.
-  useEffect(() => {
-    if (!USE_SEGMENTED_RECORDING || !LIVE_TRANSCRIPTION) return;
-    return subscribeLiveProgress((p) => {
-      if (p.sessionId === recoveryIdRef.current) setLiveProgress(p);
-    });
-  }, []);
+  const isRecording = rec.status === 'recording';
+  const isStarting = rec.status === 'starting';
+  const isProcessing = rec.status === 'finalizing';
+  const inputMode: InputMode = rec.inputMode ?? selectedMode;
 
   useEffect(() => {
     const isMobile = isNativeApp() || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     const hasDisplayMedia = navigator.mediaDevices && 'getDisplayMedia' in navigator.mediaDevices;
     setIsScreenCaptureSupported(hasDisplayMedia && !isMobile);
-
-    return () => {
-      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-      cleanupStreams();
-    };
   }, []);
 
-  // Prevent accidental tab/browser close while recording
+  // Phase 3: mirror live-transcription progress for the reassurance line.
+  // Only listens to THIS recording.
   useEffect(() => {
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (appState === AppState.RECORDING || appState === AppState.PAUSED) {
-        // Best-effort flush of any uncheckpointed chunks before the tab closes
-        if (recoveryIdRef.current && uncheckpointedRef.current.length > 0) {
-          checkpointChunks(recoveryIdRef.current, uncheckpointedRef.current);
-          uncheckpointedRef.current = [];
-        }
-        e.preventDefault();
-        e.returnValue = 'Recording is in progress. Are you sure you want to leave?';
-      }
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [appState]);
-
-  const checkSilence = useCallback(() => {
-    if (!analyserRef.current) return;
-    const data = new Float32Array(analyserRef.current.fftSize);
-    analyserRef.current.getFloatTimeDomainData(data);
-    let sum = 0;
-    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
-    const rms = Math.sqrt(sum / data.length);
-    if (rms < SILENCE_THRESHOLD) {
-      silenceSecondsRef.current += 1;
-    } else {
-      silenceSecondsRef.current = 0;
-    }
-    setSilenceSeconds(silenceSecondsRef.current);
+    if (!LIVE_TRANSCRIPTION) return;
+    return subscribeLiveProgress((p) => {
+      if (p.sessionId === recordingController.getSnapshot().recoveryId) setLiveProgress(p);
+    });
   }, []);
 
-  const startTimer = () => {
-    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-    silenceSecondsRef.current = 0;
-    setSilenceSeconds(0);
-    capWarnedRef.current = false;
-
-    // Free-tier per-session cap (minutes → seconds), clamped to the global max.
-    const capSeconds =
-      sessionCapMinutes && sessionCapMinutes > 0
-        ? Math.min(sessionCapMinutes * 60, MAX_RECORDING_SECONDS)
-        : null;
-
-    timerIntervalRef.current = window.setInterval(() => {
-      setTimer(prev => {
-        const newValue = prev + 1;
-        durationRef.current = newValue;
-
-        // Warn 5 minutes before the session cap (once).
-        if (capSeconds && !capWarnedRef.current && newValue >= capSeconds - 300 && newValue < capSeconds) {
-          capWarnedRef.current = true;
-          try { onSessionCapWarning?.(Math.max(1, Math.ceil((capSeconds - newValue) / 60))); } catch { /* ignore */ }
-        }
-
-        // Hit the session cap → auto-stop; audio so far is kept & processed.
-        if (capSeconds && newValue >= capSeconds) {
-          stopRecording();
-          return capSeconds;
-        }
-
-        if (newValue >= MAX_RECORDING_SECONDS) {
-          stopRecording();
-          return MAX_RECORDING_SECONDS;
-        }
-
-        return newValue;
-      });
-
-      // Check silence level
-      checkSilence();
-
-      // Periodic checkpoint to IndexedDB
-      if (uncheckpointedRef.current.length >= CHECKPOINT_INTERVAL_CHUNKS && recoveryIdRef.current) {
-        const toSave = [...uncheckpointedRef.current];
-        uncheckpointedRef.current = [];
-        checkpointChunks(recoveryIdRef.current, toSave);
-        updateRecoveryDuration(recoveryIdRef.current, durationRef.current);
-      }
-    }, 1000);
-  };
-
-  const stopTimer = () => {
-    if (timerIntervalRef.current) {
-      clearInterval(timerIntervalRef.current);
-      timerIntervalRef.current = null;
-    }
-  };
-
-  // Auto-stop after prolonged silence
   useEffect(() => {
-    if (silenceSeconds >= SILENCE_AUTO_STOP_SECONDS && (appState === AppState.RECORDING || appState === AppState.PAUSED)) {
-      console.log(`[AudioRecorder] Auto-stopping after ${SILENCE_AUTO_STOP_SECONDS}s of silence`);
-      stopRecording();
-    }
-  }, [silenceSeconds, appState]);
+    if (rec.recoveryId) setLiveProgress(null); // new recording → fresh readout
+    setTipHidden(false);
+  }, [rec.recoveryId]);
 
   const startRecording = async () => {
-    try {
-      let finalStream: MediaStream;
-      if (inputMode === 'mic' || inputMode === 'call') {
-        finalStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          }
-        });
-        sourceStreamsRef.current = [finalStream];
-      } else {
-        const displayStream = await (navigator.mediaDevices as any).getDisplayMedia({
-          video: true,
-          audio: { echoCancellation: true },
-          systemAudio: "include"
-        });
-
-        if (displayStream.getAudioTracks().length === 0) {
-          alert("Share audio was not selected.");
-          displayStream.getTracks().forEach((t: any) => t.stop());
-          return;
-        }
-
-        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const dest = ctx.createMediaStreamDestination();
-        ctx.createMediaStreamSource(displayStream).connect(dest);
-        ctx.createMediaStreamSource(micStream).connect(dest);
-        finalStream = dest.stream;
-        sourceStreamsRef.current = [displayStream, micStream];
-      }
-
-      // Set up silence detection analyser
-      try {
-        const actx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const source = actx.createMediaStreamSource(finalStream);
-        const analyser = actx.createAnalyser();
-        analyser.fftSize = 2048;
-        source.connect(analyser);
-        analyserRef.current = analyser;
-        audioContextRef.current = actx;
-      } catch (err) {
-        console.warn('[AudioRecorder] Silence detection setup failed:', err);
-      }
-
-      // ── Segmented path (Phase 2, flag-gated) ────────────────────────────
-      // Record in ~5-min self-contained segments that upload during the
-      // meeting. Uses the same MediaStream/constraints and the same timer +
-      // silence detection above; only the recording mechanics differ.
-      if (USE_SEGMENTED_RECORDING) {
-        const segRecoveryId = `rec-${Date.now()}`;
-        recoveryIdRef.current = segRecoveryId;
-        setLiveProgress(null); // clear any readout left from a previous recording
-        const segSource = inputMode === 'meeting' ? 'virtual-meeting' : inputMode === 'call' ? 'phone-call' : 'in-person';
-        const controller = new SegmentRecorder({
-          stream: finalStream,
-          sessionId: segRecoveryId,
-          source: segSource,
-        });
-        segmentRecorderRef.current = controller;
-        controller.start();
-
-        setAppState(AppState.RECORDING);
-        setTimer(0);
-        durationRef.current = 0;
-        silenceSecondsRef.current = 0;
-        setSilenceSeconds(0);
-        startTimer();
-        return;
-      }
-
-      // 32 kbps Opus — voice-quality stays excellent, file size drops ~75%.
-      // 1h meeting ≈ 14 MB instead of ~58 MB; fits well under Supabase free tier limits.
-      const options = { audioBitsPerSecond: 32000 };
-      const mediaRecorder = new MediaRecorder(finalStream, options);
-      mediaRecorderRef.current = mediaRecorder;
-      chunksRef.current = [];
-      uncheckpointedRef.current = [];
-
-      // Generate recovery session ID
-      const recoveryId = `rec-${Date.now()}`;
-      recoveryIdRef.current = recoveryId;
-      startRecoverySession({
-        id: recoveryId,
-        startedAt: Date.now(),
-        duration: 0,
-        source: inputMode === 'meeting' ? 'virtual-meeting' : inputMode === 'call' ? 'phone-call' : 'in-person',
-        mimeType: mediaRecorder.mimeType || 'audio/webm',
-        inputMode,
-      });
-
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          chunksRef.current.push(e.data);
-          uncheckpointedRef.current.push(e.data);
-        }
-      };
-
-      mediaRecorder.onstop = () => {
-        // Flush any uncheckpointed chunks so IndexedDB has the complete audio before handoff
-        if (uncheckpointedRef.current.length > 0 && recoveryIdRef.current) {
-          checkpointChunks(recoveryIdRef.current, uncheckpointedRef.current);
-          uncheckpointedRef.current = [];
-        }
-
-        const blob = new Blob(chunksRef.current, { type: mediaRecorder.mimeType || 'audio/webm' });
-        cleanupStreams();
-
-        if (blob.size === 0 || chunksRef.current.length === 0) {
-          console.error('[AudioRecorder] Recording produced empty audio blob');
-          clearRecoverySession(recoveryId);
-          setAppState(AppState.IDLE);
-          alert('Recording captured no audio. Please check your microphone permissions and try again.');
-          return;
-        }
-
-        const url = URL.createObjectURL(blob);
-        const source = inputMode === 'meeting' ? 'virtual-meeting' : inputMode === 'call' ? 'phone-call' : 'in-person';
-        // NOTE: recoveryId is passed up so App.tsx can clear IndexedDB only after processing
-        // fully succeeds. This way any processing failure (timeout, tab close, Gemini error)
-        // leaves the audio recoverable for retry.
-        onRecordingComplete({ blob, url, duration: durationRef.current, source, recoveryId });
-      };
-
-      mediaRecorder.onerror = (e: any) => {
-        console.error('[AudioRecorder] MediaRecorder error:', e);
-        stopTimer();
-        cleanupStreams();
-        setAppState(AppState.IDLE);
-      };
-
-      mediaRecorder.start(1000); // collect data every 1s to prevent loss on tab crash
-      setAppState(AppState.RECORDING);
-      setTimer(0);
-      durationRef.current = 0;
-      silenceSecondsRef.current = 0;
-      setSilenceSeconds(0);
-      startTimer();
-    } catch (err: any) {
-      console.error('[AudioRecorder] Failed to start recording:', err);
-      stopTimer();
-      cleanupStreams();
-      setAppState(AppState.IDLE);
-      if (err.name === 'NotAllowedError') {
-        alert('Microphone access was denied. Please allow microphone permission in your browser settings and try again.');
-      } else if (err.name === 'NotFoundError') {
-        alert('No microphone detected. Please connect a microphone and try again.');
-      } else {
-        alert('Could not start recording. Please check your microphone and try again.');
-      }
-    }
+    const failure = await recordingController.start({ inputMode: selectedMode, sessionCapMinutes });
+    if (!failure) return;
+    if (failure.code === 'busy' || failure.code === 'other_tab') onNotice(failure.message, 'error');
+    else alert(failure.message);
   };
 
-  const cleanupStreams = () => {
-    sourceStreamsRef.current.forEach(s => s.getTracks().forEach(t => t.stop()));
-    sourceStreamsRef.current = [];
-    if (audioContextRef.current) {
-      audioContextRef.current.close().catch(() => {});
-      audioContextRef.current = null;
-      analyserRef.current = null;
-    }
+  const stopRecording = () => { void recordingController.finalizeRecording('user_stop'); };
+
+  const tipDismissedForever = (() => {
+    try { return localStorage.getItem(IN_PERSON_TIP_KEY) === '1'; } catch { return false; }
+  })();
+  const showInPersonTip = isRecording && inputMode === 'mic' && !tipHidden && !tipDismissedForever;
+  const dismissTipForever = () => {
+    try { localStorage.setItem(IN_PERSON_TIP_KEY, '1'); } catch { /* ignore */ }
+    setTipHidden(true);
   };
 
-  const stopRecording = () => {
-    // Segmented path: stop the rotating recorder, flush the final segment, wait
-    // for pending uploads ("finishing…" shown via the PROCESSING state), then
-    // hand off. The blob is intentionally empty — segmented processing reads
-    // the segment manifest from IndexedDB by recoveryId, not a single blob.
-    if (USE_SEGMENTED_RECORDING && segmentRecorderRef.current) {
-      const controller = segmentRecorderRef.current;
-      segmentRecorderRef.current = null;
-      setAppState(AppState.PROCESSING);
-      stopTimer();
-      const source = inputMode === 'meeting' ? 'virtual-meeting' : inputMode === 'call' ? 'phone-call' : 'in-person';
-      const finalDuration = durationRef.current;
-      const handoff = () => {
-        cleanupStreams();
-        onRecordingComplete({ blob: new Blob([]), url: '', duration: finalDuration, source, recoveryId: controller.sessionId });
-      };
-      controller.stop().then(handoff).catch((err) => {
-        console.error('[AudioRecorder] Segmented stop failed:', err);
-        handoff();
-      });
-      return;
-    }
-
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-      setAppState(AppState.PROCESSING);
-      stopTimer();
-    }
-  };
-
-  // MM:SS under an hour, H:MM:SS at or above it. Without the hours branch a
-  // long session reads as "215:43", and at the 6-hour cap the "remaining"
-  // counter would start at "360:00".
-  const formatTime = (seconds: number) => {
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-    const mm = mins.toString().padStart(2, '0');
-    const ss = secs.toString().padStart(2, '0');
-    return hrs > 0 ? `${hrs}:${mm}:${ss}` : `${mm}:${ss}`;
-  };
-
-  const isRecording = appState === AppState.RECORDING || appState === AppState.PAUSED;
-  const isProcessing = appState === AppState.PROCESSING;
-  const remainingTime = MAX_RECORDING_SECONDS - timer;
-  const progressPercent = (timer / MAX_RECORDING_SECONDS) * 100;
+  const timer = Math.floor(rec.capturedMs / 1000);
+  const limitSeconds = Math.min(
+    STT_SESSION_CEILING_MIN * 60,
+    sessionCapMinutes && sessionCapMinutes > 0 ? sessionCapMinutes * 60 : Infinity,
+  );
+  const remainingTime = Math.max(0, limitSeconds - timer);
+  const progressPercent = Math.min(100, (timer / limitSeconds) * 100);
+  const silenceSeconds = Math.floor(rec.silenceMs / 1000);
 
   const getRemainingColor = () => {
     if (remainingTime < 120) return 'text-red-400';
@@ -407,7 +103,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
   ];
 
   // Show silence warning when silence exceeds 60s
-  const showSilenceWarning = isRecording && silenceSeconds >= 60;
+  const showSilenceWarning = isRecording && !rec.prompt && silenceSeconds >= 60;
   // Show long-recording heads-up after 90 minutes
   const showLongRecordingWarning = isRecording && timer >= 5400;
 
@@ -424,6 +120,29 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
             <span className="text-xs font-semibold text-[var(--text-secondary)] tracking-wide">
               High-precision active session
             </span>
+          </div>
+        </div>
+      )}
+
+      {/* Prompt / sleep notice (also shown in the indicator on every screen) */}
+      {isRecording && rec.prompt && (
+        <div className="mb-4 w-full max-w-sm animate-fade-in-down"><RecordingPromptCard prompt={rec.prompt} /></div>
+      )}
+      {isRecording && rec.sleepNotice && (
+        <div className="mb-4 w-full max-w-sm animate-fade-in-down"><SleepNotice gapMin={rec.sleepNotice.gapMin} /></div>
+      )}
+
+      {/* First in-person recording tip */}
+      {showInPersonTip && (
+        <div className="mb-4 w-full max-w-sm animate-fade-in-down">
+          <div className="glass-card rounded-xl px-4 py-3 border border-[var(--border)]">
+            <p className="text-xs font-medium text-[var(--text-secondary)]">
+              Keep your laptop plugged in and the lid open. Recording pauses if your laptop sleeps.
+            </p>
+            <div className="flex gap-3 mt-2">
+              <button onClick={() => setTipHidden(true)} className="text-xs font-semibold text-[var(--text-primary)] hover:opacity-80">Got it</button>
+              <button onClick={dismissTipForever} className="text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">Don't show again</button>
+            </div>
           </div>
         </div>
       )}
@@ -450,8 +169,8 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
             </svg>
             <span className="text-xs font-medium text-amber-300">
-              No audio detected for {formatTime(silenceSeconds)}
-              {silenceSeconds >= 240 && ' — auto-stopping soon'}
+              No audio detected for {formatRecordingTime(silenceSeconds)}
+              {silenceSeconds >= (SILENCE_AUTOSTOP_MIN - 3) * 60 && " — we'll check you're still recording soon"}
             </span>
           </div>
         </div>
@@ -499,9 +218,10 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
             (mode.id !== 'meeting' || isScreenCaptureSupported) && (
               <button
                 key={mode.id}
-                onClick={() => setInputMode(mode.id as InputMode)}
+                onClick={() => setSelectedMode(mode.id as InputMode)}
+                disabled={isStarting}
                 className={`flex items-center gap-2.5 px-5 md:px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-300 ${
-                  inputMode === mode.id
+                  selectedMode === mode.id
                     ? mode.color === 'purple'
                       ? 'bg-purple-500/20 text-purple-600 shadow-lg shadow-purple-500/10'
                       : mode.color === 'teal'
@@ -559,14 +279,14 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
           {!isRecording ? (
             <button
               onClick={startRecording}
-              disabled={isProcessing}
+              disabled={isProcessing || isStarting}
               className={`w-56 h-56 rounded-full flex flex-col items-center justify-center transition-all duration-500 group ${
-                isProcessing
+                isProcessing || isStarting
                   ? 'glass cursor-wait'
                   : 'glass-card hover:scale-105 active:scale-95 cursor-pointer'
               }`}
             >
-              {isProcessing ? (
+              {isProcessing || isStarting ? (
                 <div className="flex flex-col items-center">
                   <div className="flex gap-2 mb-4">
                     {[0, 0.2, 0.4].map(d => (
@@ -574,7 +294,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
                            style={{ animationDelay: `${d}s`, background: 'var(--accent)' }} />
                     ))}
                   </div>
-                  <span className="text-xs font-semibold text-[var(--text-muted)]">Processing</span>
+                  <span className="text-xs font-semibold text-[var(--text-muted)]">{isStarting ? 'Starting' : 'Saving'}</span>
                 </div>
               ) : (
                 <>
@@ -611,9 +331,9 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
               </div>
 
               {/* Timer */}
-              <h2 className="text-5xl font-mono text-[var(--text-primary)] tracking-tighter tabular-nums z-10 mb-1 font-semibold">{formatTime(timer)}</h2>
+              <h2 className="text-5xl font-mono text-[var(--text-primary)] tracking-tighter tabular-nums z-10 mb-1 font-semibold">{formatRecordingTime(timer)}</h2>
               <div className={`text-[10px] font-bold z-10 transition-colors duration-500 ${getRemainingColor()}`}>
-                {formatTime(remainingTime)} remaining
+                {formatRecordingTime(remainingTime)} remaining
               </div>
 
               {/* Phase 3: quiet reassurance that transcription is already
@@ -636,6 +356,16 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ appState, setAppState, on
           )}
         </div>
       </div>
+
+      {/* Discard — the only way to drop a recording; App confirms first. */}
+      {isRecording && (
+        <button
+          onClick={onRequestDiscard}
+          className="-mt-10 mb-8 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--accent-signal)] transition-colors"
+        >
+          Discard recording
+        </button>
+      )}
 
       <div className="text-center max-w-sm">
         <h3 className="font-display-tight text-2xl font-semibold text-[var(--text-primary)] mb-3">

@@ -356,6 +356,18 @@ export interface SegmentEntry {
   storagePath?: string;
   uploaded: boolean;
   durationMs: number;
+  /**
+   * True while this entry is a periodic checkpoint of the segment still being
+   * recorded (audio so far, not yet finalized). If the tab dies, recovery
+   * processes it like any other segment; a normal finalize clears the flag.
+   */
+  partial?: boolean;
+}
+
+/** A stretch of wall-clock time the device slept mid-recording (not captured). */
+export interface SegmentGap {
+  startedAt: number; // ms epoch, last tick before the sleep
+  gapMs: number;
 }
 
 export interface SegmentManifest {
@@ -365,6 +377,8 @@ export interface SegmentManifest {
   mimeType: string;
   segments: SegmentEntry[];
   updatedAt: number;
+  /** Sleeps the recording resumed across. Informational; durations already exclude them. */
+  gaps?: SegmentGap[];
 }
 
 interface SegmentBlobRecord {

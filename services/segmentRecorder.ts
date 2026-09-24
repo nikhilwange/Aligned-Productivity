@@ -9,15 +9,21 @@
 // uploaded to Supabase Storage at `recordings/{sessionId}/seg-{index}.{ext}`
 // while the meeting is still going, so "stop → ready" is fast even for very
 // long recordings and the full file is never decoded at once.
+//
+// Lifetime is owned by services/recordingController.ts, never by a component.
 
-import { uploadAudioToStorage } from './storageService';
+import { uploadAudioToStorage, deleteAudioPaths } from './storageService';
 import {
   saveSegmentBlob,
   getSegmentBlob,
   getSegmentManifest,
   saveSegmentManifest,
+  clearSegmentManifest,
+  clearSegmentTranscripts,
+  clearChunkTranscripts,
   SegmentManifest,
   SegmentEntry,
+  SegmentGap,
 } from './recordingRecovery';
 import { LIVE_TRANSCRIPTION } from '../config/features';
 import { startLiveTranscription, enqueueSegment } from './liveTranscription';
@@ -57,6 +63,13 @@ export interface SegmentRecorderOptions {
   source: string;
   // Called after each segment finishes uploading (or is queued), for UI hints.
   onSegmentUploaded?: (uploaded: number, total: number) => void;
+  /**
+   * Capture clock in ms. Segment durations are measured on it. The controller
+   * passes the recording AudioContext's clock, which stops while the device
+   * sleeps — so a segment spanning a sleep reports only the audio captured,
+   * not the wall-clock time. Defaults to Date.now.
+   */
+  clock?: () => number;
 }
 
 export class SegmentRecorder {
@@ -64,12 +77,28 @@ export class SegmentRecorder {
   private stream: MediaStream;
   private source: string;
   private onSegmentUploaded?: (uploaded: number, total: number) => void;
+  private clock: () => number;
 
   private recorder: MediaRecorder | null = null;
   private mimeType = 'audio/webm';
   private nextIndex = 0;
   private rotationTimer: number | null = null;
   private stopped = false;
+  // Set once stop() has fully resolved: nothing may be recorded or uploaded
+  // for this recording again (guards against a zombie producing segments).
+  private tornDown = false;
+
+  // The segment currently being recorded, for checkpoints.
+  private current: { index: number; chunks: Blob[]; startedAt: number } | null = null;
+  // Segments whose final blob has been handed to finalizeSegment. A checkpoint
+  // must never overwrite them with a shorter partial blob.
+  private finalized = new Set<number>();
+
+  // Every IndexedDB write for this recording (segment blobs + manifest) runs
+  // through this queue, in order. The manifest is read-modify-write, so
+  // concurrent writers (finalize / upload / checkpoint) used to be able to
+  // drop each other's entries.
+  private writeQueue: Promise<void> = Promise.resolve();
 
   // Finalize (cache + manifest) promises and background upload promises so
   // stop() can wait for everything to settle before handing off.
@@ -81,6 +110,7 @@ export class SegmentRecorder {
     this.sessionId = opts.sessionId;
     this.source = opts.source;
     this.onSegmentUploaded = opts.onSegmentUploaded;
+    this.clock = opts.clock ?? (() => Date.now());
   }
 
   start(): void {
@@ -96,8 +126,15 @@ export class SegmentRecorder {
     this.beginSegment();
   }
 
+  private enqueueWrite(task: () => Promise<void>): Promise<void> {
+    const run = this.writeQueue.then(task);
+    this.writeQueue = run.catch(() => {});
+    return run;
+  }
+
   /** Begin a fresh segment recorder on the shared stream. */
   private beginSegment(): void {
+    if (this.stopped || this.tornDown) return;
     const chunks: Blob[] = [];
     let rec: MediaRecorder;
     try {
@@ -111,22 +148,32 @@ export class SegmentRecorder {
     // Capture this segment's start time in the closure — `rotate()` starts the
     // next segment before this one's `onstop` fires, so reading a shared field
     // here would give the wrong (next-segment) start time.
-    const segStartAt = Date.now();
+    const segStartAt = this.clock();
 
     rec.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) chunks.push(e.data);
     };
     rec.onstop = () => {
-      const durationMs = Date.now() - segStartAt;
+      const durationMs = Math.max(0, this.clock() - segStartAt);
+      this.finalized.add(index);
       this.finalizePromises.push(this.finalizeSegment(index, chunks, rec.mimeType, durationMs));
     };
     rec.onerror = (e: any) => console.error('[SegmentRecorder] recorder error:', e);
 
+    try {
+      // timeslice keeps data flushing so the final ondataavailable is small
+      // (and so checkpoints have the audio so far).
+      rec.start(1000);
+    } catch (err) {
+      console.error('[SegmentRecorder] Failed to start MediaRecorder:', err);
+      return;
+    }
     this.recorder = rec;
-    // timeslice keeps data flushing so the final ondataavailable is small.
-    rec.start(1000);
+    this.current = { index, chunks, startedAt: segStartAt };
 
-    // Schedule rotation for non-final segments.
+    // Schedule rotation. While the tab is throttled this can fire late — the
+    // segment just runs longer; rotate() starts the next recorder before
+    // stopping this one, so no audio falls between segments.
     if (typeof window !== 'undefined') {
       this.rotationTimer = window.setTimeout(() => this.rotate(), SEGMENT_DURATION_MS);
     }
@@ -135,12 +182,52 @@ export class SegmentRecorder {
   /** Cut the current segment and immediately continue on a new recorder. */
   private rotate(): void {
     if (this.stopped) return;
+    if (this.rotationTimer !== null) {
+      clearTimeout(this.rotationTimer);
+      this.rotationTimer = null;
+    }
     const finishing = this.recorder;
     // Start the next segment first so the gap between recorders is minimal.
     this.beginSegment();
     if (finishing && finishing.state !== 'inactive') {
       try { finishing.stop(); } catch { /* onstop still fires or segment is dropped */ }
     }
+  }
+
+  /** End the current segment now and continue in a new one (e.g. after a sleep). */
+  cutSegment(): void {
+    console.log(`[SegmentRecorder] cutting segment early for ${this.sessionId}`);
+    this.rotate();
+  }
+
+  /** Record a sleep the recording resumed across, in the manifest. */
+  recordGap(gap: SegmentGap): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const manifest = await this.readOrCreateManifest();
+      manifest.gaps = [...(manifest.gaps ?? []), gap];
+      await saveSegmentManifest(manifest);
+    });
+  }
+
+  /**
+   * Save the in-progress segment's audio so far (blob + `partial` manifest
+   * entry), so a closed or crashed tab loses at most one checkpoint interval.
+   * A webm made of the recorder's timeslice chunks from the start is decodable.
+   */
+  checkpoint(): Promise<void> {
+    const cur = this.current;
+    if (this.stopped || !cur || cur.chunks.length === 0 || this.finalized.has(cur.index)) {
+      return Promise.resolve();
+    }
+    const index = cur.index;
+    const blob = new Blob(cur.chunks.slice(), { type: this.mimeType });
+    const durationMs = Math.max(0, this.clock() - cur.startedAt);
+    const ext = extFromMime(this.mimeType);
+    return this.enqueueWrite(async () => {
+      if (this.finalized.has(index)) return; // the real blob is already queued
+      await saveSegmentBlob(this.sessionId, index, blob);
+      await this.upsertManifestEntryNow({ index, ext, uploaded: false, durationMs, partial: true }, 'checkpoint');
+    });
   }
 
   /** Cache the segment, add it to the manifest, and kick off its upload. */
@@ -155,9 +242,10 @@ export class SegmentRecorder {
     const ext = extFromMime(mime || this.mimeType);
 
     // Cache first (crash safety), then record in the manifest.
-    await saveSegmentBlob(this.sessionId, index, blob);
-    const entry: SegmentEntry = { index, ext, uploaded: false, durationMs };
-    await this.upsertManifestEntry(entry);
+    await this.enqueueWrite(async () => {
+      await saveSegmentBlob(this.sessionId, index, blob);
+      await this.upsertManifestEntryNow({ index, ext, uploaded: false, durationMs, partial: false }, 'finalize');
+    });
 
     // Phase 3: queue this segment for background transcription NOW — the blob
     // is cached, so we deliberately do not wait for the upload. Fire-and-forget
@@ -173,9 +261,15 @@ export class SegmentRecorder {
   }
 
   private async uploadSegment(index: number, blob: Blob, ext: string): Promise<void> {
+    if (this.tornDown) {
+      console.warn(`[SegmentRecorder] refusing upload of seg ${index} for torn-down ${this.sessionId}`);
+      return;
+    }
     try {
       const path = await uploadAudioToStorage(blob, segmentStoragePath(this.sessionId, index, ext));
-      await this.upsertManifestEntry({ index, ext, uploaded: true, storagePath: path, durationMs: 0 }, true);
+      await this.enqueueWrite(() =>
+        this.upsertManifestEntryNow({ index, ext, uploaded: true, storagePath: path, durationMs: 0 }, 'upload'),
+      );
       const m = await getSegmentManifest(this.sessionId);
       const uploaded = m ? m.segments.filter((s) => s.uploaded).length : 0;
       const total = m ? m.segments.length : 0;
@@ -187,10 +281,9 @@ export class SegmentRecorder {
     }
   }
 
-  /** Merge a segment entry into the persisted manifest, creating it if needed. */
-  private async upsertManifestEntry(entry: SegmentEntry, mergeUpload = false): Promise<void> {
+  private async readOrCreateManifest(): Promise<SegmentManifest> {
     const existing = await getSegmentManifest(this.sessionId);
-    const manifest: SegmentManifest = existing || {
+    return existing || {
       sessionId: this.sessionId,
       source: this.source,
       startedAt: Date.now(),
@@ -198,16 +291,32 @@ export class SegmentRecorder {
       segments: [],
       updatedAt: Date.now(),
     };
+  }
+
+  /**
+   * Merge a segment entry into the persisted manifest, creating it if needed.
+   * MUST run inside the write queue (read-modify-write).
+   *   finalize   — the segment's real entry (clears `partial`)
+   *   upload     — only the upload fields; duration from finalize is kept
+   *   checkpoint — only while the entry is still partial (never downgrades a finalized one)
+   */
+  private async upsertManifestEntryNow(
+    entry: SegmentEntry,
+    mode: 'finalize' | 'upload' | 'checkpoint',
+  ): Promise<void> {
+    const manifest = await this.readOrCreateManifest();
     const i = manifest.segments.findIndex((s) => s.index === entry.index);
     if (i === -1) {
       manifest.segments.push(entry);
-    } else if (mergeUpload) {
-      // Preserve durationMs from the finalize write; only update upload fields.
+    } else if (mode === 'upload') {
       manifest.segments[i] = {
         ...manifest.segments[i],
         uploaded: entry.uploaded,
         storagePath: entry.storagePath ?? manifest.segments[i].storagePath,
       };
+    } else if (mode === 'checkpoint') {
+      if (!manifest.segments[i].partial) return;
+      manifest.segments[i] = { ...manifest.segments[i], ...entry };
     } else {
       manifest.segments[i] = { ...manifest.segments[i], ...entry };
     }
@@ -219,6 +328,7 @@ export class SegmentRecorder {
    * Stop recording: flush the final segment, wait for caching + all pending
    * uploads, retry any that are still un-uploaded once, then resolve.
    * Returns the sessionId so the caller can read the finished manifest.
+   * After this resolves the recorder is torn down for good.
    */
   async stop(): Promise<string> {
     this.stopped = true;
@@ -242,14 +352,38 @@ export class SegmentRecorder {
         try { finishing.stop(); } catch { resolve(); }
       });
     }
+    this.recorder = null;
+    this.current = null;
 
     // Wait for all segment finalizes (cache + manifest) and background uploads.
     await Promise.allSettled(this.finalizePromises);
     await Promise.allSettled(this.uploadPromises);
+    await this.writeQueue;
     await reuploadPendingSegments(this.sessionId);
+    this.tornDown = true;
     return this.sessionId;
   }
 }
+
+/**
+ * Permanently remove a segmented recording: Storage objects, the IndexedDB
+ * manifest + cached blobs, live transcripts and per-segment chunk caches.
+ * Used on success cleanup, explicit Discard, and deleting a session.
+ */
+export async function deleteSegmentedRecording(recoveryId: string, manifest?: SegmentManifest | null): Promise<void> {
+  const m = manifest ?? (await getSegmentManifest(recoveryId));
+  if (m) {
+    const paths = m.segments.map((s) => s.storagePath).filter((p): p is string => !!p);
+    if (paths.length > 0) {
+      await deleteAudioPaths(paths).catch((err) =>
+        console.error('[SegmentRecorder] Segment storage cleanup failed:', err?.message));
+    }
+    m.segments.forEach((s) => clearChunkTranscripts(`${recoveryId}:seg${s.index}`));
+  }
+  await clearSegmentManifest(recoveryId);
+  await clearSegmentTranscripts(recoveryId); // Phase 3 live transcripts
+}
+
 
 /**
  * Turn an UPLOADED audio file into the same segment manifest a live recording
