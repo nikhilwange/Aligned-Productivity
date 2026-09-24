@@ -26,8 +26,19 @@ export const UNCLEAR_MARKER = '[…audio unclear…]';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Stable category of a verdict — what the sweep's summary counts by. */
+export type RetentionCode =
+  | 'keep'
+  | 'completed_clean' // completed, nothing to retry — should have gone on success
+  | 'kept_audio_expired' // completed with unclear parts, retry window over
+  | 'error_expired' // error / interrupted, retry window over
+  | 'orphan' // no recordings row, retention window over
+  | 'legacy_archive' // single-file audioPath archive
+  | 'stale_chunk'; // temporary <user>/chunks/* piece older than 24 h
+
 export interface RetentionVerdict {
   action: 'keep' | 'delete';
+  code: RetentionCode;
   reason: string;
   /** When 'keep' is time-limited: the moment the audio becomes deletable. */
   deleteAtMs?: number;
@@ -37,11 +48,11 @@ export interface RetentionVerdict {
 const days = (normal: number, override?: number) =>
   override !== undefined && Number.isInteger(override) && override >= 0 ? override : normal;
 
-function timed(label: string, anchorMs: number, retentionDays: number, nowMs: number): RetentionVerdict {
+function timed(code: RetentionCode, label: string, anchorMs: number, retentionDays: number, nowMs: number): RetentionVerdict {
   const deleteAtMs = anchorMs + retentionDays * DAY_MS;
   return nowMs >= deleteAtMs
-    ? { action: 'delete', reason: `${label}: no new uploads for ${retentionDays} days`, deleteAtMs }
-    : { action: 'keep', reason: `${label}: within the ${retentionDays}-day retention window`, deleteAtMs };
+    ? { action: 'delete', code, reason: `${label}: no new uploads for ${retentionDays} days`, deleteAtMs }
+    : { action: 'keep', code: 'keep', reason: `${label}: within the ${retentionDays}-day retention window`, deleteAtMs };
 }
 
 /**
@@ -67,17 +78,17 @@ export function segmentedAudioRetention(p: {
 }): RetentionVerdict {
   const o = p.retentionDaysOverride;
   if (p.rowStatus === null) {
-    return timed('orphan (no recordings row)', p.lastUploadMs, days(ORPHAN_AUDIO_RETENTION_DAYS, o), p.nowMs);
+    return timed('orphan', 'orphan (no recordings row)', p.lastUploadMs, days(ORPHAN_AUDIO_RETENTION_DAYS, o), p.nowMs);
   }
-  if (p.rowStatus === 'processing') return { action: 'keep', reason: "row is 'processing'" };
+  if (p.rowStatus === 'processing') return { action: 'keep', code: 'keep', reason: "row is 'processing'" };
   if (p.rowStatus === 'error' || p.rowStatus === 'interrupted') {
-    return timed(`row is '${p.rowStatus}'`, p.lastUploadMs, days(FAILED_AUDIO_RETENTION_DAYS, o), p.nowMs);
+    return timed('error_expired', `row is '${p.rowStatus}'`, p.lastUploadMs, days(FAILED_AUDIO_RETENTION_DAYS, o), p.nowMs);
   }
   if (p.rowStatus === 'completed') {
-    if (!p.hasUnclearParts) return { action: 'delete', reason: 'completed with no unclear/failed parts' };
-    return timed('completed with unclear parts', p.lastUploadMs, days(KEPT_AUDIO_RETENTION_DAYS, o), p.nowMs);
+    if (!p.hasUnclearParts) return { action: 'delete', code: 'completed_clean', reason: 'completed with no unclear/failed parts' };
+    return timed('kept_audio_expired', 'completed with unclear parts', p.lastUploadMs, days(KEPT_AUDIO_RETENTION_DAYS, o), p.nowMs);
   }
-  return { action: 'keep', reason: `row is '${p.rowStatus}'` };
+  return { action: 'keep', code: 'keep', reason: `row is '${p.rowStatus}'` };
 }
 
 /**
@@ -91,19 +102,19 @@ export function legacyArchiveRetention(p: {
   nowMs: number;
   retentionDaysOverride?: number;
 }): RetentionVerdict {
-  if (p.rowStatus === 'completed') return { action: 'delete', reason: 'completed: archive should have been deleted on success' };
+  if (p.rowStatus === 'completed') return { action: 'delete', code: 'legacy_archive', reason: 'completed: archive should have been deleted on success' };
   if (p.rowStatus === 'error') {
-    return timed("legacy archive of an 'error' row", p.createdMs, days(LEGACY_ERROR_AUDIO_RETENTION_DAYS, p.retentionDaysOverride), p.nowMs);
+    return timed('legacy_archive', "legacy archive of an 'error' row", p.createdMs, days(LEGACY_ERROR_AUDIO_RETENTION_DAYS, p.retentionDaysOverride), p.nowMs);
   }
-  return { action: 'keep', reason: `row is '${p.rowStatus}'` };
+  return { action: 'keep', code: 'keep', reason: `row is '${p.rowStatus}'` };
 }
 
 /** A temporary <user>/chunks/* upload piece: deleted once older than 24 h. */
 export function staleChunkRetention(p: { uploadedMs: number; nowMs: number }): RetentionVerdict {
   const deleteAtMs = p.uploadedMs + STALE_CHUNK_HOURS * 60 * 60 * 1000;
   return p.nowMs >= deleteAtMs
-    ? { action: 'delete', reason: 'stale_chunk', deleteAtMs }
-    : { action: 'keep', reason: 'chunk still fresh', deleteAtMs };
+    ? { action: 'delete', code: 'stale_chunk', reason: 'stale_chunk', deleteAtMs }
+    : { action: 'keep', code: 'keep', reason: 'chunk still fresh', deleteAtMs };
 }
 
 /** Whole days until deletion, when inside the warning window; otherwise null. */

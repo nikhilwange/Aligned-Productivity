@@ -14,11 +14,21 @@
 //        no row at all (orphan) → delete 30 days after the last upload
 //   3. Temporary upload pieces (<user>/chunks/*) older than 24 h → delete ('stale_chunk').
 //
-// Every deletion is logged: path, reason, and row id (or 'orphan').
+// Every deletion is logged: path, reason, and row id (or 'orphan'). The
+// response + a log line summarise counts and MB by reason; the full path list
+// is returned only in dry runs.
+//
 // Dry run — report what WOULD be deleted, delete nothing — when the request
 // body has {"dryRun": true} OR the RETENTION_DRY_RUN secret is 'true'. In a dry
 // run only, {"retentionDaysOverride": <int>} replaces the 30-day windows, to
 // preview what a rule would catch; real runs ignore it.
+//
+// Robustness:
+//   - every Storage list() pages through ALL results (until an empty page)
+//   - deletes go in batches of ≤100 paths; a failed batch is logged and
+//     skipped, never fatal (its files are simply picked up again next run)
+//   - at most MAX_DELETES_PER_RUN files per run, and no new work is started
+//     after TIME_BUDGET_MS; the daily schedule finishes any remainder
 //
 // Invoked daily by pg_cron: public.trigger_audio_retention() posts here with
 // the Vault secret 'cleanup_function_token' as the Bearer token (see
@@ -33,17 +43,38 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 // @inline-shared-rules
-import { segmentedAudioRetention, legacyArchiveRetention, staleChunkRetention, UNCLEAR_MARKER } from '../_shared/audioRetention.ts';
+import {
+  segmentedAudioRetention,
+  legacyArchiveRetention,
+  staleChunkRetention,
+  UNCLEAR_MARKER,
+  type RetentionCode,
+} from '../_shared/audioRetention.ts';
 // @end-inline-shared-rules
 
 const BUCKET = 'audio-recordings';
-const PAGE = 1000;
+const LIST_PAGE = 100; // Storage's default page size; we page until an empty page regardless
 const REMOVE_BATCH = 100;
+const MAX_DELETES_PER_RUN = 2000;
+// Edge Function wall-clock limit is 150 s (free) / 400 s (paid). Stop
+// starting new list/delete work after this; the next daily run continues.
+const TIME_BUDGET_MS = 100_000;
 
-interface Deletion {
+interface StorageEntry {
+  name: string;
+  id: string | null; // null for folders
+  updated_at?: string;
+  created_at?: string;
+  metadata?: { size?: number } | null;
+}
+
+interface PlannedDeletion {
   path: string;
+  code: Exclude<RetentionCode, 'keep'>;
   reason: string;
   row: string; // recordings row id, or 'orphan'
+  bytes: number;
+  legacyRowId?: string; // set for legacy archives: null its audioPath once deleted
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -66,24 +97,9 @@ function decodeJwtRole(authHeader: string | null): string | null {
   }
 }
 
-/** Every entry directly under `prefix` (files have an id; folders don't). */
-async function listAll(supabase: SupabaseClient, prefix: string) {
-  const out: Array<{ name: string; id: string | null; updated_at?: string; created_at?: string }> = [];
-  for (let offset = 0; ; offset += PAGE) {
-    const { data, error } = await supabase.storage.from(BUCKET).list(prefix, { limit: PAGE, offset });
-    if (error) throw new Error(`list ${prefix || '/'} failed: ${error.message}`);
-    out.push(...(data ?? []));
-    if (!data || data.length < PAGE) break;
-  }
-  return out;
-}
-
-async function removePaths(supabase: SupabaseClient, paths: string[]): Promise<void> {
-  for (let i = 0; i < paths.length; i += REMOVE_BATCH) {
-    const { error } = await supabase.storage.from(BUCKET).remove(paths.slice(i, i + REMOVE_BATCH));
-    if (error) throw new Error(`storage remove failed: ${error.message}`);
-  }
-}
+const mb = (bytes: number) => Math.round((bytes / (1024 * 1024)) * 10) / 10;
+const sizeOf = (e: StorageEntry) => Number(e.metadata?.size ?? 0) || 0;
+const timeOf = (e: StorageEntry) => Date.parse(e.updated_at || e.created_at || '');
 
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return jsonResponse({ error: 'Method not allowed' }, 405);
@@ -95,6 +111,7 @@ Deno.serve(async (req) => {
   if (!supabaseUrl || !serviceRoleKey) {
     return jsonResponse({ error: 'Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY' }, 500);
   }
+
   // Body is optional (the old cron call sent none): { dryRun?, retentionDaysOverride? }.
   let body: { dryRun?: unknown; retentionDaysOverride?: unknown } = {};
   try { body = (await req.json()) ?? {}; } catch { /* no / non-JSON body */ }
@@ -105,14 +122,42 @@ Deno.serve(async (req) => {
   if (rawOverride !== undefined && retentionDaysOverride === undefined) {
     console.warn('[audio-retention] retentionDaysOverride ignored (real run, or not a non-negative integer)');
   }
-  const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { autoRefreshToken: false, persistSession: false } });
-  const now = Date.now();
+
+  const supabase: SupabaseClient = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  const startedAt = Date.now();
+  const now = startedAt;
   const tag = dryRun ? '[audio-retention][DRY RUN]' : '[audio-retention]';
-  const deletions: Deletion[] = [];
-  const log = (d: Deletion) => {
-    deletions.push(d);
-    console.log(`${tag} ${dryRun ? 'would delete' : 'delete'} ${d.path} — ${d.reason} — row ${d.row}`);
+  const outOfTime = () => Date.now() - startedAt > TIME_BUDGET_MS;
+
+  const planned: PlannedDeletion[] = [];
+  const problems: string[] = []; // non-fatal list / delete / update failures
+  let capped = false; // hit MAX_DELETES_PER_RUN or the time budget
+  const plan = (d: PlannedDeletion): boolean => {
+    if (planned.length >= MAX_DELETES_PER_RUN) { capped = true; return false; }
+    planned.push(d);
+    return true;
   };
+
+  /** Every entry directly under `prefix`, all pages. A failure is logged and yields what was read. */
+  async function listAll(prefix: string): Promise<StorageEntry[]> {
+    const out: StorageEntry[] = [];
+    for (let offset = 0; offset < 1_000_000; ) {
+      const { data, error } = await supabase.storage
+        .from(BUCKET)
+        .list(prefix, { limit: LIST_PAGE, offset, sortBy: { column: 'name', order: 'asc' } });
+      if (error) {
+        problems.push(`list ${prefix || '/'} at offset ${offset}: ${error.message}`);
+        console.error(`${tag} list ${prefix || '/'} failed at offset ${offset}:`, error.message);
+        break;
+      }
+      if (!data || data.length === 0) break;
+      out.push(...(data as StorageEntry[]));
+      offset += data.length;
+    }
+    return out;
+  }
 
   try {
     // ── 1. Legacy single-file archives ──────────────────────────────────────
@@ -120,47 +165,52 @@ Deno.serve(async (req) => {
       .from('recordings')
       .select('id, audioPath, status, created_at')
       .not('audioPath', 'is', null);
-    if (legacyErr) throw new Error(`legacy query failed: ${legacyErr.message}`);
-    const legacyDeleted: string[] = [];
-    const legacyPaths: string[] = [];
-    for (const r of legacyRows ?? []) {
-      const verdict = legacyArchiveRetention({ rowStatus: r.status, createdMs: Date.parse(r.created_at), nowMs: now, retentionDaysOverride });
-      if (verdict.action !== 'delete') continue;
-      log({ path: r.audioPath, reason: `legacy archive: ${verdict.reason}`, row: r.id });
-      legacyDeleted.push(r.id);
-      legacyPaths.push(r.audioPath);
-    }
-    if (!dryRun && legacyPaths.length > 0) {
-      await removePaths(supabase, legacyPaths);
-      const { error } = await supabase.from('recordings').update({ audioPath: null }).in('id', legacyDeleted);
-      if (error) throw new Error(`audioPath nulling failed: ${error.message}`);
+    if (legacyErr) {
+      problems.push(`legacy query: ${legacyErr.message}`);
+    } else {
+      const due = (legacyRows ?? [])
+        .map((r) => ({ r, v: legacyArchiveRetention({ rowStatus: r.status, createdMs: Date.parse(r.created_at), nowMs: now, retentionDaysOverride }) }))
+        .filter((x) => x.v.action === 'delete');
+      // Sizes: list each archive's folder once.
+      const byDir = new Map<string, typeof due>();
+      for (const x of due) {
+        const dir = x.r.audioPath.split('/').slice(0, -1).join('/');
+        byDir.set(dir, [...(byDir.get(dir) ?? []), x]);
+      }
+      for (const [dir, items] of byDir) {
+        if (outOfTime()) { capped = true; break; }
+        const sizes = new Map((await listAll(dir)).map((e) => [e.name, sizeOf(e)]));
+        for (const { r, v } of items) {
+          if (!plan({
+            path: r.audioPath, code: 'legacy_archive', reason: v.reason, row: r.id,
+            bytes: sizes.get(r.audioPath.split('/').pop()!) ?? 0, legacyRowId: r.id,
+          })) break;
+        }
+        if (capped) break;
+      }
     }
 
-    // ── 2 & 3. Per user: segmented recordings, then stale temporary chunks ──
+    // ── 2 & 3. Per user: stale temporary chunks, then segmented recordings ──
     let foldersSeen = 0;
     let foldersKept = 0;
-    let staleChunks = 0;
-    for (const userDir of await listAll(supabase, '')) {
+    users: for (const userDir of await listAll('')) {
       if (userDir.id) continue; // a file at the root, not a user folder
+      if (capped || outOfTime()) { capped = true; break; }
       const uid = userDir.name;
 
       // 3. <user>/chunks/* — temporary 25 s upload pieces, normally deleted
       //    right after transcription; anything older than 24 h is stale.
-      const chunkFiles = (await listAll(supabase, `${uid}/chunks`)).filter((f) => f.id);
-      const stalePaths: string[] = [];
-      for (const f of chunkFiles) {
-        const uploadedMs = Date.parse(f.updated_at || f.created_at || '');
+      for (const f of await listAll(`${uid}/chunks`)) {
+        if (!f.id) continue;
+        const uploadedMs = timeOf(f);
         if (!Number.isFinite(uploadedMs)) continue;
-        if (staleChunkRetention({ uploadedMs, nowMs: now }).action !== 'delete') continue;
-        const path = `${uid}/chunks/${f.name}`;
-        log({ path, reason: 'stale_chunk', row: 'orphan' });
-        stalePaths.push(path);
+        const v = staleChunkRetention({ uploadedMs, nowMs: now });
+        if (v.action !== 'delete') continue;
+        if (!plan({ path: `${uid}/chunks/${f.name}`, code: 'stale_chunk', reason: v.reason, row: 'orphan', bytes: sizeOf(f) })) break users;
       }
-      staleChunks += stalePaths.length;
-      if (!dryRun && stalePaths.length > 0) await removePaths(supabase, stalePaths);
 
       // 2. <user>/recordings/<recoveryId>/
-      const recFolders = (await listAll(supabase, `${uid}/recordings`)).filter((e) => !e.id);
+      const recFolders = (await listAll(`${uid}/recordings`)).filter((e) => !e.id);
       if (recFolders.length === 0) continue;
 
       // Rows for these recordings (this user only).
@@ -172,46 +222,99 @@ Deno.serve(async (req) => {
           .select('id, status, recoveryId, user_id, transcript:analysis->>transcript')
           .eq('user_id', uid)
           .in('recoveryId', ids.slice(i, i + 200));
-        if (error) throw new Error(`row query failed: ${error.message}`);
+        if (error) {
+          // Without the rows we can't tell orphans from live recordings: skip this user entirely.
+          problems.push(`row query for user ${uid}: ${error.message}`);
+          continue users;
+        }
         for (const r of data ?? []) rows.set(r.recoveryId, { id: r.id, status: r.status, transcript: r.transcript });
       }
 
       for (const folder of recFolders) {
+        if (outOfTime()) { capped = true; break users; }
         foldersSeen++;
         const prefix = `${uid}/recordings/${folder.name}`;
-        const files = (await listAll(supabase, prefix)).filter((f) => f.id);
+        const files = (await listAll(prefix)).filter((f) => f.id);
         if (files.length === 0) continue;
-        const times = files.map((f) => Date.parse(f.updated_at || f.created_at || '')).filter(Number.isFinite);
+        const times = files.map(timeOf).filter(Number.isFinite);
         const lastUploadMs = times.length ? Math.max(...times) : now;
         const row = rows.get(folder.name) ?? null;
-        const verdict = segmentedAudioRetention({
+        const v = segmentedAudioRetention({
           rowStatus: row ? row.status : null,
           hasUnclearParts: !!row?.transcript?.includes(UNCLEAR_MARKER),
           lastUploadMs,
           nowMs: now,
           retentionDaysOverride,
         });
-        if (verdict.action !== 'delete') { foldersKept++; continue; }
-        const paths = files.map((f) => `${prefix}/${f.name}`);
-        for (const path of paths) log({ path, reason: `segmented: ${verdict.reason}`, row: row ? row.id : 'orphan' });
-        if (!dryRun) await removePaths(supabase, paths);
+        if (v.action !== 'delete' || v.code === 'keep') { foldersKept++; continue; }
+        for (const f of files) {
+          if (!plan({ path: `${prefix}/${f.name}`, code: v.code, reason: v.reason, row: row ? row.id : 'orphan', bytes: sizeOf(f) })) break users;
+        }
       }
     }
+
+    // ── Delete (or, in a dry run, just report) ─────────────────────────────
+    const failed = new Set<string>();
+    let failedBatches = 0;
+    if (!dryRun) {
+      for (let i = 0; i < planned.length; i += REMOVE_BATCH) {
+        if (outOfTime()) {
+          capped = true;
+          planned.slice(i).forEach((d) => failed.add(d.path)); // not attempted this run
+          problems.push(`time budget reached — ${planned.length - i} planned file(s) left for the next run`);
+          break;
+        }
+        const batch = planned.slice(i, i + REMOVE_BATCH);
+        const { error } = await supabase.storage.from(BUCKET).remove(batch.map((d) => d.path));
+        if (error) {
+          failedBatches++;
+          batch.forEach((d) => failed.add(d.path));
+          problems.push(`remove batch ${i / REMOVE_BATCH + 1} (${batch.length} files): ${error.message}`);
+          console.error(`${tag} remove batch ${i / REMOVE_BATCH + 1} failed — skipped:`, error.message);
+        }
+      }
+      // Legacy rows: null audioPath only where the archive really went.
+      const legacyDone = planned.filter((d) => d.legacyRowId && !failed.has(d.path)).map((d) => d.legacyRowId!);
+      for (let i = 0; i < legacyDone.length; i += 200) {
+        const { error } = await supabase.from('recordings').update({ audioPath: null }).in('id', legacyDone.slice(i, i + 200));
+        if (error) problems.push(`audioPath nulling: ${error.message}`);
+      }
+    }
+
+    // ── Log + summary ─────────────────────────────────────────────────────
+    const done = planned.filter((d) => !failed.has(d.path));
+    for (const d of done) {
+      console.log(`${tag} ${dryRun ? 'would delete' : 'deleted'} ${d.path} — ${d.code}: ${d.reason} — row ${d.row}`);
+    }
+    const byReason: Record<string, { files: number; mb: number }> = {};
+    let totalBytes = 0;
+    for (const d of done) {
+      const b = (byReason[d.code] ??= { files: 0, mb: 0 });
+      b.files++;
+      b.mb += d.bytes;
+      totalBytes += d.bytes;
+    }
+    for (const k of Object.keys(byReason)) byReason[k].mb = mb(byReason[k].mb);
 
     const summary = {
       dryRun,
       retentionDaysOverride: retentionDaysOverride ?? null,
-      deletedCount: deletions.length,
-      legacyArchives: legacyPaths.length,
-      staleChunks,
+      [dryRun ? 'wouldDelete' : 'deleted']: { files: done.length, mb: mb(totalBytes) },
+      byReason,
+      failedBatches,
+      failedFiles: dryRun ? 0 : failed.size,
+      capped,
+      maxDeletesPerRun: MAX_DELETES_PER_RUN,
       segmentedFoldersSeen: foldersSeen,
       segmentedFoldersKept: foldersKept,
-      deletions,
+      elapsedMs: Date.now() - startedAt,
+      problems,
+      ...(dryRun ? { paths: done.map(({ path, code, row, bytes }) => ({ path, code, row, bytes })) } : {}),
     };
-    console.log(`${tag} done: ${deletions.length} file(s) ${dryRun ? 'would be' : ''} deleted`);
+    console.log(`${tag} summary: ${JSON.stringify({ ...summary, paths: undefined })}`);
     return jsonResponse(summary);
   } catch (err) {
     console.error(`${tag} failed:`, (err as Error).message);
-    return jsonResponse({ error: (err as Error).message, dryRun, deletionsSoFar: deletions }, 500);
+    return jsonResponse({ error: (err as Error).message, dryRun, plannedSoFar: planned.length, problems }, 500);
   }
 });

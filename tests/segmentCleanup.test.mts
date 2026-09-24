@@ -162,6 +162,21 @@ test('shared rules: legacy single-file archives', () => {
   assert.equal(v('completed', 0), 'delete');
 });
 
+test('shared rules: every delete verdict carries the reason code the sweep summarises by', () => {
+  const seg = (rowStatus: string | null, hasUnclearParts: boolean, ageDays: number) =>
+    segmentedAudioRetention({ rowStatus, hasUnclearParts, lastUploadMs: NOW - ageDays * DAY, nowMs: NOW }).code;
+  assert.equal(seg('completed', false, 0), 'completed_clean');
+  assert.equal(seg('completed', true, 31), 'kept_audio_expired');
+  assert.equal(seg('error', false, 31), 'error_expired');
+  assert.equal(seg('interrupted', false, 31), 'error_expired');
+  assert.equal(seg(null, false, 31), 'orphan');
+  assert.equal(seg('processing', false, 3650), 'keep');
+  assert.equal(seg('completed', true, 1), 'keep');
+  assert.equal(legacyArchiveRetention({ rowStatus: 'completed', createdMs: NOW, nowMs: NOW }).code, 'legacy_archive');
+  assert.equal(legacyArchiveRetention({ rowStatus: 'error', createdMs: NOW - 31 * DAY, nowMs: NOW }).code, 'legacy_archive');
+  assert.equal(staleChunkRetention({ uploadedMs: NOW - 25 * 3600_000, nowMs: NOW }).code, 'stale_chunk');
+});
+
 test('shared rules: stale temporary chunks go after 24 h', () => {
   const v = (ageHours: number) => staleChunkRetention({ uploadedMs: NOW - ageHours * 3600_000, nowMs: NOW });
   assert.equal(v(23).action, 'keep');
