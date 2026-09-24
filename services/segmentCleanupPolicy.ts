@@ -5,8 +5,8 @@
 //       (supabase/functions/_shared/audioRetention.ts — the same rules the
 //       server's daily audio-retention sweep applies), or
 //   (b) by an explicit, user-confirmed Discard / Delete.
-// Never for a row that is 'processing', 'interrupted' or 'error' (or any
-// status other than 'completed').
+// The client never auto-deletes a row that is not 'completed' (processing is never
+// deleted at all; error / interrupted only by the server sweep).
 //
 // On top of the shared rules the CLIENT is stricter in one way: it never
 // deletes Storage for a recording with no row (an orphan). "No row" here is
@@ -51,6 +51,12 @@ export function mayDeleteSegments(d: SegmentDeletion): { allowed: boolean; why: 
   if (d.kind === 'local_only') return { allowed: true, why: 'Storage copy already deleted by retention — local copy only' };
   if (d.rowStatus === null || d.rowStatus === undefined) {
     return { allowed: false, why: `no recordings row found (${d.reason}) — orphans are left to the server sweep` };
+  }
+  // The client only ever auto-deletes COMPLETED recordings. Rows in
+  // 'processing' are never deleted; 'error' / 'interrupted' ones only by the
+  // server sweep after their retention window.
+  if (d.rowStatus !== 'completed') {
+    return { allowed: false, why: `row is '${d.rowStatus}' (${d.reason}) — only the server sweep may delete it, after its retention window` };
   }
   const nowMs = d.nowMs ?? Date.now();
   const verdict = segmentedAudioRetention({

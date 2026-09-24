@@ -1,8 +1,9 @@
 // Audio cleanup & retention. Run: npm test
 //
-// Hard rule: Storage segments are never deleted for a recording whose row is
-// 'processing', 'interrupted' or 'error'. Automatic deletion follows the ONE
-// shared retention definition (supabase/functions/_shared/audioRetention.ts),
+// Hard rule: the CLIENT never auto-deletes Storage segments for a recording
+// whose row is not completed; processing rows are never deleted by anyone.
+// Automatic deletion follows the ONE shared retention definition
+// (supabase/functions/_shared/audioRetention.ts),
 // used by both the client policy and the server's audio-retention sweep;
 // a user-confirmed Discard/Delete always deletes.
 import { test } from 'node:test';
@@ -18,11 +19,15 @@ import {
 import {
   segmentedAudioRetention,
   legacyArchiveRetention,
+  staleChunkRetention,
   retentionWarningDaysLeft,
   KEPT_AUDIO_RETENTION_DAYS,
+  FAILED_AUDIO_RETENTION_DAYS,
   ORPHAN_AUDIO_RETENTION_DAYS,
   RETENTION_WARNING_DAYS,
+  UNCLEAR_MARKER,
 } from '../supabase/functions/_shared/audioRetention.ts';
+import { buildSegmentedTranscript, FAILED_SEGMENT_TEXT, type SegmentPiece } from '../services/transcriptAssembly.ts';
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-10-15T12:00:00Z');
@@ -132,10 +137,14 @@ test('local_only (server already deleted Storage) clears the local copy but neve
 test('shared rules: segmented recordings', () => {
   const v = (rowStatus: string | null, hasUnclearParts: boolean, ageDays: number) =>
     segmentedAudioRetention({ rowStatus, hasUnclearParts, lastUploadMs: NOW - ageDays * DAY, nowMs: NOW }).action;
-  for (const s of ['processing', 'interrupted', 'error']) {
-    assert.equal(v(s, false, 3650), 'keep', `${s} is never deleted`);
-    assert.equal(v(s, true, 3650), 'keep', `${s} is never deleted`);
+  assert.equal(v('processing', false, 3650), 'keep', 'processing is never deleted');
+  assert.equal(v('processing', true, 3650), 'keep', 'processing is never deleted');
+  for (const s of ['error', 'interrupted']) {
+    assert.equal(v(s, false, FAILED_AUDIO_RETENTION_DAYS - 1), 'keep', `${s}: kept for 30 days`);
+    assert.equal(v(s, true, FAILED_AUDIO_RETENTION_DAYS - 1), 'keep', `${s}: kept for 30 days`);
+    assert.equal(v(s, false, FAILED_AUDIO_RETENTION_DAYS), 'delete', `${s}: server may delete after 30 days`);
   }
+  assert.equal(v('some-future-status', false, 3650), 'keep', 'unknown statuses are kept');
   assert.equal(v('completed', false, 0), 'delete');
   assert.equal(v('completed', true, KEPT_AUDIO_RETENTION_DAYS - 1), 'keep');
   assert.equal(v('completed', true, KEPT_AUDIO_RETENTION_DAYS), 'delete');
@@ -153,6 +162,24 @@ test('shared rules: legacy single-file archives', () => {
   assert.equal(v('completed', 0), 'delete');
 });
 
+test('shared rules: stale temporary chunks go after 24 h', () => {
+  const v = (ageHours: number) => staleChunkRetention({ uploadedMs: NOW - ageHours * 3600_000, nowMs: NOW });
+  assert.equal(v(23).action, 'keep');
+  assert.equal(v(24).action, 'delete');
+  assert.equal(v(24).reason, 'stale_chunk');
+});
+
+test('shared rules: the dry-run override replaces the 30-day windows (processing still never)', () => {
+  const o = (rowStatus: string | null, ageDays: number, retentionDaysOverride?: number) =>
+    segmentedAudioRetention({ rowStatus, hasUnclearParts: true, lastUploadMs: NOW - ageDays * DAY, nowMs: NOW, retentionDaysOverride }).action;
+  assert.equal(o(null, 2), 'keep');
+  assert.equal(o(null, 2, 1), 'delete', 'orphan rule with a 1-day override');
+  assert.equal(o('error', 2, 1), 'delete');
+  assert.equal(o('completed', 2, 1), 'delete');
+  assert.equal(o('processing', 3650, 0), 'keep');
+  assert.equal(o(null, 2, -5), 'keep', 'invalid override ignored');
+});
+
 test('shared rules: the banner countdown starts on day 23', () => {
   const deleteAt = (ageDays: number) => segmentedAudioRetention({
     rowStatus: 'completed', hasUnclearParts: true, lastUploadMs: NOW - ageDays * DAY, nowMs: NOW,
@@ -160,6 +187,61 @@ test('shared rules: the banner countdown starts on day 23', () => {
   assert.equal(retentionWarningDaysLeft(deleteAt(22), NOW), null, 'no warning on day 22');
   assert.equal(retentionWarningDaysLeft(deleteAt(KEPT_AUDIO_RETENTION_DAYS - RETENTION_WARNING_DAYS), NOW), 7, 'day 23: 7 days left');
   assert.equal(retentionWarningDaysLeft(deleteAt(29), NOW), 1);
+  // Same countdown for failed / interrupted sessions.
+  const failedDeleteAt = segmentedAudioRetention({ rowStatus: 'error', hasUnclearParts: false, lastUploadMs: NOW - 23 * DAY, nowMs: NOW }).deleteAtMs;
+  assert.equal(retentionWarningDaysLeft(failedDeleteAt, NOW), 7);
+});
+
+// ─── Decision 4: a failed segment always leaves the marker in the transcript ─
+
+test('failed segments write the unclear marker into the saved transcript — so the server sees them', () => {
+  const seg = (index: number, min = 5) => ({ index, ext: 'webm', uploaded: true, durationMs: min * 60_000 });
+  const words = (n: number) => Array.from({ length: n }, (_, i) => `w${i}`).join(' ');
+  const check = (label: string, pieces: SegmentPiece[]) => {
+    const built = buildSegmentedTranscript(pieces, 0);
+    assert.ok(built.transcript.includes(UNCLEAR_MARKER), `${label}: transcript carries the marker`);
+    assert.equal(
+      segmentedAudioRetention({ rowStatus: 'completed', hasUnclearParts: built.transcript.includes(UNCLEAR_MARKER), lastUploadMs: NOW, nowMs: NOW }).action,
+      'keep',
+      `${label}: the server keeps its audio for a retry`,
+    );
+    assert.ok(built.problems > 0, `${label}: counted as a problem`);
+  };
+  check('failed in the middle', [
+    { seg: seg(0), text: words(200), status: 'ok' },
+    { seg: seg(1), text: FAILED_SEGMENT_TEXT, status: 'failed' },
+    { seg: seg(2), text: words(200), status: 'ok' },
+  ]);
+  check('failed at the end (never trimmed)', [
+    { seg: seg(0), text: words(200), status: 'ok' },
+    { seg: seg(1), text: FAILED_SEGMENT_TEXT, status: 'failed' },
+  ]);
+  check('failed with empty stored text still writes the marker', [
+    { seg: seg(0), text: words(200), status: 'ok' },
+    { seg: seg(1), text: '', status: 'failed' },
+  ]);
+  check('unclear at the end (never trimmed)', [
+    { seg: seg(0), text: words(200), status: 'ok' },
+    { seg: seg(1), text: `hello ${UNCLEAR_MARKER} there`, status: 'unclear' },
+  ]);
+  assert.equal(FAILED_SEGMENT_TEXT, UNCLEAR_MARKER);
+});
+
+test('client and server use the ONE marker', () => {
+  const sarvam = readFileSync(join(root, 'services/sarvamService.ts'), 'utf8');
+  assert.match(sarvam, /export const UNCLEAR_PLACEHOLDER = UNCLEAR_MARKER;/);
+  const edge = readFileSync(join(root, 'supabase/functions/audio-retention/index.ts'), 'utf8');
+  assert.match(edge, /UNCLEAR_MARKER/);
+});
+
+test('trim: only trailing ok segments with no/sparse speech are dropped', () => {
+  const seg = (index: number, min = 5) => ({ index, ext: 'webm', uploaded: true, durationMs: min * 60_000 });
+  const words = (n: number) => Array.from({ length: n }, (_, i) => `w${i}`).join(' ');
+  const kept = (pieces: SegmentPiece[]) => pieces.length - buildSegmentedTranscript(pieces, 0).trimmedCount;
+  assert.equal(kept([{ seg: seg(0), text: words(200), status: 'ok' }, { seg: seg(1), text: '', status: 'ok' }]), 1);
+  assert.equal(kept([{ seg: seg(0), text: words(200), status: 'ok' }, { seg: seg(1), text: words(10), status: 'ok' }]), 1);
+  assert.equal(kept([{ seg: seg(0), text: words(200), status: 'ok' }, { seg: seg(1, 1), text: words(5), status: 'ok' }]), 2, 'short real ending kept');
+  assert.equal(kept([{ seg: seg(0), text: words(200), status: 'ok' }, { seg: seg(1), text: null, status: 'skipped' }]), 2);
 });
 
 // ─── The rules can't drift between client and server ────────────────────────

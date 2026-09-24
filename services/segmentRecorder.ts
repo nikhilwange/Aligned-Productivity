@@ -27,7 +27,6 @@ import {
   getAllSegmentManifests,
 } from './recordingRecovery';
 import { LIVE_TRANSCRIPTION } from '../config/features';
-import { DECODED_DURATION_TOLERANCE } from '../config/sttLimits';
 import { startLiveTranscription, enqueueSegment } from './liveTranscription';
 import { splitAudioFile } from './audioSplitter';
 import { deleteRecordingSegments, type SegmentDeletion, type RecordingRowStatus } from './segmentCleanupPolicy';
@@ -79,22 +78,9 @@ export function patchSegmentEntry(sessionId: string, index: number, patch: Parti
   });
 }
 
-// ─── Saved duration ──────────────────────────────────────────────────────────
-// durationMs is the recorder's audio clock (authoritative, and what the
-// truncation check compares against). decodedMs is what the decoder found.
-// The saved duration uses decodedMs only when the two agree within
-// DECODED_DURATION_TOLERANCE; a larger mismatch is logged and the clock wins.
-export function segmentSavedMs(seg: SegmentEntry): number {
-  const clock = seg.durationMs || 0;
-  const decoded = seg.decodedMs;
-  if (!decoded || decoded <= 0) return clock;
-  if (!clock) return decoded;
-  if (Math.abs(decoded - clock) / clock <= DECODED_DURATION_TOLERANCE) return decoded;
-  console.warn(`[SegmentRecorder] seg ${seg.index}: decoded ${decoded}ms vs clock ${clock}ms (>${DECODED_DURATION_TOLERANCE * 100}% apart) — using clock`);
-  return clock;
-}
-export const manifestSavedMs = (m: SegmentManifest): number =>
-  m.segments.reduce((s, seg) => s + segmentSavedMs(seg), 0);
+// Saved-duration rule (decodedMs vs the audio clock) lives in the pure
+// transcriptAssembly module; re-exported for existing callers.
+export { segmentSavedMs, manifestSavedMs } from './transcriptAssembly';
 
 // ─── Header (init segment) repair ────────────────────────────────────────────
 const EBML_MAGIC = [0x1a, 0x45, 0xdf, 0xa3];

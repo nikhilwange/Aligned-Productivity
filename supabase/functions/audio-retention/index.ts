@@ -7,16 +7,25 @@
 //   1. Legacy single-file archives (recordings.audioPath):
 //        completed → delete; error → delete after 30 days; processing → never.
 //   2. Segmented recordings (<user>/recordings/<recoveryId>/seg-*):
-//        row processing / interrupted / error → never
+//        row processing → never
 //        row completed, transcript has no unclear parts → delete
 //        row completed with unclear parts → delete 30 days after the last upload
+//        row error / interrupted → delete 30 days after the last upload
 //        no row at all (orphan) → delete 30 days after the last upload
+//   3. Temporary upload pieces (<user>/chunks/*) older than 24 h → delete ('stale_chunk').
 //
 // Every deletion is logged: path, reason, and row id (or 'orphan').
-// RETENTION_DRY_RUN=true → report what WOULD be deleted, delete nothing.
+// Dry run — report what WOULD be deleted, delete nothing — when the request
+// body has {"dryRun": true} OR the RETENTION_DRY_RUN secret is 'true'. In a dry
+// run only, {"retentionDaysOverride": <int>} replaces the 30-day windows, to
+// preview what a rule would catch; real runs ignore it.
 //
-// Invoked daily by pg_cron via pg_net with a service-role JWT; verify_jwt=true
-// at the gateway, and the handler re-checks the role claim.
+// Invoked daily by pg_cron: public.trigger_audio_retention() posts here with
+// the Vault secret 'cleanup_function_token' as the Bearer token (see
+// supabase/sql/audio_retention_schedule.sql). Auth is exactly the old
+// cleanup-failed-audio's: the gateway verifies the JWT signature
+// (Verify JWT = ON), and the handler requires its role claim to be
+// 'service_role'.
 //
 // Dashboard deploys use index.standalone.ts (this file with the shared rules
 // inlined; regenerate with `npm run edge:standalone`).
@@ -24,7 +33,7 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 // @inline-shared-rules
-import { segmentedAudioRetention, legacyArchiveRetention, UNCLEAR_MARKER } from '../_shared/audioRetention.ts';
+import { segmentedAudioRetention, legacyArchiveRetention, staleChunkRetention, UNCLEAR_MARKER } from '../_shared/audioRetention.ts';
 // @end-inline-shared-rules
 
 const BUCKET = 'audio-recordings';
@@ -86,7 +95,16 @@ Deno.serve(async (req) => {
   if (!supabaseUrl || !serviceRoleKey) {
     return jsonResponse({ error: 'Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY' }, 500);
   }
-  const dryRun = Deno.env.get('RETENTION_DRY_RUN') === 'true';
+  // Body is optional (the old cron call sent none): { dryRun?, retentionDaysOverride? }.
+  let body: { dryRun?: unknown; retentionDaysOverride?: unknown } = {};
+  try { body = (await req.json()) ?? {}; } catch { /* no / non-JSON body */ }
+  const dryRun = body.dryRun === true || Deno.env.get('RETENTION_DRY_RUN') === 'true';
+  const rawOverride = body.retentionDaysOverride;
+  const retentionDaysOverride =
+    dryRun && typeof rawOverride === 'number' && Number.isInteger(rawOverride) && rawOverride >= 0 ? rawOverride : undefined;
+  if (rawOverride !== undefined && retentionDaysOverride === undefined) {
+    console.warn('[audio-retention] retentionDaysOverride ignored (real run, or not a non-negative integer)');
+  }
   const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { autoRefreshToken: false, persistSession: false } });
   const now = Date.now();
   const tag = dryRun ? '[audio-retention][DRY RUN]' : '[audio-retention]';
@@ -106,7 +124,7 @@ Deno.serve(async (req) => {
     const legacyDeleted: string[] = [];
     const legacyPaths: string[] = [];
     for (const r of legacyRows ?? []) {
-      const verdict = legacyArchiveRetention({ rowStatus: r.status, createdMs: Date.parse(r.created_at), nowMs: now });
+      const verdict = legacyArchiveRetention({ rowStatus: r.status, createdMs: Date.parse(r.created_at), nowMs: now, retentionDaysOverride });
       if (verdict.action !== 'delete') continue;
       log({ path: r.audioPath, reason: `legacy archive: ${verdict.reason}`, row: r.id });
       legacyDeleted.push(r.id);
@@ -118,12 +136,30 @@ Deno.serve(async (req) => {
       if (error) throw new Error(`audioPath nulling failed: ${error.message}`);
     }
 
-    // ── 2. Segmented recordings: <user>/recordings/<recoveryId>/ ─────────────
+    // ── 2 & 3. Per user: segmented recordings, then stale temporary chunks ──
     let foldersSeen = 0;
     let foldersKept = 0;
+    let staleChunks = 0;
     for (const userDir of await listAll(supabase, '')) {
       if (userDir.id) continue; // a file at the root, not a user folder
       const uid = userDir.name;
+
+      // 3. <user>/chunks/* — temporary 25 s upload pieces, normally deleted
+      //    right after transcription; anything older than 24 h is stale.
+      const chunkFiles = (await listAll(supabase, `${uid}/chunks`)).filter((f) => f.id);
+      const stalePaths: string[] = [];
+      for (const f of chunkFiles) {
+        const uploadedMs = Date.parse(f.updated_at || f.created_at || '');
+        if (!Number.isFinite(uploadedMs)) continue;
+        if (staleChunkRetention({ uploadedMs, nowMs: now }).action !== 'delete') continue;
+        const path = `${uid}/chunks/${f.name}`;
+        log({ path, reason: 'stale_chunk', row: 'orphan' });
+        stalePaths.push(path);
+      }
+      staleChunks += stalePaths.length;
+      if (!dryRun && stalePaths.length > 0) await removePaths(supabase, stalePaths);
+
+      // 2. <user>/recordings/<recoveryId>/
       const recFolders = (await listAll(supabase, `${uid}/recordings`)).filter((e) => !e.id);
       if (recFolders.length === 0) continue;
 
@@ -153,6 +189,7 @@ Deno.serve(async (req) => {
           hasUnclearParts: !!row?.transcript?.includes(UNCLEAR_MARKER),
           lastUploadMs,
           nowMs: now,
+          retentionDaysOverride,
         });
         if (verdict.action !== 'delete') { foldersKept++; continue; }
         const paths = files.map((f) => `${prefix}/${f.name}`);
@@ -163,8 +200,10 @@ Deno.serve(async (req) => {
 
     const summary = {
       dryRun,
+      retentionDaysOverride: retentionDaysOverride ?? null,
       deletedCount: deletions.length,
       legacyArchives: legacyPaths.length,
+      staleChunks,
       segmentedFoldersSeen: foldersSeen,
       segmentedFoldersKept: foldersKept,
       deletions,

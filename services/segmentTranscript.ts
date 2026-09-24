@@ -1,40 +1,31 @@
-// ─── Per-segment transcription + transcript assembly ────────────────────────
+// ─── Per-segment transcription ──────────────────────────────────────────────
 //
 // Shared by the post-Finish pipeline and "Re-transcribe unclear parts", so
-// both classify, store and stitch segments exactly the same way.
+// both classify and store segments exactly the same way. The pure part —
+// statuses, stitching, trimming, saved duration — lives in
+// services/transcriptAssembly.ts (re-exported here for callers).
 //
-// Every segment ends in one of:
-//   ok       transcribed ("" for silence is fine)
-//   unclear  transcribed, but some chunks failed every retry (placeholder inside)
-//   failed   not transcribed at all (undecodable, unavailable, or errored after
-//            retries). Its audio is KEPT so it can be retried — never silently
-//            turned into a placeholder and forgotten.
-//   skipped  not attempted (the recording hit its STT ceiling)
-// The result (text + status) is stored per segment in IndexedDB, which is what
-// lets a later re-transcription patch the transcript in place.
+// Each segment's result (text + status) is stored in IndexedDB, which is what
+// lets a later re-transcription patch the transcript in place. A 'failed'
+// segment's text is the unclear marker, so the saved transcript always shows
+// it and the server's retention sweep knows the session still needs a retry.
 
-import { transcribeAudioWithSarvam, isSegmentDecodeError, UNCLEAR_PLACEHOLDER } from './sarvamService';
+import { transcribeAudioWithSarvam, isSegmentDecodeError } from './sarvamService';
 import { downloadAudioFromStorage } from './storageService';
 import { getSegmentBlob, saveSegmentTranscript, type SegmentEntry, type SegmentResultStatus } from './recordingRecovery';
-import { getRecordingInitSegment, patchSegmentEntry, persistRepairedSegment, segmentSavedMs } from './segmentRecorder';
+import { getRecordingInitSegment, patchSegmentEntry, persistRepairedSegment } from './segmentRecorder';
 import { isUsageLimitError } from './usageLimit';
+import { FAILED_SEGMENT_TEXT, type SegmentPiece } from './transcriptAssembly';
+import { UNCLEAR_MARKER } from '../supabase/functions/_shared/audioRetention.ts';
 
-export type PieceStatus = SegmentResultStatus | 'skipped';
-
-export interface SegmentPiece {
-  seg: SegmentEntry;
-  text: string | null; // null = no text (skipped)
-  status: PieceStatus;
-}
-
-/** Status of a stored result; records from before statuses existed are derived from their text. */
-export function resultStatus(r: { transcript: string; status?: SegmentResultStatus } | undefined): SegmentResultStatus | null {
-  if (!r) return null;
-  if (r.status) return r.status;
-  return r.transcript.includes(UNCLEAR_PLACEHOLDER) ? 'unclear' : 'ok';
-}
-
-export const needsRetry = (status: PieceStatus | null): boolean => status === 'unclear' || status === 'failed';
+export {
+  buildSegmentedTranscript,
+  resultStatus,
+  needsRetry,
+  type SegmentPiece,
+  type PieceStatus,
+  type BuiltTranscript,
+} from './transcriptAssembly';
 
 /**
  * Transcribe one segment and store its result. Returns the piece; throws only
@@ -48,8 +39,8 @@ export async function transcribeSegment(
 ): Promise<SegmentPiece> {
   const fail = async (why: string): Promise<SegmentPiece> => {
     console.error(`[Pipeline] segment ${seg.index} failed — audio kept for retry: ${why}`);
-    await saveSegmentTranscript(recoveryId, seg.index, UNCLEAR_PLACEHOLDER, 'failed');
-    return { seg, text: UNCLEAR_PLACEHOLDER, status: 'failed' };
+    await saveSegmentTranscript(recoveryId, seg.index, FAILED_SEGMENT_TEXT, 'failed');
+    return { seg, text: FAILED_SEGMENT_TEXT, status: 'failed' };
   };
 
   // Prefer the cached blob; fall back to the uploaded segment in Storage.
@@ -79,7 +70,7 @@ export async function transcribeSegment(
       },
       onProgress: opts.onProgress,
     });
-    const status: SegmentResultStatus = text.includes(UNCLEAR_PLACEHOLDER) ? 'unclear' : 'ok';
+    const status: SegmentResultStatus = text.includes(UNCLEAR_MARKER) ? 'unclear' : 'ok';
     await saveSegmentTranscript(recoveryId, seg.index, text, status);
     return { seg, text, status };
   } catch (e: any) {
@@ -91,58 +82,4 @@ export async function transcribeSegment(
     }
     return fail(e?.message ?? String(e));
   }
-}
-
-export interface BuiltTranscript {
-  transcript: string;
-  /** Seconds of audio up to the last segment with real speech. */
-  durationSec: number;
-  trimmedCount: number;
-  /** Kept segments that are unclear or failed (worth a re-transcription). */
-  problems: number;
-}
-
-const TRAIL_MIN_WORDS = 30;
-const TRAIL_SPARSE_MIN_MS = 2 * 60 * 1000;
-const wordCount = (t: string | null) =>
-  (t ?? '').split(UNCLEAR_PLACEHOLDER).join(' ').trim().split(/\s+/).filter(Boolean).length;
-
-/**
- * Stitch segment texts into one transcript, trimming trailing non-speech.
- *
- * A recording left running after the meeting ends tails off into segments
- * with no real speech. They are dropped from the transcript and from the
- * saved duration — but ONLY trailing segments whose status is 'ok' and whose
- * text is empty, or has fewer than TRAIL_MIN_WORDS words over at least
- * TRAIL_SPARSE_MIN_MS of audio. A short final segment with a few real words
- * ("thanks, bye") is kept. Trimming stops at the first trailing segment that
- * is 'unclear', 'failed' or 'skipped': unclear/failed ones are retryable (their
- * audio is kept), so they are never trimmed. The first segment is never trimmed.
- */
-export function buildSegmentedTranscript(pieces: SegmentPiece[], fallbackDurationSec: number): BuiltTranscript {
-  let keep = pieces.length;
-  while (keep > 1) {
-    const { seg, text, status } = pieces[keep - 1];
-    if (status !== 'ok') break;
-    const words = wordCount(text);
-    const sparse = words < TRAIL_MIN_WORDS && (seg.durationMs || 0) >= TRAIL_SPARSE_MIN_MS;
-    if (words > 0 && !sparse) break;
-    keep--;
-  }
-  const kept = pieces.slice(0, keep);
-  const keptMs = kept.reduce((s, p) => s + segmentSavedMs(p.seg), 0);
-  // Join segments with a blank line, not a space. Collapsing on /\s+/ used to
-  // eat every newline, leaving multi-hour meetings as one unbroken line.
-  const transcript = kept
-    .map((p) => p.text)
-    .filter((t): t is string => t !== null)
-    .map((t) => t.replace(/[ \t]+/g, ' ').trim())
-    .filter(Boolean)
-    .join('\n\n');
-  return {
-    transcript,
-    durationSec: keptMs > 0 ? Math.round(keptMs / 1000) : fallbackDurationSec,
-    trimmedCount: pieces.length - keep,
-    problems: kept.filter((p) => needsRetry(p.status)).length,
-  };
 }

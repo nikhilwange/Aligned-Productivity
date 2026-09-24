@@ -11,16 +11,25 @@
 //   1. Legacy single-file archives (recordings.audioPath):
 //        completed → delete; error → delete after 30 days; processing → never.
 //   2. Segmented recordings (<user>/recordings/<recoveryId>/seg-*):
-//        row processing / interrupted / error → never
+//        row processing → never
 //        row completed, transcript has no unclear parts → delete
 //        row completed with unclear parts → delete 30 days after the last upload
+//        row error / interrupted → delete 30 days after the last upload
 //        no row at all (orphan) → delete 30 days after the last upload
+//   3. Temporary upload pieces (<user>/chunks/*) older than 24 h → delete ('stale_chunk').
 //
 // Every deletion is logged: path, reason, and row id (or 'orphan').
-// RETENTION_DRY_RUN=true → report what WOULD be deleted, delete nothing.
+// Dry run — report what WOULD be deleted, delete nothing — when the request
+// body has {"dryRun": true} OR the RETENTION_DRY_RUN secret is 'true'. In a dry
+// run only, {"retentionDaysOverride": <int>} replaces the 30-day windows, to
+// preview what a rule would catch; real runs ignore it.
 //
-// Invoked daily by pg_cron via pg_net with a service-role JWT; verify_jwt=true
-// at the gateway, and the handler re-checks the role claim.
+// Invoked daily by pg_cron: public.trigger_audio_retention() posts here with
+// the Vault secret 'cleanup_function_token' as the Bearer token (see
+// supabase/sql/audio_retention_schedule.sql). Auth is exactly the old
+// cleanup-failed-audio's: the gateway verifies the JWT signature
+// (Verify JWT = ON), and the handler requires its role claim to be
+// 'service_role'.
 //
 // Dashboard deploys use index.standalone.ts (this file with the shared rules
 // inlined; regenerate with `npm run edge:standalone`).
@@ -29,11 +38,17 @@ import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 // BEGIN SHARED AUDIO RETENTION RULES
 export const KEPT_AUDIO_RETENTION_DAYS = 30; // completed session with unclear/failed parts
-export const ORPHAN_AUDIO_RETENTION_DAYS = 30; // segments with no recordings row, since the last upload
+export const FAILED_AUDIO_RETENTION_DAYS = 30; // session in 'error' / 'interrupted'
+export const ORPHAN_AUDIO_RETENTION_DAYS = 30; // segments with no recordings row
 export const RETENTION_WARNING_DAYS = 7; // banner countdown starts this many days before deletion
 export const LEGACY_ERROR_AUDIO_RETENTION_DAYS = 30; // single-file audioPath archive of an 'error' row
+export const STALE_CHUNK_HOURS = 24; // temporary <user>/chunks/* upload pieces
 
-/** The placeholder a transcript contains where audio couldn't be transcribed. */
+/**
+ * The placeholder the transcript contains wherever audio couldn't be
+ * transcribed — both 'unclear' chunks and wholly 'failed' segments write it.
+ * The server sweep detects "has unclear parts" by this marker alone.
+ */
 export const UNCLEAR_MARKER = '[…audio unclear…]';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -45,55 +60,77 @@ export interface RetentionVerdict {
   deleteAtMs?: number;
 }
 
+/** Days for a time-based rule — the dry-run override (if any) replaces them. */
+const days = (normal: number, override?: number) =>
+  override !== undefined && Number.isInteger(override) && override >= 0 ? override : normal;
+
+function timed(label: string, anchorMs: number, retentionDays: number, nowMs: number): RetentionVerdict {
+  const deleteAtMs = anchorMs + retentionDays * DAY_MS;
+  return nowMs >= deleteAtMs
+    ? { action: 'delete', reason: `${label}: no new uploads for ${retentionDays} days`, deleteAtMs }
+    : { action: 'keep', reason: `${label}: within the ${retentionDays}-day retention window`, deleteAtMs };
+}
+
 /**
  * A segmented recording's Storage folder (recordings/<recoveryId>/).
  *   rowStatus          the recordings row's status; null = no row (orphan)
  *   hasUnclearParts    the row's transcript contains UNCLEAR_MARKER
- *   lastUploadMs       newest object time in the folder (the "kept since" anchor)
+ *   lastUploadMs       newest object time in the folder (the retention anchor)
  * Rules:
- *   processing / interrupted / error / anything but completed → keep, always
- *   completed, no unclear parts                                → delete (retry not needed)
- *   completed with unclear parts                                → keep until lastUpload + 30 d
- *   orphan (no row)                                             → keep until lastUpload + 30 d
+ *   processing                          → keep, always
+ *   completed, no unclear parts         → delete (a retry isn't needed)
+ *   completed with unclear parts        → delete 30 days after the last upload
+ *   error / interrupted                 → delete 30 days after the last upload
+ *   no row (orphan)                     → delete 30 days after the last upload
+ *   any other status                    → keep
+ * retentionDaysOverride (dry runs only) replaces the 30 days.
  */
 export function segmentedAudioRetention(p: {
   rowStatus: string | null;
   hasUnclearParts: boolean;
   lastUploadMs: number;
   nowMs: number;
+  retentionDaysOverride?: number;
 }): RetentionVerdict {
+  const o = p.retentionDaysOverride;
   if (p.rowStatus === null) {
-    const deleteAtMs = p.lastUploadMs + ORPHAN_AUDIO_RETENTION_DAYS * DAY_MS;
-    return p.nowMs >= deleteAtMs
-      ? { action: 'delete', reason: `orphan: no recordings row, no uploads for ${ORPHAN_AUDIO_RETENTION_DAYS} days`, deleteAtMs }
-      : { action: 'keep', reason: 'orphan: waiting for the retention window', deleteAtMs };
+    return timed('orphan (no recordings row)', p.lastUploadMs, days(ORPHAN_AUDIO_RETENTION_DAYS, o), p.nowMs);
   }
-  if (p.rowStatus !== 'completed') {
-    return { action: 'keep', reason: `row is '${p.rowStatus}': audio needed for retry` };
+  if (p.rowStatus === 'processing') return { action: 'keep', reason: "row is 'processing'" };
+  if (p.rowStatus === 'error' || p.rowStatus === 'interrupted') {
+    return timed(`row is '${p.rowStatus}'`, p.lastUploadMs, days(FAILED_AUDIO_RETENTION_DAYS, o), p.nowMs);
   }
-  if (!p.hasUnclearParts) {
-    return { action: 'delete', reason: 'completed with no unclear/failed parts' };
+  if (p.rowStatus === 'completed') {
+    if (!p.hasUnclearParts) return { action: 'delete', reason: 'completed with no unclear/failed parts' };
+    return timed('completed with unclear parts', p.lastUploadMs, days(KEPT_AUDIO_RETENTION_DAYS, o), p.nowMs);
   }
-  const deleteAtMs = p.lastUploadMs + KEPT_AUDIO_RETENTION_DAYS * DAY_MS;
-  return p.nowMs >= deleteAtMs
-    ? { action: 'delete', reason: `completed with unclear parts: retry window of ${KEPT_AUDIO_RETENTION_DAYS} days ended`, deleteAtMs }
-    : { action: 'keep', reason: 'completed with unclear parts: kept for re-transcription', deleteAtMs };
+  return { action: 'keep', reason: `row is '${p.rowStatus}'` };
 }
 
 /**
  * A legacy single-file archive (recordings.audioPath).
  *   processing → keep; completed → delete (should have gone on success);
- *   error → keep until createdAt + 30 d; anything else → keep.
+ *   error → delete 30 days after the row was created; anything else → keep.
  */
-export function legacyArchiveRetention(p: { rowStatus: string; createdMs: number; nowMs: number }): RetentionVerdict {
+export function legacyArchiveRetention(p: {
+  rowStatus: string;
+  createdMs: number;
+  nowMs: number;
+  retentionDaysOverride?: number;
+}): RetentionVerdict {
   if (p.rowStatus === 'completed') return { action: 'delete', reason: 'completed: archive should have been deleted on success' };
   if (p.rowStatus === 'error') {
-    const deleteAtMs = p.createdMs + LEGACY_ERROR_AUDIO_RETENTION_DAYS * DAY_MS;
-    return p.nowMs >= deleteAtMs
-      ? { action: 'delete', reason: `error: retry window of ${LEGACY_ERROR_AUDIO_RETENTION_DAYS} days ended`, deleteAtMs }
-      : { action: 'keep', reason: 'error: kept for retry', deleteAtMs };
+    return timed("legacy archive of an 'error' row", p.createdMs, days(LEGACY_ERROR_AUDIO_RETENTION_DAYS, p.retentionDaysOverride), p.nowMs);
   }
   return { action: 'keep', reason: `row is '${p.rowStatus}'` };
+}
+
+/** A temporary <user>/chunks/* upload piece: deleted once older than 24 h. */
+export function staleChunkRetention(p: { uploadedMs: number; nowMs: number }): RetentionVerdict {
+  const deleteAtMs = p.uploadedMs + STALE_CHUNK_HOURS * 60 * 60 * 1000;
+  return p.nowMs >= deleteAtMs
+    ? { action: 'delete', reason: 'stale_chunk', deleteAtMs }
+    : { action: 'keep', reason: 'chunk still fresh', deleteAtMs };
 }
 
 /** Whole days until deletion, when inside the warning window; otherwise null. */
@@ -164,7 +201,16 @@ Deno.serve(async (req) => {
   if (!supabaseUrl || !serviceRoleKey) {
     return jsonResponse({ error: 'Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY' }, 500);
   }
-  const dryRun = Deno.env.get('RETENTION_DRY_RUN') === 'true';
+  // Body is optional (the old cron call sent none): { dryRun?, retentionDaysOverride? }.
+  let body: { dryRun?: unknown; retentionDaysOverride?: unknown } = {};
+  try { body = (await req.json()) ?? {}; } catch { /* no / non-JSON body */ }
+  const dryRun = body.dryRun === true || Deno.env.get('RETENTION_DRY_RUN') === 'true';
+  const rawOverride = body.retentionDaysOverride;
+  const retentionDaysOverride =
+    dryRun && typeof rawOverride === 'number' && Number.isInteger(rawOverride) && rawOverride >= 0 ? rawOverride : undefined;
+  if (rawOverride !== undefined && retentionDaysOverride === undefined) {
+    console.warn('[audio-retention] retentionDaysOverride ignored (real run, or not a non-negative integer)');
+  }
   const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { autoRefreshToken: false, persistSession: false } });
   const now = Date.now();
   const tag = dryRun ? '[audio-retention][DRY RUN]' : '[audio-retention]';
@@ -184,7 +230,7 @@ Deno.serve(async (req) => {
     const legacyDeleted: string[] = [];
     const legacyPaths: string[] = [];
     for (const r of legacyRows ?? []) {
-      const verdict = legacyArchiveRetention({ rowStatus: r.status, createdMs: Date.parse(r.created_at), nowMs: now });
+      const verdict = legacyArchiveRetention({ rowStatus: r.status, createdMs: Date.parse(r.created_at), nowMs: now, retentionDaysOverride });
       if (verdict.action !== 'delete') continue;
       log({ path: r.audioPath, reason: `legacy archive: ${verdict.reason}`, row: r.id });
       legacyDeleted.push(r.id);
@@ -196,12 +242,30 @@ Deno.serve(async (req) => {
       if (error) throw new Error(`audioPath nulling failed: ${error.message}`);
     }
 
-    // ── 2. Segmented recordings: <user>/recordings/<recoveryId>/ ─────────────
+    // ── 2 & 3. Per user: segmented recordings, then stale temporary chunks ──
     let foldersSeen = 0;
     let foldersKept = 0;
+    let staleChunks = 0;
     for (const userDir of await listAll(supabase, '')) {
       if (userDir.id) continue; // a file at the root, not a user folder
       const uid = userDir.name;
+
+      // 3. <user>/chunks/* — temporary 25 s upload pieces, normally deleted
+      //    right after transcription; anything older than 24 h is stale.
+      const chunkFiles = (await listAll(supabase, `${uid}/chunks`)).filter((f) => f.id);
+      const stalePaths: string[] = [];
+      for (const f of chunkFiles) {
+        const uploadedMs = Date.parse(f.updated_at || f.created_at || '');
+        if (!Number.isFinite(uploadedMs)) continue;
+        if (staleChunkRetention({ uploadedMs, nowMs: now }).action !== 'delete') continue;
+        const path = `${uid}/chunks/${f.name}`;
+        log({ path, reason: 'stale_chunk', row: 'orphan' });
+        stalePaths.push(path);
+      }
+      staleChunks += stalePaths.length;
+      if (!dryRun && stalePaths.length > 0) await removePaths(supabase, stalePaths);
+
+      // 2. <user>/recordings/<recoveryId>/
       const recFolders = (await listAll(supabase, `${uid}/recordings`)).filter((e) => !e.id);
       if (recFolders.length === 0) continue;
 
@@ -231,6 +295,7 @@ Deno.serve(async (req) => {
           hasUnclearParts: !!row?.transcript?.includes(UNCLEAR_MARKER),
           lastUploadMs,
           nowMs: now,
+          retentionDaysOverride,
         });
         if (verdict.action !== 'delete') { foldersKept++; continue; }
         const paths = files.map((f) => `${prefix}/${f.name}`);
@@ -241,8 +306,10 @@ Deno.serve(async (req) => {
 
     const summary = {
       dryRun,
+      retentionDaysOverride: retentionDaysOverride ?? null,
       deletedCount: deletions.length,
       legacyArchives: legacyPaths.length,
+      staleChunks,
       segmentedFoldersSeen: foldersSeen,
       segmentedFoldersKept: foldersKept,
       deletions,

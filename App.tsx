@@ -23,6 +23,7 @@ import { recordingController, claimRecording, isRecordingLive, type FinalizeReas
 import RecordingIndicator from './components/RecordingIndicator';
 import LeftoverRecordingNotice from './components/LeftoverRecordingNotice';
 import RetranscribeBanner from './components/RetranscribeBanner';
+import AudioRetentionNotice from './components/AudioRetentionNotice';
 import type { SegmentDeletion } from './services/segmentCleanupPolicy';
 import { transcribeSegment, buildSegmentedTranscript, resultStatus, needsRetry, type SegmentPiece } from './services/segmentTranscript';
 import { extractTranscript, analyzeTranscript } from './services/geminiService';
@@ -1122,7 +1123,6 @@ const App: React.FC = () => {
   const runSegmentedProcessingForSession = useCallback(async (session: RecordingSession, manifest: SegmentManifest) => {
     if (!user) return;
     const recoveryId = session.recoveryId!;
-    const UNCLEAR = '[…audio unclear…]';
 
     // Single-pipeline gate + liveness heartbeat (see runProcessingForSession).
     const controller = beginPipelineRun(session.id);
@@ -1471,6 +1471,25 @@ const App: React.FC = () => {
     void refreshRetranscribeInfo(activeSessionForBanner);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSessionForBanner?.id, activeSessionForBanner?.status, activeSessionForBanner?.recoveryId, refreshRetranscribeInfo]);
+
+  // Failed / interrupted sessions: the server sweep deletes their audio 30
+  // days after the last upload. Warn in the last RETENTION_WARNING_DAYS.
+  const [failedAudioNotice, setFailedAudioNotice] = useState<{ sessionId: string; daysLeft: number } | null>(null);
+  useEffect(() => {
+    const s = activeSessionForBanner;
+    setFailedAudioNotice(null);
+    if (!s || !s.recoveryId || (s.status !== 'error' && (s.status as string) !== 'interrupted')) return;
+    let cancelled = false;
+    void (async () => {
+      const folder = await getRecordingFolderInfo(s.recoveryId!);
+      if (cancelled || !folder?.lastUploadMs) return;
+      const verdict = segmentedAudioRetention({ rowStatus: s.status, hasUnclearParts: false, lastUploadMs: folder.lastUploadMs, nowMs: Date.now() });
+      const daysLeft = retentionWarningDaysLeft(verdict.deleteAtMs, Date.now());
+      if (daysLeft !== null) setFailedAudioNotice({ sessionId: s.id, daysLeft });
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionForBanner?.id, activeSessionForBanner?.status, activeSessionForBanner?.recoveryId]);
 
   const handleRetranscribeUnclear = async (session: RecordingSession) => {
     if (!user || !session.recoveryId || retranscribeProgress) return;
@@ -1906,6 +1925,10 @@ const App: React.FC = () => {
               />
             ) : null;
           })}
+          {/* Failed / interrupted session whose audio the retention sweep will delete soon */}
+          {activeSession && failedAudioNotice?.sessionId === activeSession.id && (
+            <AudioRetentionNotice daysLeft={failedAudioNotice.daysLeft} />
+          )}
           {/* Completed session with unclear / failed parts: re-send just those */}
           {activeSession && retranscribeInfo?.sessionId === activeSession.id && (
             <RetranscribeBanner

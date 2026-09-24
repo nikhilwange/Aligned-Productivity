@@ -4,6 +4,9 @@ import { uploadAudioToStorage, deleteAudioPaths } from "./storageService";
 import { getChunkTranscripts, saveChunkTranscript } from "./recordingRecovery";
 import { usageLimitFromBody, isUsageLimitError } from "./usageLimit";
 import { SKIP_SILENT_CHUNKS, SILENT_CHUNK_RMS, SILENT_CHUNK_PEAK } from "../config/sttLimits";
+// The ONE unclear marker — shared with the server's retention sweep, which
+// detects "this session still has parts to retry" by it.
+import { UNCLEAR_MARKER } from "../supabase/functions/_shared/audioRetention.ts";
 
 const IS_DEV = !!(import.meta as any).env?.DEV;
 
@@ -61,7 +64,7 @@ export const isSegmentDecodeError = (e: unknown): e is SegmentDecodeError =>
   (typeof e === 'object' && e !== null && (e as any).name === 'SegmentDecodeError');
 
 /** The placeholder a chunk that failed every retry becomes in the transcript. */
-export const UNCLEAR_PLACEHOLDER = "[…audio unclear…]";
+export const UNCLEAR_PLACEHOLDER = UNCLEAR_MARKER;
 
 interface WavChunk {
   blob: Blob;
