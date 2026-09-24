@@ -362,6 +362,12 @@ export interface SegmentEntry {
    * processes it like any other segment; a normal finalize clears the flag.
    */
   partial?: boolean;
+  /** Length the decoder found (ms). Used for the saved duration only when within tolerance of durationMs. */
+  decodedMs?: number;
+  /** The segment would not decode, even with a header repair. Its audio is kept for a retry. */
+  decodeFailed?: boolean;
+  /** Storage files this segment replaced (header repair uploads to a new path; old ones go only with the recording). */
+  previousStoragePaths?: string[];
 }
 
 /** A stretch of wall-clock time the device slept mid-recording (not captured). */
@@ -525,21 +531,31 @@ export async function purgeStaleSegmentManifests(): Promise<void> {
 // final partial segment, plus any that failed live). All best-effort: a failure
 // here only costs re-transcription later, it never breaks a recording.
 
+/**
+ * ok      — transcribed (possibly "" for silence)
+ * unclear — transcribed, but some chunks failed every retry (placeholders inside)
+ * failed  — could not be transcribed at all (e.g. undecodable); audio kept for retry
+ */
+export type SegmentResultStatus = 'ok' | 'unclear' | 'failed';
+
 export interface SegmentTranscriptRecord {
   key: string; // `${sessionId}:${index}`
   sessionId: string;
   index: number;
   transcript: string;
   completedAt: number;
+  /** Absent on records written before statuses existed — derive from the text. */
+  status?: SegmentResultStatus;
 }
 
 const segTranscriptKey = (sessionId: string, index: number) => `${sessionId}:${index}`;
 
-/** Persist a finished segment transcript. */
+/** Persist a finished segment transcript (and how it went). */
 export async function saveSegmentTranscript(
   sessionId: string,
   index: number,
   transcript: string,
+  status?: SegmentResultStatus,
 ): Promise<void> {
   if (!sessionId) return;
   try {
@@ -551,6 +567,7 @@ export async function saveSegmentTranscript(
       index,
       transcript,
       completedAt: Date.now(),
+      ...(status ? { status } : {}),
     };
     tx.objectStore(SEGMENT_TRANSCRIPT_STORE).put(record);
     await new Promise<void>((resolve, reject) => {
@@ -611,6 +628,31 @@ export async function getSegmentTranscripts(
   }
 }
 
+/** Every stored segment result for a session (text + status), keyed by index. */
+export async function getSegmentResults(
+  sessionId: string,
+): Promise<Record<number, { transcript: string; status?: SegmentResultStatus }>> {
+  if (!sessionId) return {};
+  try {
+    const db = await openDB();
+    const tx = db.transaction(SEGMENT_TRANSCRIPT_STORE, 'readonly');
+    const all: SegmentTranscriptRecord[] = await new Promise((resolve, reject) => {
+      const req = tx.objectStore(SEGMENT_TRANSCRIPT_STORE).getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    const out: Record<number, { transcript: string; status?: SegmentResultStatus }> = {};
+    for (const rec of all || []) {
+      if (rec.sessionId === sessionId) out[rec.index] = { transcript: rec.transcript ?? '', status: rec.status };
+    }
+    return out;
+  } catch (err) {
+    console.warn('[Recovery] Failed to list segment results:', err);
+    return {};
+  }
+}
+
 /** Remove every live transcript for a session (cleanup / delete / discard). */
 export async function clearSegmentTranscripts(sessionId: string): Promise<void> {
   if (!sessionId) return;
@@ -652,9 +694,15 @@ export async function clearAllSegmentTranscripts(): Promise<void> {
   }
 }
 
-/** Purge live transcripts older than 7 days. Call once on app load. */
+/**
+ * Purge live transcripts older than 7 days. Call once on app load.
+ * Skips recordings whose segments are still kept (a manifest exists): their
+ * stored per-segment results are what a later re-transcription patches the
+ * transcript from, so they live exactly as long as the audio does.
+ */
 export async function purgeStaleSegmentTranscripts(): Promise<void> {
   try {
+    const kept = new Set((await getAllSegmentManifests()).map((m) => m.sessionId));
     const db = await openDB();
     const tx = db.transaction(SEGMENT_TRANSCRIPT_STORE, 'readwrite');
     const store = tx.objectStore(SEGMENT_TRANSCRIPT_STORE);
@@ -665,6 +713,7 @@ export async function purgeStaleSegmentTranscripts(): Promise<void> {
     });
     const cutoff = Date.now() - SEVEN_DAYS_MS;
     for (const rec of all || []) {
+      if (kept.has(rec.sessionId)) continue; // audio still kept → keep its results
       if (!rec.completedAt || rec.completedAt < cutoff) store.delete(rec.key);
     }
     await new Promise<void>((resolve, reject) => {

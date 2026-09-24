@@ -17,6 +17,7 @@
     "package:win": "electron-vite build && electron-builder --win",
     "package:linux": "electron-vite build && electron-builder --linux",
     "preview": "vite preview",
+    "test": "node --test tests/segmentCleanup.test.mts",
     "cap:build": "vite build && npx cap sync",
     "cap:ios": "npx cap open ios",
     "cap:ios:dev": "npx cap run ios --livereload --external"

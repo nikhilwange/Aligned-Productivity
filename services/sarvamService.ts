@@ -3,6 +3,13 @@ import { supabase } from "./supabaseService";
 import { uploadAudioToStorage, deleteAudioPaths } from "./storageService";
 import { getChunkTranscripts, saveChunkTranscript } from "./recordingRecovery";
 import { usageLimitFromBody, isUsageLimitError } from "./usageLimit";
+import { SKIP_SILENT_CHUNKS, SILENT_CHUNK_RMS, SILENT_CHUNK_PEAK } from "../config/sttLimits";
+
+const IS_DEV = !!(import.meta as any).env?.DEV;
+
+// Sent on every proxy request so the server can tell current clients (which
+// only ever send decoded WAV inline) from older cached bundles.
+const CLIENT_HEADER = { "X-Aligned-Client": "web" };
 
 // Options for resumable / observable transcription. Both fields are optional so
 // every existing call site (`transcribeAudioWithSarvam(blob)`) keeps working.
@@ -27,9 +34,41 @@ export interface SarvamTranscribeOptions {
   // audio and drop the segment. Callers holding a segment manifest know the
   // real duration from the frame headers, so they should pass it.
   knownDurationMs?: number;
+  // The recording's WebM header (EBML + Tracks, no audio), for ONE repair
+  // attempt if this blob fails to decode (a segment whose header was lost).
+  // Callers read it from segment 0 of the same recording.
+  getInitSegment?: () => Promise<Blob | null>;
+  // Fired once the blob has decoded: its decoded length, and whether that
+  // needed the header repair (so the caller can persist the repaired file).
+  onDecoded?: (info: { decodedMs: number; repaired: boolean }) => void;
 }
 
 const CHUNK_DURATION_MS = 25000; // 25 seconds per chunk (Sarvam REST API limit is 30s)
+
+// Inline (base64-in-JSON) is allowed ONLY for a decoded WAV of at most this
+// many seconds, and small enough for Vercel's 4.5 MB body cap. Everything
+// else goes through Storage. Never decided by a size guess.
+const INLINE_MAX_SECONDS = 28;
+const INLINE_MAX_BYTES = 3 * 1024 * 1024;
+
+/** Audio could not be decoded, even after a header repair. The segment's
+ *  audio is kept; callers mark the segment failed and retryable. */
+export class SegmentDecodeError extends Error {
+  constructor(message: string) { super(message); this.name = 'SegmentDecodeError'; }
+}
+export const isSegmentDecodeError = (e: unknown): e is SegmentDecodeError =>
+  e instanceof SegmentDecodeError ||
+  (typeof e === 'object' && e !== null && (e as any).name === 'SegmentDecodeError');
+
+/** The placeholder a chunk that failed every retry becomes in the transcript. */
+export const UNCLEAR_PLACEHOLDER = "[…audio unclear…]";
+
+interface WavChunk {
+  blob: Blob;
+  seconds: number;
+  /** Below both silence thresholds — not worth sending to Sarvam. */
+  silent: boolean;
+}
 
 // Hard ceiling on any single chunk-transcription request. Without this a hung
 // request would only be caught by retryOperation's coarse 120s wall-timeout —
@@ -140,6 +179,7 @@ const transcribeChunkInline = async (
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
+        ...CLIENT_HEADER,
       },
       body: JSON.stringify({
         audioBase64,
@@ -187,6 +227,7 @@ const transcribeChunkViaStorage = async (
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
+        ...CLIENT_HEADER,
       },
       body: JSON.stringify({
         audioPath: storagePath,
@@ -297,46 +338,66 @@ async function decodeForChunking(arrayBuffer: ArrayBuffer): Promise<AudioBuffer>
 }
 
 // Split an audio blob into time-based WAV chunks using OfflineAudioContext.
+//
+// EVERY blob is decoded and re-cut into ≤25 s 16-bit WAV chunks, short blobs
+// included. The old shortcut sent any blob under 500 KB as one unsplit
+// request, assuming 16 KB/s; the recorder writes ~4 KB/s for speech and
+// ~0.3 KB/s for silence, so those blobs held 2–30+ min of audio and Sarvam
+// rejected them (400). Decoding a ≤5-min segment at 16 kHz is cheap.
 const splitAudioBlob = async (
   audioBlob: Blob,
   chunkDurationMs: number,
   knownDurationMs?: number,
-): Promise<Blob[]> => {
-  const durationEstimateMs = (audioBlob.size / 16000) * 1000;
-  if (durationEstimateMs <= 30000 || audioBlob.size < 500000) {
-    return [audioBlob];
-  }
-
+  getInitSegment?: () => Promise<Blob | null>,
+  onDecoded?: (info: { decodedMs: number; repaired: boolean }) => void,
+): Promise<WavChunk[]> => {
   // Establish the source's true duration BEFORE decoding so we can detect
   // silent truncation afterwards. A caller-supplied duration always wins: it
-  // comes from the segment manifest (MP3 frame headers for a split upload) and
-  // is authoritative, whereas the <audio> probe guesses from bitrate and is
-  // badly wrong for a VBR slice with no Xing header. See knownDurationMs.
+  // comes from the segment manifest (the recorder's audio clock, or MP3 frame
+  // headers for a split upload) and is authoritative, whereas the <audio>
+  // probe guesses from bitrate and is badly wrong for a VBR slice with no Xing
+  // header. See knownDurationMs.
   const probedDurationS = knownDurationMs && knownDurationMs > 0
     ? knownDurationMs / 1000
     : await probeBlobDuration(audioBlob);
-  const arrayBuffer = await audioBlob.arrayBuffer();
 
   let audioBuffer: AudioBuffer;
+  let repaired = false;
   try {
-    audioBuffer = await decodeForChunking(arrayBuffer);
+    audioBuffer = await decodeForChunking(await audioBlob.arrayBuffer());
   } catch (e) {
-    console.warn("[Sarvam] Could not decode audio for chunking, sending as single request:", (e as Error)?.message);
-    return [audioBlob];
+    // NEVER send an undecodable blob raw. One repair attempt with the
+    // recording's header prepended, then give up with a typed error.
+    const firstError = (e as Error)?.message;
+    const init = getInitSegment ? await getInitSegment().catch(() => null) : null;
+    if (!init) {
+      throw new SegmentDecodeError(`Audio could not be decoded (${firstError}) and no header was available to repair it.`);
+    }
+    console.warn(`[Sarvam] decode failed (${firstError}) — retrying with the recording's header prepended`);
+    try {
+      audioBuffer = await decodeForChunking(await new Blob([init, audioBlob]).arrayBuffer());
+      repaired = true;
+      console.warn(`[Sarvam] header repair worked: ${audioBuffer.duration.toFixed(1)}s decoded`);
+    } catch (e2) {
+      throw new SegmentDecodeError(`Audio could not be decoded even with the header repaired (${(e2 as Error)?.message}).`);
+    }
   }
+  try { onDecoded?.({ decodedMs: Math.round(audioBuffer.duration * 1000), repaired }); } catch { /* ignore */ }
 
   // Sanity check: if the browser truncated during decode (typical for
   // very long webm/opus files), surface a clear error rather than
   // silently losing the tail. 10% tolerance covers normal rounding /
-  // container vs PCM-length skew.
+  // container vs PCM-length skew; the 2 s floor covers a segment rebuilt
+  // from a checkpoint, whose last ≤1 s chunk hadn't been delivered yet.
   if (probedDurationS !== null) {
     const decodedDurationS = audioBuffer.duration;
-    const lossPct = (probedDurationS - decodedDurationS) / probedDurationS;
+    const lossS = probedDurationS - decodedDurationS;
+    const lossPct = lossS / probedDurationS;
     console.log(
       `[Sarvam] Decoded ${decodedDurationS.toFixed(1)}s of ${probedDurationS.toFixed(1)}s ` +
       `(${audioBuffer.sampleRate} Hz, ${audioBuffer.numberOfChannels}ch, ${(lossPct * 100).toFixed(1)}% loss)`,
     );
-    if (lossPct > 0.1) {
+    if (lossPct > 0.1 && lossS > 2) {
       throw new Error(
         `Audio decode was truncated by the browser: only ${Math.round(decodedDurationS / 60)} of ` +
         `${Math.round(probedDurationS / 60)} minutes decoded. This file is too long for in-browser ` +
@@ -348,7 +409,7 @@ const splitAudioBlob = async (
   const sampleRate = audioBuffer.sampleRate;
   const totalSamples = audioBuffer.length;
   const chunkSamples = Math.floor((chunkDurationMs / 1000) * sampleRate);
-  const chunks: Blob[] = [];
+  const chunks: WavChunk[] = [];
 
   for (let start = 0; start < totalSamples; start += chunkSamples) {
     const end = Math.min(start + chunkSamples, totalSamples);
@@ -374,6 +435,9 @@ const splitAudioBlob = async (
     writeString(36, "data");
     view.setUint32(40, chunkLength * numChannels * 2, true);
 
+    // Levels for the silent-chunk skip, measured on the same samples we write.
+    let sumSquares = 0;
+    let peak = 0;
     let offset = 44;
     for (let i = 0; i < chunkLength; i++) {
       for (let ch = 0; ch < numChannels; ch++) {
@@ -381,10 +445,21 @@ const splitAudioBlob = async (
         const clamped = Math.max(-1, Math.min(1, sample));
         view.setInt16(offset, clamped * 0x7fff, true);
         offset += 2;
+        sumSquares += clamped * clamped;
+        const abs = clamped < 0 ? -clamped : clamped;
+        if (abs > peak) peak = abs;
       }
     }
+    const rms = Math.sqrt(sumSquares / Math.max(1, chunkLength * numChannels));
+    const silent = SKIP_SILENT_CHUNKS && rms < SILENT_CHUNK_RMS && peak < SILENT_CHUNK_PEAK;
+    if (IS_DEV) {
+      console.debug(
+        `[Sarvam] chunk levels #${chunks.length + 1}: rms ${rms.toFixed(4)} peak ${peak.toFixed(4)}` +
+        `${silent ? ' → silent, skipped' : ''} (thresholds rms<${SILENT_CHUNK_RMS} & peak<${SILENT_CHUNK_PEAK})`,
+      );
+    }
 
-    chunks.push(new Blob([wavBuffer], { type: "audio/wav" }));
+    chunks.push({ blob: new Blob([wavBuffer], { type: "audio/wav" }), seconds: chunkLength / sampleRate, silent });
   }
 
   return chunks;
@@ -408,13 +483,28 @@ export const transcribeAudioWithSarvam = async (
 
   console.log(`[Sarvam] Transcribing audio (${(audioBlob.size / 1024).toFixed(1)} KB)...`);
   const token = await getAuthToken();
-  const chunks = await splitAudioBlob(audioBlob, CHUNK_DURATION_MS, opts?.knownDurationMs);
+  const chunks = await splitAudioBlob(
+    audioBlob, CHUNK_DURATION_MS, opts?.knownDurationMs, opts?.getInitSegment, opts?.onDecoded,
+  );
   console.log(`[Sarvam] Split into ${chunks.length} chunk(s)`);
 
-  // Single-chunk fast path: send inline as base64 — no storage needed
-  if (chunks.length === 1) {
+  // Decoded to nothing (empty audio): an empty, successful result.
+  if (chunks.length === 0) return "";
+
+  // Silent chunks are never sent; they contribute "" to the transcript.
+  const silentIndices = new Set(chunks.map((c, i) => (c.silent ? i : -1)).filter((i) => i >= 0));
+  if (silentIndices.size > 0) {
+    const silentSecs = chunks.filter((c) => c.silent).reduce((s, c) => s + c.seconds, 0);
+    console.log(`[Sarvam] skipped ${silentIndices.size} silent chunk(s), ${silentSecs.toFixed(0)} s`);
+  }
+  // Every chunk silent: nothing to transcribe — an empty, successful result.
+  if (silentIndices.size === chunks.length) return "";
+
+  // Inline fast path ONLY for one decoded WAV chunk of ≤ INLINE_MAX_SECONDS
+  // that fits the body cap; anything else takes the Storage path below.
+  if (chunks.length === 1 && chunks[0].seconds <= INLINE_MAX_SECONDS && chunks[0].blob.size <= INLINE_MAX_BYTES) {
     return retryOperation(
-      () => transcribeChunkInline(chunks[0], token, /* sessionStart */ true, signal, recoveryId),
+      () => transcribeChunkInline(chunks[0].blob, token, /* sessionStart */ true, signal, recoveryId),
       2,
       1000,
       "Sarvam STT",
@@ -441,7 +531,6 @@ export const transcribeAudioWithSarvam = async (
   const uploadedPaths: string[] = [];
   const failedIndices: number[] = [];
   const concurrency = 2;
-  const UNRECOGNISED_PLACEHOLDER = "[…audio unclear…]";
 
   // ── Resume: restore chunks already transcribed on a previous attempt ──
   // The cache is keyed by recoveryId and is only returned when its chunkCount
@@ -453,7 +542,7 @@ export const transcribeAudioWithSarvam = async (
       for (const key of Object.keys(cached)) {
         const idx = Number(key);
         // Never treat a cached placeholder as done — those must be re-attempted.
-        if (cached[idx] !== undefined && cached[idx] !== UNRECOGNISED_PLACEHOLDER) {
+        if (cached[idx] !== undefined && cached[idx] !== UNCLEAR_PLACEHOLDER) {
           results[idx] = cached[idx];
           cachedIndices.add(idx);
         }
@@ -467,8 +556,8 @@ export const transcribeAudioWithSarvam = async (
     }
   }
 
-  // Progress: count restored + freshly-completed chunks against the total.
-  let completedCount = cachedIndices.size;
+  // Progress: count restored, silent and freshly-completed chunks against the total.
+  let completedCount = new Set([...cachedIndices, ...silentIndices]).size;
   const reportProgress = () => {
     try { onProgress?.(completedCount, chunks.length); } catch { /* ignore */ }
   };
@@ -479,10 +568,12 @@ export const transcribeAudioWithSarvam = async (
     if (recoveryId) saveChunkTranscript(recoveryId, idx, chunks.length, transcript).catch(() => {});
   };
 
-  // Only the not-yet-cached indices need work, batched at the given concurrency.
+  // Only the not-yet-cached, non-silent indices need work, batched at the given concurrency.
   const pendingIndices = chunks
     .map((_, idx) => idx)
-    .filter((idx) => !cachedIndices.has(idx));
+    .filter((idx) => !cachedIndices.has(idx) && !silentIndices.has(idx));
+  // The server's usage gate runs on this call's first request.
+  const sessionStartIdx = pendingIndices[0];
 
   try {
     // ── First pass: parallel batches, 4 attempts per chunk ─────────────
@@ -493,7 +584,7 @@ export const transcribeAudioWithSarvam = async (
         batchIndices.map((idx) => {
           const pathSuffix = `chunks/${sessionId}-${String(idx).padStart(4, "0")}.wav`;
           return retryOperation(
-            () => transcribeChunkViaStorage(chunks[idx], token, pathSuffix, /* sessionStart */ idx === 0, signal, recoveryId),
+            () => transcribeChunkViaStorage(chunks[idx].blob, token, pathSuffix, /* sessionStart */ idx === sessionStartIdx, signal, recoveryId),
             3,
             1000,
             `Sarvam STT chunk ${idx + 1}/${chunks.length}`,
@@ -532,7 +623,7 @@ export const transcribeAudioWithSarvam = async (
         const pathSuffix = `chunks/${sessionId}-${String(idx).padStart(4, "0")}-retry.wav`;
         try {
           const result = await retryOperation(
-            () => transcribeChunkViaStorage(chunks[idx], token, pathSuffix, /* sessionStart */ false, signal, recoveryId),
+            () => transcribeChunkViaStorage(chunks[idx].blob, token, pathSuffix, /* sessionStart */ false, signal, recoveryId),
             3,
             3000,
             `Sarvam STT chunk ${idx + 1} (final pass)`,
@@ -547,7 +638,7 @@ export const transcribeAudioWithSarvam = async (
           if (isUsageLimitError(err)) throw err;
           console.warn(`[Sarvam] Chunk ${idx + 1} failed (final pass): ${err?.message}`);
           // Do NOT cache the placeholder — this chunk must be retried next time.
-          results[idx] = UNRECOGNISED_PLACEHOLDER;
+          results[idx] = UNCLEAR_PLACEHOLDER;
         }
       }
     }
@@ -560,8 +651,8 @@ export const transcribeAudioWithSarvam = async (
     }
   }
 
-  const unrecognisedCount = results.filter((r) => r === UNRECOGNISED_PLACEHOLDER).length;
-  const fullTranscript = results.join(" ").trim();
+  const unrecognisedCount = results.filter((r) => r === UNCLEAR_PLACEHOLDER).length;
+  const fullTranscript = results.filter((r) => r !== "").join(" ").trim();
   if (unrecognisedCount > 0) {
     console.warn(
       `[Sarvam] ✅ Transcription complete (${fullTranscript.length} chars) — ${unrecognisedCount}/${chunks.length} chunks unrecognised after retries`,

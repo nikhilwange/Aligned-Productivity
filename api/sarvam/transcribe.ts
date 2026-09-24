@@ -6,6 +6,7 @@ import {
   audioSecondsFor,
   checkSttGuards,
   writeLedgerRow,
+  inlineRejection,
   type LedgerRow,
 } from '../_lib/sttLedger.js';
 import { REQUIRE_RECOVERY_ID_AFTER } from '../_lib/sttLimits.js';
@@ -143,6 +144,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     resolvedFilename = filename || 'audio.wav';
   } else {
     return res.status(400).json({ error: 'Missing audioBase64 or audioPath' });
+  }
+
+  // Inline requests must hold ≤ 30 s of audio (Sarvam's REST limit). Refuse
+  // anything longer BEFORE calling Sarvam — these used to come back as 400s
+  // and turn whole segments into "[…audio unclear…]".
+  if (reqPath === 'inline') {
+    const isCurrentClient = !!req.headers['x-aligned-client'];
+    const inline = inlineRejection(audioBuffer, isCurrentClient);
+    if (inline) {
+      console.warn(
+        `[Sarvam proxy] Rejected inline (${inline.reason}) user ${user.id} recovery ${recoveryId ?? '-'} ` +
+        `seg ${segmentIndex ?? '-'}: ${inline.seconds !== null ? `${inline.seconds.toFixed(1)}s` : 'n/a'} ` +
+        `via ${inline.how}, ${audioBuffer.length} bytes, client ${isCurrentClient ? 'current' : 'old'}`,
+      );
+      await writeLedgerRow({
+        ...ledgerBase,
+        audio_seconds: inline.seconds !== null ? Math.round(inline.seconds * 100) / 100 : null,
+        bytes: audioBuffer.length,
+        status: 'rejected',
+        http_status: 400,
+        reject_reason: inline.reason,
+      });
+      return res.status(400).json({
+        error: inline.reason === 'inline_not_wav'
+          ? 'Inline audio must be WAV.'
+          : `Inline audio is ${Math.round(inline.seconds ?? 0)}s; the limit is 30s.`,
+        reject_reason: inline.reason,
+      });
+    }
   }
 
   // Cost guard: audio length is computed here from the bytes, never taken from
