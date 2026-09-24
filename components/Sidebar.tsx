@@ -18,12 +18,14 @@ interface SidebarProps {
   actionItems?: TrackedActionItem[];
   usage?: SubscriptionState;
   onUpgrade?: () => void;
+  /** Shown above "New Session" while a recording runs (see RecordingIndicator). */
+  recordingIndicator?: React.ReactNode;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
   user, recordings, activeId, onSelect, onNew,
   onDelete, onLogout, theme, onToggleTheme, onClose, actionItems,
-  usage, onUpgrade,
+  usage, onUpgrade, recordingIndicator,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -131,6 +133,8 @@ const Sidebar: React.FC<SidebarProps> = ({
             </button>
           </div>
         </div>
+
+        {recordingIndicator}
 
         {/* New Session button — granola pill */}
         <button

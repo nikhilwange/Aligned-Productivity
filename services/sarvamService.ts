@@ -128,6 +128,7 @@ const transcribeChunkInline = async (
   token: string,
   sessionStart = false,
   signal?: AbortSignal,
+  recoveryId?: string,
 ): Promise<string> => {
   const audioBase64 = await blobToBase64(audioBlob);
   const mimeType = normalizeMime(audioBlob.type);
@@ -146,6 +147,8 @@ const transcribeChunkInline = async (
         filename: mimeType.includes("wav") ? "audio.wav" : "audio.webm",
         // Signals the server usage gate to run (only at session start).
         sessionStart,
+        // Server-side STT ledger / per-recording ceiling key.
+        recoveryId,
       }),
     },
     CHUNK_FETCH_TIMEOUT_MS,
@@ -172,6 +175,7 @@ const transcribeChunkViaStorage = async (
   pathSuffix: string,
   sessionStart = false,
   signal?: AbortSignal,
+  recoveryId?: string,
 ): Promise<{ transcript: string; storagePath: string }> => {
   if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
   const storagePath = await uploadAudioToStorage(audioBlob, pathSuffix);
@@ -189,6 +193,8 @@ const transcribeChunkViaStorage = async (
         mimeType: normalizeMime(audioBlob.type),
         // Signals the server usage gate to run (only at session start).
         sessionStart,
+        // Server-side STT ledger / per-recording ceiling key.
+        recoveryId,
       }),
     },
     CHUNK_FETCH_TIMEOUT_MS,
@@ -408,7 +414,7 @@ export const transcribeAudioWithSarvam = async (
   // Single-chunk fast path: send inline as base64 — no storage needed
   if (chunks.length === 1) {
     return retryOperation(
-      () => transcribeChunkInline(chunks[0], token, /* sessionStart */ true, signal),
+      () => transcribeChunkInline(chunks[0], token, /* sessionStart */ true, signal, recoveryId),
       2,
       1000,
       "Sarvam STT",
@@ -487,7 +493,7 @@ export const transcribeAudioWithSarvam = async (
         batchIndices.map((idx) => {
           const pathSuffix = `chunks/${sessionId}-${String(idx).padStart(4, "0")}.wav`;
           return retryOperation(
-            () => transcribeChunkViaStorage(chunks[idx], token, pathSuffix, /* sessionStart */ idx === 0, signal),
+            () => transcribeChunkViaStorage(chunks[idx], token, pathSuffix, /* sessionStart */ idx === 0, signal, recoveryId),
             3,
             1000,
             `Sarvam STT chunk ${idx + 1}/${chunks.length}`,
@@ -526,7 +532,7 @@ export const transcribeAudioWithSarvam = async (
         const pathSuffix = `chunks/${sessionId}-${String(idx).padStart(4, "0")}-retry.wav`;
         try {
           const result = await retryOperation(
-            () => transcribeChunkViaStorage(chunks[idx], token, pathSuffix, /* sessionStart */ false, signal),
+            () => transcribeChunkViaStorage(chunks[idx], token, pathSuffix, /* sessionStart */ false, signal, recoveryId),
             3,
             3000,
             `Sarvam STT chunk ${idx + 1} (final pass)`,

@@ -1,6 +1,14 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { checkUsageAllowed } from '../_lib/usageGate.js';
+import {
+  parseRecoveryId,
+  audioSecondsFor,
+  checkSttGuards,
+  writeLedgerRow,
+  type LedgerRow,
+} from '../_lib/sttLedger.js';
+import { REQUIRE_RECOVERY_ID_AFTER } from '../_lib/sttLimits.js';
 
 export const config = {
   api: {
@@ -38,6 +46,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { data: { user }, error: authError } = await userSupabase.auth.getUser(token);
   if (authError || !user) {
     return res.status(401).json({ error: 'Invalid or expired session' });
+  }
+
+  // Which recording / segment this request belongs to (`base:segN`). Older
+  // clients don't send it — allowed until REQUIRE_RECOVERY_ID_AFTER (logged and
+  // ledgered with nulls), rejected with 426 after.
+  const { recoveryId, segmentIndex } = parseRecoveryId(req.body?.recoveryId);
+  if (!recoveryId) console.warn(`[Sarvam proxy] Request without recoveryId (user ${user.id})`);
+  const reqPath: LedgerRow['path'] = req.body?.audioPath ? 'storage' : req.body?.audioBase64 ? 'inline' : null;
+  const ledgerBase = { user_id: user.id, recovery_id: recoveryId, segment_index: segmentIndex, path: reqPath };
+
+  // Kill switch: STT_DISABLED=true on Vercel rejects every STT call. The client
+  // treats this as a transcription failure, so the audio stays in IndexedDB /
+  // Storage and the session can be retried once STT is re-enabled.
+  if (process.env.STT_DISABLED === 'true') {
+    await writeLedgerRow({
+      ...ledgerBase,
+      audio_seconds: null,
+      bytes: null,
+      status: 'rejected',
+      http_status: 503,
+      reject_reason: 'stt_disabled',
+    });
+    return res.status(503).json({
+      error: 'stt_disabled',
+      message: 'Transcription is temporarily disabled. Your recording is saved and can be retried later.',
+    });
+  }
+
+  // Outdated client: without a recoveryId the call can't be counted against
+  // the per-recording ceiling. Allowed (and logged) until the cut-off date.
+  if (!recoveryId && Date.now() >= REQUIRE_RECOVERY_ID_AFTER) {
+    await writeLedgerRow({
+      ...ledgerBase,
+      audio_seconds: null,
+      bytes: null,
+      status: 'rejected',
+      http_status: 426,
+      reject_reason: 'missing_recovery_id',
+    });
+    // `error` is what the client shows as the session's error message.
+    return res.status(426).json({ error: 'Please refresh the app.', code: 'client_outdated' });
   }
 
   const apiKey = process.env.SARVAM_API_KEY;
@@ -96,6 +145,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Missing audioBase64 or audioPath' });
   }
 
+  // Cost guard: audio length is computed here from the bytes, never taken from
+  // the client. Refuse the call if it would push this recording past the hard
+  // ceiling or the user past their monthly limit. Same 402 shape as the
+  // sessionStart gate, plus `reject_reason` so the client can tell them apart.
+  const audioSeconds = audioSecondsFor(audioBuffer);
+  const ledgerAudio = { ...ledgerBase, audio_seconds: audioSeconds, bytes: audioBuffer.length };
+  const rejection = await checkSttGuards({
+    userId: user.id,
+    email: user.email,
+    recoveryId,
+    audioSeconds,
+    sessionStart: !!req.body?.sessionStart,
+  });
+  if (rejection) {
+    console.warn(
+      `[Sarvam proxy] Rejected (${rejection.reason}) user ${user.id} recovery ${recoveryId ?? '-'} ` +
+      `seg ${segmentIndex ?? '-'}: ${rejection.usedMinutes}/${rejection.limitMinutes} min used`,
+    );
+    await writeLedgerRow({ ...ledgerAudio, status: 'rejected', http_status: 402, reject_reason: rejection.reason });
+    return res.status(402).json({
+      error: 'usage_limit',
+      tier: rejection.tier,
+      usedMinutes: rejection.usedMinutes,
+      limitMinutes: rejection.limitMinutes,
+      reject_reason: rejection.reason,
+    });
+  }
+
   const audioBlob = new Blob([audioBuffer], { type: resolvedMimeType });
 
   const formData = new FormData();
@@ -103,6 +180,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   formData.append('model', 'saaras:v3');
   formData.append('language_code', 'unknown');
 
+  // Exactly one ledger row per Sarvam request: set once a row is written so the
+  // catch below doesn't add a second one for a post-response parse failure.
+  let ledgered = false;
   try {
     const sarvamRes = await fetch(SARVAM_API_URL, {
       method: 'POST',
@@ -117,17 +197,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // the requested interval instead of a fixed backoff.
       const retryAfter = sarvamRes.headers.get('retry-after');
       if (retryAfter) res.setHeader('Retry-After', retryAfter);
+      ledgered = true;
+      await writeLedgerRow({ ...ledgerAudio, status: 'error', http_status: sarvamRes.status });
       return res.status(sarvamRes.status).json({
         error: `Sarvam error: ${errText}`,
         retryAfter: retryAfter || undefined,
       });
     }
 
+    // Sarvam accepted (and billed) the audio — ledger it before parsing so a
+    // malformed response body can't hide a billed call.
+    ledgered = true;
+    await writeLedgerRow({ ...ledgerAudio, status: 'ok', http_status: sarvamRes.status });
     const data = await sarvamRes.json();
     const transcript = data.transcript || data.text || '';
     return res.status(200).json({ transcript });
   } catch (err: any) {
     console.error('[Sarvam proxy] Fetch failed:', err.message);
+    // Network failure reaching Sarvam: no HTTP status to record.
+    if (!ledgered) await writeLedgerRow({ ...ledgerAudio, status: 'error', http_status: null });
     return res.status(500).json({ error: 'Failed to reach Sarvam API' });
   }
 }

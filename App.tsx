@@ -1,5 +1,5 @@
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import AudioRecorder from './components/AudioRecorder';
 import ResultsView from './components/ResultsView';
@@ -16,15 +16,19 @@ import ResetPassword from './components/ResetPassword';
 import LandingPage from './components/LandingPage';
 import OAuthConsent from './components/OAuthConsent';
 import { AppState, RecordingSession, AudioRecording, User, ChatMessage, RecordingSource, TrackedActionItem, PlanTier } from './types';
-import { isUsageLimitError } from './services/usageLimit';
+import { isUsageLimitError, isSessionCeilingError } from './services/usageLimit';
 import { minutesToHoursLabel } from './config/tiers';
+import { STT_SESSION_CEILING_MIN, LEFTOVER_MAX_AGE_HOURS } from './config/sttLimits';
+import { recordingController, claimRecording, isRecordingLive, type FinalizeReason, type RecordingResult } from './services/recordingController';
+import RecordingIndicator from './components/RecordingIndicator';
+import LeftoverRecordingNotice from './components/LeftoverRecordingNotice';
 import { extractTranscript, analyzeTranscript } from './services/geminiService';
 import { buildSessionTitle } from './utils/sessionTitle';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
 import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage } from './services/storageService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems } from './services/supabaseService';
 import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery, clearChunkTranscripts, clearAllChunkTranscripts, purgeStaleChunkTranscripts, getSegmentManifest, getAllSegmentManifests, getSegmentBlob, clearSegmentManifest, purgeStaleSegmentManifests, getSegmentTranscripts, clearSegmentTranscripts, clearAllSegmentTranscripts, purgeStaleSegmentTranscripts, SegmentManifest } from './services/recordingRecovery';
-import { reuploadPendingSegments, getActiveSegmentSessionId, ingestFileAsSegments } from './services/segmentRecorder';
+import { reuploadPendingSegments, getActiveSegmentSessionId, ingestFileAsSegments, deleteSegmentedRecording } from './services/segmentRecorder';
 import { USE_SEGMENTED_RECORDING, BILLING_ENABLED } from './config/features';
 import { startHeartbeat, clearHeartbeat, isHeartbeatFresh, HEARTBEAT_STALE_MS } from './services/processingHeartbeat';
 import { beginPipelineRun, endPipelineRun } from './services/pipelineRuns';
@@ -110,6 +114,11 @@ const App: React.FC = () => {
     recoveryId: string;
   } | null>(null);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  // Unfinished recordings found on load that were NOT auto-saved (old, too
+  // long, or not the one auto-resumed). The user picks Save or Discard.
+  const [leftoverRecordings, setLeftoverRecordings] = useState<SegmentManifest[]>([]);
+  // Set below, once runSegmentedProcessingForSession exists; read by loadData.
+  const resumeSegmentedRecordingRef = useRef<(m: SegmentManifest, existing: RecordingSession | null) => Promise<void>>(async () => {});
   // Banner progress, keyed by session id so concurrent pipelines don't clobber
   // each other. Component state only — never persisted.
   // Sarvam chunk progress ("26 of 144").
@@ -143,6 +152,29 @@ const App: React.FC = () => {
   const dismissToast = useCallback((id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
+
+  // ─── STT ceiling notices ──────────────────────────────────────────────────
+  // "4-hour" for the real 240-min ceiling; "2-minute" when it's lowered to test.
+  const sttCeilingLabel = STT_SESSION_CEILING_MIN % 60 === 0
+    ? `${STT_SESSION_CEILING_MIN / 60}-hour`
+    : `${STT_SESSION_CEILING_MIN}-minute`;
+  // recoveryIds whose ceiling the recorder has already announced, so the
+  // finisher hitting the same ceiling doesn't show a second notice.
+  const ceilingNotifiedRef = useRef<Set<string>>(new Set());
+
+  // What the user is told when a recording ended by itself. It was saved in
+  // every case — only a confirmed Discard drops audio.
+  const finalizeNotice = (reason: FinalizeReason): string | null => {
+    switch (reason) {
+      case 'session_ceiling': return `Recording reached the ${sttCeilingLabel} limit and was saved.`;
+      case 'long_sleep': return 'Recording was saved when your device slept for a long time.';
+      case 'silence': return 'Recording stopped after a long silence and was saved.';
+      case 'share_ended': return 'Screen audio sharing ended, so the recording was saved.';
+      case 'mic_ended': return 'The microphone disconnected, so the recording was saved.';
+      case 'tier_cap': return `Free sessions are capped at ${minutesToHoursLabel(subscriptionState.sessionCapMinutes ?? 90)} — the recording was saved.`;
+      default: return null;
+    }
+  };
 
   // Single chokepoint: returns true if the user is allowed to start a new
   // recording right now, otherwise opens the Upgrade modal with the
@@ -433,67 +465,77 @@ const App: React.FC = () => {
             const manifests = await getAllSegmentManifests();
             const activeSegId = getActiveSegmentSessionId();
             const SEVEN_MIN_MS = 7 * 60 * 1000;
-            const candidates = manifests
-              .filter(m => {
-                if (m.segments.length === 0) return false;
-                // Never recover the recording in progress in THIS tab.
-                if (m.sessionId === activeSegId) return false;
-                // Phase 3: a live-transcription worker (this tab or another)
-                // beats under the recoveryId while it works. Fresh beat = live
-                // work in progress, not a crash.
-                if (isHeartbeatFresh(m.sessionId)) return false;
-                // Freshness guard: a manifest written in the last 7 minutes is
-                // almost certainly still being recorded (another tab/device) or
-                // is mid-handoff — treat it as live, not crashed.
-                if (m.updatedAt && (Date.now() - m.updatedAt) < SEVEN_MIN_MS) return false;
-                const sess = data.find(r => r.recoveryId === m.sessionId);
-                // Skip if already completed or currently being processed.
-                if (sess && (sess.status === 'completed' || sess.status === 'processing')) return false;
-                return true;
-              })
-              .sort((a, b) => b.startedAt - a.startedAt);
+            const candidates: SegmentManifest[] = [];
+            for (const m of manifests) {
+              if (m.segments.length === 0) continue;
+              // Never recover the recording in progress in THIS tab.
+              if (m.sessionId === activeSegId) continue;
+              const sess = data.find(r => r.recoveryId === m.sessionId);
+              // Skip if already completed or currently being processed.
+              if (sess && (sess.status === 'completed' || sess.status === 'processing')) continue;
+              // Still being recorded (or processed) in another tab? The
+              // recorder holds a per-recording Web Lock for its whole life and
+              // the browser drops it the instant that tab closes. Lock held =
+              // live elsewhere = never rescue.
+              const live = await isRecordingLive(m.sessionId);
+              if (live === true) continue;
+              if (live === null) {
+                // No Web Locks in this browser: fall back to the heuristics.
+                // Phase 3: a live-transcription worker beats under the
+                // recoveryId while it works. Fresh beat = live work, not a crash.
+                if (isHeartbeatFresh(m.sessionId)) continue;
+                // A manifest written in the last 7 minutes is almost certainly
+                // still being recorded or mid-handoff.
+                if (m.updatedAt && (Date.now() - m.updatedAt) < SEVEN_MIN_MS) continue;
+              }
+              candidates.push(m);
+            }
+            candidates.sort((a, b) => b.startedAt - a.startedAt);
 
             // Durability: re-upload any segment that never reached Storage.
             for (const manifest of candidates) {
               await reuploadPendingSegments(manifest.sessionId).catch(() => {});
             }
 
-            if (!didAutoResume) {
-              for (const manifest of candidates) {
-                const key = `aligned-autoresume-${manifest.sessionId}`;
-                const attempts = parseInt(sessionStorage.getItem(key) || '0', 10);
-                if (attempts >= 2) continue; // crash-loop guard
+            // Never auto-process a leftover that is old or implausibly long
+            // (a runaway recorder) — the user decides via Save / Discard.
+            const isRunaway = (m: SegmentManifest) =>
+              Date.now() - m.startedAt > LEFTOVER_MAX_AGE_HOURS * 3600_000 ||
+              m.segments.reduce((s, seg) => s + (seg.durationMs || 0), 0) > STT_SESSION_CEILING_MIN * 60_000;
+            const needsDecision: SegmentManifest[] = [];
 
-                const existing = fixedData.find(r => r.recoveryId === manifest.sessionId);
-                // Never resume a session another tab is actively working on.
-                if (existing && isHeartbeatFresh(existing.id)) continue;
-                const durationMs = manifest.segments.reduce((s, seg) => s + (seg.durationMs || 0), 0);
-                const resumeSession: RecordingSession = existing
-                  ? { ...existing, status: 'processing', processingStep: 'transcribing', errorMessage: undefined, analysis: null }
-                  : {
-                      id: uuidv4(),
-                      title: `Recording ${new Date(manifest.startedAt).toLocaleDateString()} ${new Date(manifest.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
-                      date: manifest.startedAt,
-                      duration: Math.round(durationMs / 1000),
-                      analysis: null,
-                      status: 'processing',
-                      source: (manifest.source || 'in-person') as RecordingSource,
-                      processingStep: 'transcribing',
-                      recoveryId: manifest.sessionId,
-                    };
-
-                sessionStorage.setItem(key, String(attempts + 1));
-                didAutoResume = true;
-                addToast(`Resuming processing for "${resumeSession.title}"…`, 'success');
-                setRecordings(prev => existing
-                  ? prev.map(r => r.id === resumeSession.id ? resumeSession : r)
-                  : [resumeSession, ...prev]);
-                trackProcessing(resumeSession.id);
-                // Fire-and-forget: don't block load on full processing.
-                runSegmentedProcessingForSession(resumeSession, manifest);
-                break;
+            for (const manifest of candidates) {
+              const existing = fixedData.find(r => r.recoveryId === manifest.sessionId);
+              if (isRunaway(manifest)) {
+                // A failed session already offers Retry; only orphans need the notice.
+                if (!existing) needsDecision.push(manifest);
+                console.warn(`[App] Leftover recording ${manifest.sessionId} is old or too long — not auto-processing`);
+                continue;
               }
+              if (didAutoResume) {
+                if (!existing) needsDecision.push(manifest);
+                continue;
+              }
+              const key = `aligned-autoresume-${manifest.sessionId}`;
+              const attempts = parseInt(sessionStorage.getItem(key) || '0', 10);
+              if (attempts >= 2) { // crash-loop guard
+                if (!existing) needsDecision.push(manifest);
+                continue;
+              }
+              // Never resume a session another tab is actively working on.
+              if (existing && isHeartbeatFresh(existing.id)) continue;
+
+              sessionStorage.setItem(key, String(attempts + 1));
+              didAutoResume = true;
+              const time = new Date(manifest.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              addToast(existing
+                ? `Resuming processing for "${existing.title}"…`
+                : `Saved your unfinished recording from ${time}`, 'success');
+              // Fire-and-forget: don't block load on full processing.
+              void resumeSegmentedRecordingRef.current(manifest, existing ?? null);
             }
+
+            if (needsDecision.length > 0) setLeftoverRecordings(needsDecision);
           } catch (err) {
             console.warn('[App] Segment recovery failed:', err);
           }
@@ -513,7 +555,11 @@ const App: React.FC = () => {
       message: 'You can sign back in any time from the same email.',
       confirmLabel: 'Sign out',
       cancelLabel: 'Stay',
-      onConfirm: () => { supabase.auth.signOut(); },
+      // Save a recording in progress before the session goes away.
+      onConfirm: async () => {
+        if (recordingController.isActive()) await recordingController.finalizeRecording('user_stop');
+        supabase.auth.signOut();
+      },
     });
   };
 
@@ -658,17 +704,23 @@ const App: React.FC = () => {
   };
 
   const handleStartNew = () => {
+    // A recording is already running: "New" just returns to it (a second one
+    // can't be started — the controller refuses — and the usage gate is about
+    // starting, not returning).
+    if (recordingController.isActive()) {
+      setActiveRecordingId(null);
+      setIsRecordingMode(true);
+      return;
+    }
     if (!checkRecordingAllowed()) return;
     setActiveRecordingId(null);
     setIsRecordingMode(true);
-    // Don't knock a live recording out of RECORDING if "New" is clicked mid-capture.
-    setAppState(prev => (prev === AppState.RECORDING || prev === AppState.PAUSED ? prev : AppState.IDLE));
   };
 
   const handleGoHome = () => {
+    // Navigation never touches a recording in progress — the controller owns it.
     setActiveRecordingId('home');
     setIsRecordingMode(false);
-    setAppState(AppState.IDLE);
   };
 
   const handleSelectRecording = (id: string) => {
@@ -746,14 +798,7 @@ const App: React.FC = () => {
           try {
             // Stop any live worker still holding this session before deleting.
             clearLiveSession(segRecoveryId);
-            const manifest = await getSegmentManifest(segRecoveryId);
-            if (manifest) {
-              const segPaths = manifest.segments.map(s => s.storagePath).filter((p): p is string => !!p);
-              if (segPaths.length > 0) await deleteAudioPaths(segPaths);
-              await clearSegmentManifest(segRecoveryId);
-              manifest.segments.forEach(s => clearChunkTranscripts(`${segRecoveryId}:seg${s.index}`));
-            }
-            await clearSegmentTranscripts(segRecoveryId); // Phase 3 live transcripts
+            await deleteSegmentedRecording(segRecoveryId);
           } catch (err: any) {
             console.error('[App] Segment cleanup failed during delete:', err);
           }
@@ -865,8 +910,12 @@ const App: React.FC = () => {
       let transcript: string;
       // Report Sarvam chunk progress into the processing banner. Session-scoped
       // React state only — nothing is persisted to types.ts or Supabase.
+      // Every Sarvam call must carry a recoveryId (server ledger / ceiling key).
+      // Legacy sessions retried from their stored audio have none, so key them
+      // by session id; their chunk cache ages out with the 7-day purge.
+      const sarvamRecoveryId = session.recoveryId ?? `sess-${session.id}`;
       const sarvamOpts = {
-        recoveryId: session.recoveryId,
+        recoveryId: sarvamRecoveryId,
         signal,
         onProgress: (done: number, total: number) => { if (!signal.aborted) setChunkProgress(p => withProgress(p, session.id, { done, total })); },
       };
@@ -989,8 +1038,12 @@ const App: React.FC = () => {
       console.error("Recording process failed:", err);
       // A monthly usage-cap 402 gets a friendly error + upgrade prompt rather
       // than a generic red failure, and never retries.
-      const usage = isUsageLimitError(err);
-      const friendlyMsg = usage ? 'Monthly limit reached — upgrade to continue.' : err.message;
+      // A per-recording STT ceiling refusal is not a billing limit: no upgrade prompt.
+      const ceiling = isSessionCeilingError(err);
+      const usage = isUsageLimitError(err) && !ceiling;
+      const friendlyMsg = ceiling
+        ? `This recording exceeds the ${sttCeilingLabel} transcription limit.`
+        : usage ? 'Monthly limit reached — upgrade to continue.' : err.message;
       // Keep recoveryId so the user can retry from the IndexedDB blob
       const errorSession: RecordingSession = { ...session, status: 'error', errorMessage: friendlyMsg, processingStep: undefined };
       updateSession({ status: 'error', errorMessage: friendlyMsg, processingStep: undefined });
@@ -1016,7 +1069,7 @@ const App: React.FC = () => {
         setChunkProgress(p => withProgress(p, session.id, null));
       }
     }
-  }, [user, transcriptionEngine, hasSarvamKey]);
+  }, [user, transcriptionEngine, hasSarvamKey, sttCeilingLabel]);
 
   // ── Segmented cleanup ───────────────────────────────────────────────────
   // IMPORTANT (egress): a completed segmented session must have its whole
@@ -1025,14 +1078,7 @@ const App: React.FC = () => {
   // IndexedDB manifest + cached blobs and the per-segment Phase 1 chunk caches.
   const cleanupSegmentedSession = useCallback(async (recoveryId: string, manifest: SegmentManifest) => {
     try {
-      const paths = manifest.segments.map(s => s.storagePath).filter((p): p is string => !!p);
-      if (paths.length > 0) {
-        await deleteAudioPaths(paths).catch(err =>
-          console.error('[App] Segment storage cleanup failed:', err?.message));
-      }
-      await clearSegmentManifest(recoveryId);
-      await clearSegmentTranscripts(recoveryId); // Phase 3 live transcripts
-      manifest.segments.forEach(s => clearChunkTranscripts(`${recoveryId}:seg${s.index}`));
+      await deleteSegmentedRecording(recoveryId, manifest);
     } catch (err) {
       console.warn('[App] Segmented cleanup failed (non-critical):', err);
     }
@@ -1071,8 +1117,16 @@ const App: React.FC = () => {
       try { await saveRecording(session, user.id); } catch (e) { console.warn('Initial save failed:', e); }
 
       const segments = [...manifest.segments].sort((a, b) => a.index - b.index);
-      const transcripts: string[] = [];
+      // One entry per segment, in order (null = not transcribed), so trailing
+      // non-speech can be trimmed below.
+      const perSeg: Array<{ seg: SegmentManifest['segments'][number]; text: string | null }> = [];
+      const put = (seg: SegmentManifest['segments'][number], text: string | null) => { perSeg.push({ seg, text }); };
       let unclearCount = 0;
+      // Set once the server refuses with `session_ceiling`: this recording has
+      // used its whole STT budget, so every remaining segment is skipped (no
+      // more Sarvam calls) and the session is saved with what was transcribed.
+      let ceilingHit = false;
+      let ceilingSkipped = 0;
 
       // How much of the work is already done by live transcription? Drives both
       // the instrumentation line and the banner's "Finalizing your notes…" copy.
@@ -1091,7 +1145,14 @@ const App: React.FC = () => {
         const live = liveTranscripts[seg.index];
         if (live !== undefined) {
           console.log(`[Pipeline] segment ${seg.index}: using live transcript`);
-          transcripts.push(live);
+          put(seg, live);
+          continue;
+        }
+
+        if (ceilingHit) {
+          console.log(`[Pipeline] segment ${seg.index}: skipped (STT ceiling reached)`);
+          ceilingSkipped++;
+          put(seg, null);
           continue;
         }
 
@@ -1105,7 +1166,7 @@ const App: React.FC = () => {
         }
         if (!blob) {
           console.error(`[App] Segment ${seg.index} unavailable — inserting placeholder`);
-          transcripts.push(UNCLEAR);
+          put(seg, UNCLEAR);
           unclearCount++;
           continue;
         }
@@ -1120,14 +1181,22 @@ const App: React.FC = () => {
             knownDurationMs: seg.durationMs,
             onProgress: (done, total) => { if (!signal.aborted) setChunkProgress(p => withProgress(p, session.id, { done, total })); },
           });
-          transcripts.push(text);
+          put(seg, text);
         } catch (e: any) {
           // Superseded by a newer run → exit silently (don't degrade to UNCLEAR).
           if (signal.aborted) return;
+          // Recording hit the STT ceiling → keep what we have, skip the rest.
+          if (isSessionCeilingError(e)) {
+            console.warn(`[Pipeline] segment ${seg.index}: STT ceiling reached — skipping remaining segments`);
+            ceilingHit = true;
+            ceilingSkipped++;
+            put(seg, null);
+            continue;
+          }
           // A usage-cap 402 aborts the whole session (not a partial degrade).
           if (isUsageLimitError(e)) throw e;
           console.error(`[App] Segment ${seg.index} transcription failed after retries:`, e?.message);
-          transcripts.push(UNCLEAR);
+          put(seg, UNCLEAR);
           unclearCount++;
         }
         if (signal.aborted) return;
@@ -1138,6 +1207,41 @@ const App: React.FC = () => {
       // Superseded mid-run → stop before writing any transcript/analysis state.
       if (signal.aborted) return;
 
+      // ── Trim trailing non-speech ──
+      // A recording left running after the meeting ends (or one that died
+      // mid-segment) tails off into segments with no real speech. Drop them
+      // from the transcript and from the saved duration: a trailing segment is
+      // trimmed when it has no words (empty, not transcribed, or only the
+      // unclear placeholder), or when it has fewer than TRAIL_MIN_WORDS words
+      // over at least TRAIL_SPARSE_MIN_MS of audio (too sparse to be speech).
+      // A short final segment with a few real words ("thanks, bye") is kept.
+      // The first segment is never trimmed.
+      const TRAIL_MIN_WORDS = 30;
+      const TRAIL_SPARSE_MIN_MS = 2 * 60 * 1000;
+      const wordCount = (t: string | null) =>
+        (t ?? '').split(UNCLEAR).join(' ').trim().split(/\s+/).filter(Boolean).length;
+      let keep = perSeg.length;
+      while (keep > 1) {
+        const { seg, text } = perSeg[keep - 1];
+        const words = wordCount(text);
+        const sparse = words < TRAIL_MIN_WORDS && (seg.durationMs || 0) >= TRAIL_SPARSE_MIN_MS;
+        if (words > 0 && !sparse) break;
+        keep--;
+      }
+      const kept = perSeg.slice(0, keep);
+      const trimmedCount = perSeg.length - keep;
+      const keptDurationMs = kept.reduce((s, p) => s + (p.seg.durationMs || 0), 0);
+      // Duration saved = captured audio up to the last segment with real speech.
+      const sessionDuration = keptDurationMs > 0 ? Math.round(keptDurationMs / 1000) : session.duration;
+      if (trimmedCount > 0) {
+        console.log(
+          `[Pipeline] trimmed ${trimmedCount} trailing segment(s) with no real speech ` +
+          `(duration ${session.duration}s → ${sessionDuration}s)`,
+        );
+      }
+      unclearCount = kept.filter(p => p.text === UNCLEAR).length;
+      const transcripts = kept.map(p => p.text).filter((t): t is string => t !== null);
+
       // Join segments with a blank line, not a space. Collapsing on /\s+/ used to
       // eat every newline, leaving multi-hour meetings as one unbroken line.
       const fullTranscript = transcripts
@@ -1146,10 +1250,16 @@ const App: React.FC = () => {
         .join('\n\n');
       const transcriptionMs = Date.now() - finishStartedAt;
 
+      // Ceiling already used up before any segment could be transcribed (e.g. a
+      // resumed runaway recording): nothing to analyze, so fail clearly.
+      if (ceilingHit && !fullTranscript) {
+        throw new Error(`This recording already used its ${sttCeilingLabel} transcription limit, so nothing more could be transcribed.`);
+      }
+
       // Show transcript immediately, then analyze (unchanged path).
       const partialAnalysis = { transcript: fullTranscript, summary: '', actionPoints: [] as string[] };
-      updateSession({ analysis: partialAnalysis, processingStep: 'analyzing' });
-      await saveRecording({ ...session, analysis: partialAnalysis, status: 'processing', processingStep: 'analyzing' }, user.id);
+      updateSession({ analysis: partialAnalysis, processingStep: 'analyzing', duration: sessionDuration });
+      await saveRecording({ ...session, duration: sessionDuration, analysis: partialAnalysis, status: 'processing', processingStep: 'analyzing' }, user.id);
 
       const analysisStartedAt = Date.now();
       const analysisResult = await analyzeTranscript(fullTranscript, session.date);
@@ -1170,6 +1280,7 @@ const App: React.FC = () => {
       const completedSession: RecordingSession = {
         ...session,
         ...titlePatch,
+        duration: sessionDuration,
         analysis: fullAnalysis,
         status: 'completed',
         processingStep: undefined,
@@ -1177,11 +1288,20 @@ const App: React.FC = () => {
         recoveryId: undefined,
         audioPath: undefined,
       };
-      updateSession({ ...titlePatch, analysis: fullAnalysis, status: 'completed', processingStep: undefined, errorMessage: undefined, recoveryId: undefined });
+      updateSession({ ...titlePatch, duration: sessionDuration, analysis: fullAnalysis, status: 'completed', processingStep: undefined, errorMessage: undefined, recoveryId: undefined });
       await saveRecording(completedSession, user.id);
 
       if (unclearCount > 0) {
         addToast(`Processing complete — part of the audio couldn't be transcribed (${unclearCount} of ${segments.length} segments).`, 'error');
+      }
+      if (ceilingHit) {
+        console.warn(`[Pipeline] STT ceiling: ${ceilingSkipped} of ${segments.length} segments not transcribed`);
+        // The recorder already announced it when it auto-stopped; otherwise
+        // (e.g. a resumed or retried recording) say so here.
+        if (!ceilingNotifiedRef.current.has(recoveryId)) {
+          addToast(`This recording reached the ${sttCeilingLabel} transcription limit — audio after that point wasn't transcribed.`, 'info');
+        }
+        ceilingNotifiedRef.current.delete(recoveryId);
       }
 
       // Delete-on-success: remove segments from Storage + clear local state.
@@ -1216,7 +1336,7 @@ const App: React.FC = () => {
         setPreTranscribed(p => withProgress(p, session.id, null));
       }
     }
-  }, [user, addToast, cleanupSegmentedSession]);
+  }, [user, addToast, cleanupSegmentedSession, sttCeilingLabel]);
 
   const handleRecordingComplete = useCallback(async (audioData: AudioRecording) => {
     if (!user) return;
@@ -1260,6 +1380,110 @@ const App: React.FC = () => {
 
     await runProcessingForSession(newSession, audioData.blob);
   }, [user, runProcessingForSession, runSegmentedProcessingForSession]);
+
+  // ─── Recording controller → processing handoff ────────────────────────────
+  // The app-level controller (services/recordingController.ts) owns the whole
+  // recording; every way it ends lands here and becomes a saved session via
+  // the existing handleRecordingComplete path. Refs keep the one-time
+  // registration pointed at the latest callbacks.
+  const recordingHandoffRef = useRef<(r: RecordingResult) => void>(() => {});
+  recordingHandoffRef.current = (r: RecordingResult) => {
+    if (r.reason === 'session_ceiling') ceilingNotifiedRef.current.add(r.recoveryId);
+    const notice = finalizeNotice(r.reason);
+    if (notice) addToast(notice, 'info');
+    // The per-recording lock is held until processing is done, so no other
+    // tab can "rescue" this recording while it is being saved here.
+    handleRecordingComplete({ blob: new Blob([]), url: '', duration: r.durationSec, source: r.source as RecordingSource, recoveryId: r.recoveryId })
+      .catch((err) => console.error('[App] Processing the finished recording failed:', err))
+      .finally(() => r.releaseRecordingLock());
+  };
+  const recordingWarningRef = useRef<(kind: 'session_ceiling' | 'tier_cap', minsLeft: number) => void>(() => {});
+  recordingWarningRef.current = (kind, minsLeft) => {
+    const mins = `${minsLeft} minute${minsLeft !== 1 ? 's' : ''}`;
+    if (kind === 'tier_cap') {
+      addToast(`Free sessions are capped at 90 minutes — ${mins} left. Recording will stop and be saved.`, 'error');
+    } else {
+      addToast(`Recordings are limited to ${sttCeilingLabel.replace('-', ' ')}s — ${mins} left. It will stop and be saved.`, 'info');
+    }
+  };
+  useEffect(() => recordingController.setHandlers({
+    onFinalized: (r) => recordingHandoffRef.current(r),
+    onWarning: (kind, minsLeft) => recordingWarningRef.current(kind, minsLeft),
+  }), []);
+
+  // Process an unfinished recording's manifest into a saved session (auto
+  // "rescue" on load, or Save on the leftover notice). Claims the recording's
+  // Web Lock first: if another tab holds it, it is live or already being
+  // processed there, so this tab never touches it.
+  resumeSegmentedRecordingRef.current = async (manifest: SegmentManifest, existing: RecordingSession | null) => {
+    const release = await claimRecording(manifest.sessionId);
+    if (!release) {
+      console.log(`[App] ${manifest.sessionId} is live in another tab — not rescuing`);
+      return;
+    }
+    try {
+      const durationMs = manifest.segments.reduce((s, seg) => s + (seg.durationMs || 0), 0);
+      const resumeSession: RecordingSession = existing
+        ? { ...existing, status: 'processing', processingStep: 'transcribing', errorMessage: undefined, analysis: null }
+        : {
+            id: uuidv4(),
+            title: `Recording ${new Date(manifest.startedAt).toLocaleDateString()} ${new Date(manifest.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+            date: manifest.startedAt,
+            duration: Math.round(durationMs / 1000),
+            analysis: null,
+            status: 'processing',
+            source: (manifest.source || 'in-person') as RecordingSource,
+            processingStep: 'transcribing',
+            recoveryId: manifest.sessionId,
+          };
+      setRecordings(prev => existing
+        ? prev.map(r => r.id === resumeSession.id ? resumeSession : r)
+        : [resumeSession, ...prev]);
+      trackProcessing(resumeSession.id);
+      await runSegmentedProcessingForSession(resumeSession, manifest);
+    } finally {
+      release();
+    }
+  };
+
+  const handleLeftoverSave = (manifest: SegmentManifest) => {
+    setLeftoverRecordings(prev => prev.filter(m => m.sessionId !== manifest.sessionId));
+    const existing = recordings.find(r => r.recoveryId === manifest.sessionId) ?? null;
+    void resumeSegmentedRecordingRef.current(manifest, existing);
+  };
+
+  const handleLeftoverDiscard = (manifest: SegmentManifest) => {
+    setConfirmRequest({
+      title: 'Discard this recording?',
+      message: 'Its audio will be permanently deleted. This cannot be undone.',
+      confirmLabel: 'Discard',
+      cancelLabel: 'Keep',
+      variant: 'destructive',
+      onConfirm: async () => {
+        setLeftoverRecordings(prev => prev.filter(m => m.sessionId !== manifest.sessionId));
+        clearLiveSession(manifest.sessionId);
+        await deleteSegmentedRecording(manifest.sessionId, manifest);
+      },
+    });
+  };
+
+  // Tap the recording indicator → back to the recorder screen (never blocked
+  // by the usage gate: this is returning to a recording, not starting one).
+  const openRecorder = () => {
+    setActiveRecordingId(null);
+    setIsRecordingMode(true);
+  };
+
+  const handleDiscardRecording = () => {
+    setConfirmRequest({
+      title: 'Discard this recording?',
+      message: 'The audio recorded so far will be permanently deleted and no session will be saved. This cannot be undone.',
+      confirmLabel: 'Discard',
+      cancelLabel: 'Keep recording',
+      variant: 'destructive',
+      onConfirm: () => { void recordingController.discard(); },
+    });
+  };
 
   const handleRetryProcessing = useCallback(async (sessionId: string) => {
     if (!user) return;
@@ -1496,6 +1720,7 @@ const App: React.FC = () => {
           actionItems={actionItems}
           usage={subscriptionState}
           onUpgrade={() => setUpgradeModal({ open: true })}
+          recordingIndicator={<RecordingIndicator variant="sidebar" onOpen={openRecorder} />}
         />
       </div>
 
@@ -1520,6 +1745,7 @@ const App: React.FC = () => {
             actionItems={actionItems}
             usage={subscriptionState}
             onUpgrade={() => { setSidebarOpen(false); setUpgradeModal({ open: true }); }}
+            recordingIndicator={<RecordingIndicator variant="sidebar" onOpen={() => { openRecorder(); setSidebarOpen(false); }} />}
           />
         </div>
       </div>
@@ -1567,6 +1793,9 @@ const App: React.FC = () => {
               </button>
             </div>
           </header>
+
+        {/* Mobile: persistent recording bar on every screen (desktop shows it in the sidebar) */}
+        <RecordingIndicator variant="bar" onOpen={openRecorder} />
 
         <div className="flex-1 overflow-hidden relative pb-16 md:pb-0">
           {/* Processing Banner — visible on all views when a session is processing */}
@@ -1675,17 +1904,13 @@ const App: React.FC = () => {
                 <div className="absolute bottom-1/4 right-1/3 w-[300px] h-[300px] rounded-full bg-teal-500/5 blur-[120px]"></div>
               </div>
               <AudioRecorder
-                appState={appState}
-                setAppState={setAppState}
-                onRecordingComplete={handleRecordingComplete}
                 transcriptionEngine={transcriptionEngine}
                 onEngineChange={handleEngineChange}
                 hasSarvamKey={hasSarvamKey}
                 sessionCapMinutes={BILLING_ENABLED ? subscriptionState.sessionCapMinutes : null}
                 backgroundProcessing={recordings.some(r => r.status === 'processing')}
-                onSessionCapWarning={(minsLeft) =>
-                  addToast(`Free sessions are capped at 90 minutes — ${minsLeft} minute${minsLeft !== 1 ? 's' : ''} left. Recording will stop and be saved.`, 'error')
-                }
+                onNotice={(message, type) => addToast(message, type ?? 'info')}
+                onRequestDiscard={handleDiscardRecording}
               />
             </div>
           ) : (
@@ -1777,6 +2002,17 @@ const App: React.FC = () => {
           timeAgo={recoveryData.timeAgo}
           onRecover={handleRecoverRecording}
           onDiscard={handleDiscardRecovery}
+        />
+      )}
+
+      {/* Unfinished recordings that were not auto-saved: Save / Discard */}
+      {!recoveryData && leftoverRecordings.length > 0 && (
+        <LeftoverRecordingNotice
+          manifest={leftoverRecordings[0]}
+          remaining={leftoverRecordings.length - 1}
+          onSave={() => handleLeftoverSave(leftoverRecordings[0])}
+          onDiscard={() => handleLeftoverDiscard(leftoverRecordings[0])}
+          onLater={() => setLeftoverRecordings(prev => prev.slice(1))}
         />
       )}
 

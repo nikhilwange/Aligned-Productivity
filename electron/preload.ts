@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
         }
     },
     send: (channel: string, data?: any) => {
-        const validChannels = ['to-main', 'resize-window'];
+        const validChannels = ['to-main', 'resize-window', 'power-blocker'];
         if (validChannels.includes(channel)) {
             ipcRenderer.send(channel, data);
         }
