@@ -12,7 +12,7 @@
 //
 // Lifetime is owned by services/recordingController.ts, never by a component.
 
-import { uploadAudioToStorage, deleteAudioPaths } from './storageService';
+import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage, getRecordingFolderInfo } from './storageService';
 import {
   saveSegmentBlob,
   getSegmentBlob,
@@ -24,10 +24,12 @@ import {
   SegmentManifest,
   SegmentEntry,
   SegmentGap,
+  getAllSegmentManifests,
 } from './recordingRecovery';
 import { LIVE_TRANSCRIPTION } from '../config/features';
 import { startLiveTranscription, enqueueSegment } from './liveTranscription';
 import { splitAudioFile } from './audioSplitter';
+import { deleteRecordingSegments, type SegmentDeletion, type RecordingRowStatus } from './segmentCleanupPolicy';
 
 // ~5 minutes per segment. Exported so callers/tests can reference it.
 export const SEGMENT_DURATION_MS = 5 * 60 * 1000;
@@ -46,6 +48,145 @@ export function extFromMime(mime: string | undefined): string {
 
 export const segmentStoragePath = (sessionId: string, index: number, ext: string) =>
   `recordings/${sessionId}/seg-${String(index).padStart(4, '0')}.${ext}`;
+
+// ─── Per-recording write queue ───────────────────────────────────────────────
+// The manifest is read-modify-write in IndexedDB. Everything that writes a
+// recording's manifest or segment blobs — the recorder, the live worker, the
+// finisher — goes through this one queue per recording, in order, so
+// concurrent writers can't drop each other's changes.
+const writeQueues = new Map<string, Promise<void>>();
+export function enqueueRecordingWrite(sessionId: string, task: () => Promise<void>): Promise<void> {
+  const prev = writeQueues.get(sessionId) ?? Promise.resolve();
+  const run = prev.then(task);
+  const settled = run.catch(() => {});
+  writeQueues.set(sessionId, settled);
+  settled.then(() => { if (writeQueues.get(sessionId) === settled) writeQueues.delete(sessionId); });
+  return run;
+}
+
+/**
+ * Update fields on one existing segment entry (e.g. decodedMs, decodeFailed).
+ * No-op when the manifest or entry is gone — never recreates a cleaned-up one.
+ */
+export function patchSegmentEntry(sessionId: string, index: number, patch: Partial<SegmentEntry>): Promise<void> {
+  return enqueueRecordingWrite(sessionId, async () => {
+    const m = await getSegmentManifest(sessionId);
+    const i = m ? m.segments.findIndex((s) => s.index === index) : -1;
+    if (!m || i === -1) return;
+    m.segments[i] = { ...m.segments[i], ...patch };
+    await saveSegmentManifest(m);
+  });
+}
+
+// Saved-duration rule (decodedMs vs the audio clock) lives in the pure
+// transcriptAssembly module; re-exported for existing callers.
+export { segmentSavedMs, manifestSavedMs } from './transcriptAssembly';
+
+// ─── Header (init segment) repair ────────────────────────────────────────────
+const EBML_MAGIC = [0x1a, 0x45, 0xdf, 0xa3];
+const CLUSTER_ID = [0x1f, 0x43, 0xb6, 0x75];
+function indexOfBytes(u8: Uint8Array, pat: number[]): number {
+  outer: for (let i = 0; i <= u8.length - pat.length; i++) {
+    for (let j = 0; j < pat.length; j++) if (u8[i + j] !== pat[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+
+/**
+ * The recording's WebM header — EBML + Segment info + Tracks, everything
+ * before the first Cluster — taken from segment 0. Every segment of a
+ * recording is written by an identically configured MediaRecorder, so this
+ * header is valid for all of them. Null for non-WebM or when unavailable.
+ */
+export async function getRecordingInitSegment(sessionId: string): Promise<Blob | null> {
+  try {
+    let blob = await getSegmentBlob(sessionId, 0);
+    if (!blob) {
+      const m = await getSegmentManifest(sessionId);
+      const seg0 = m?.segments.find((s) => s.index === 0);
+      if (seg0?.storagePath) blob = await downloadAudioFromStorage(seg0.storagePath).catch(() => null);
+    }
+    if (!blob) return null;
+    const head = new Uint8Array(await blob.slice(0, 64 * 1024).arrayBuffer());
+    if (indexOfBytes(head.subarray(0, 4), EBML_MAGIC) !== 0) return null;
+    const clusterAt = indexOfBytes(head, CLUSTER_ID);
+    if (clusterAt <= 0) return null;
+    return new Blob([head.slice(0, clusterAt)], { type: blob.type || 'audio/webm' });
+  } catch {
+    return null;
+  }
+}
+
+/** Replace a segment's cached + uploaded file with its header-repaired version. */
+export async function persistRepairedSegment(sessionId: string, index: number, init: Blob, original: Blob): Promise<void> {
+  const repaired = new Blob([init, original], { type: original.type || init.type || 'audio/webm' });
+  await enqueueRecordingWrite(sessionId, async () => {
+    await saveSegmentBlob(sessionId, index, repaired);
+    const m = await getSegmentManifest(sessionId);
+    const seg = m?.segments.find((s) => s.index === index);
+    if (m && seg?.storagePath) {
+      // Never delete a segment while its recording may still be processing
+      // (hard rule): upload the repaired file to a NEW path and remember the
+      // old one, which goes only when the whole recording is deleted.
+      const oldPath = seg.storagePath;
+      try {
+        const newPath = await uploadAudioToStorage(
+          repaired,
+          segmentStoragePath(sessionId, index, seg.ext).replace(/\.(\w+)$/, `-r${Date.now()}.$1`),
+        );
+        seg.storagePath = newPath;
+      } catch (err: any) {
+        console.warn(`[SegmentRecorder] upload of repaired seg ${index} failed (IndexedDB copy is repaired):`, err?.message);
+        seg.uploaded = false; // reuploadPendingSegments will retry from the repaired cache
+        seg.storagePath = undefined;
+      }
+      seg.previousStoragePaths = [...(seg.previousStoragePaths ?? []), oldPath];
+      await saveSegmentManifest(m);
+    }
+  });
+  console.warn(`[SegmentRecorder] seg ${index} of ${sessionId}: header repaired and saved`);
+}
+
+/** Decoded length of a blob in ms, or null if it doesn't decode. */
+async function decodedLengthMs(blob: Blob): Promise<number | null> {
+  try {
+    const Offline: typeof OfflineAudioContext | undefined =
+      (window as any).OfflineAudioContext || (window as any).webkitOfflineAudioContext;
+    if (!Offline) return null;
+    const buf = await new Offline(1, 1, 16000).decodeAudioData(await blob.arrayBuffer());
+    return Math.round(buf.duration * 1000);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Standalone decode check for a just-closed segment. Used only when live
+ * transcription is OFF — otherwise the live worker's own decode (for
+ * transcription) is the check, so each segment is decoded once. Records
+ * decodedMs; on failure tries the header repair; if that fails too, marks
+ * the entry decodeFailed (its audio is kept).
+ */
+export async function checkSegmentDecodes(sessionId: string, index: number, blob: Blob): Promise<void> {
+  const ms = await decodedLengthMs(blob);
+  if (ms !== null) {
+    await patchSegmentEntry(sessionId, index, { decodedMs: ms, decodeFailed: false });
+    return;
+  }
+  console.warn(`[SegmentRecorder] seg ${index} of ${sessionId} does not decode — trying header repair`);
+  const init = index > 0 ? await getRecordingInitSegment(sessionId) : null;
+  if (init) {
+    const repairedMs = await decodedLengthMs(new Blob([init, blob], { type: blob.type }));
+    if (repairedMs !== null) {
+      await persistRepairedSegment(sessionId, index, init, blob);
+      await patchSegmentEntry(sessionId, index, { decodedMs: repairedMs, decodeFailed: false });
+      return;
+    }
+  }
+  console.error(`[SegmentRecorder] seg ${index} of ${sessionId} is undecodable — kept and marked failed`);
+  await patchSegmentEntry(sessionId, index, { decodeFailed: true });
+}
 
 // The recording currently in progress IN THIS TAB. Set while a SegmentRecorder
 // is live and cleared when it stops, so crash-recovery can tell a still-
@@ -94,11 +235,9 @@ export class SegmentRecorder {
   // must never overwrite them with a shorter partial blob.
   private finalized = new Set<number>();
 
-  // Every IndexedDB write for this recording (segment blobs + manifest) runs
-  // through this queue, in order. The manifest is read-modify-write, so
-  // concurrent writers (finalize / upload / checkpoint) used to be able to
-  // drop each other's entries.
-  private writeQueue: Promise<void> = Promise.resolve();
+  // Every IndexedDB write for this recording (segment blobs + manifest) goes
+  // through the shared per-recording queue (enqueueRecordingWrite).
+  private lastWrite: Promise<void> = Promise.resolve();
 
   // Finalize (cache + manifest) promises and background upload promises so
   // stop() can wait for everything to settle before handing off.
@@ -127,8 +266,8 @@ export class SegmentRecorder {
   }
 
   private enqueueWrite(task: () => Promise<void>): Promise<void> {
-    const run = this.writeQueue.then(task);
-    this.writeQueue = run.catch(() => {});
+    const run = enqueueRecordingWrite(this.sessionId, task);
+    this.lastWrite = run.catch(() => {});
     return run;
   }
 
@@ -258,6 +397,10 @@ export class SegmentRecorder {
 
     // Upload in the background — never block recording on the network.
     this.uploadPromises.push(this.uploadSegment(index, blob, ext));
+
+    // Decode check at segment close. With live transcription on, the live
+    // worker's decode for transcription IS the check (no second decode).
+    if (!LIVE_TRANSCRIPTION) void checkSegmentDecodes(this.sessionId, index, blob);
   }
 
   private async uploadSegment(index: number, blob: Blob, ext: string): Promise<void> {
@@ -358,7 +501,7 @@ export class SegmentRecorder {
     // Wait for all segment finalizes (cache + manifest) and background uploads.
     await Promise.allSettled(this.finalizePromises);
     await Promise.allSettled(this.uploadPromises);
-    await this.writeQueue;
+    await this.lastWrite;
     await reuploadPendingSegments(this.sessionId);
     this.tornDown = true;
     return this.sessionId;
@@ -367,21 +510,28 @@ export class SegmentRecorder {
 
 /**
  * Permanently remove a segmented recording: Storage objects, the IndexedDB
- * manifest + cached blobs, live transcripts and per-segment chunk caches.
- * Used on success cleanup, explicit Discard, and deleting a session.
+ * manifest + cached blobs, live transcripts and per-segment chunk caches —
+ * ONLY if `deletion` satisfies the hard rule in segmentCleanupPolicy.ts
+ * (automatic: row 'completed' with no unclear/failed parts; otherwise only a
+ * user-confirmed Discard/Delete). Returns false, touching nothing, if refused.
  */
-export async function deleteSegmentedRecording(recoveryId: string, manifest?: SegmentManifest | null): Promise<void> {
+export async function deleteSegmentedRecording(
+  recoveryId: string,
+  manifest: SegmentManifest | null | undefined,
+  deletion: SegmentDeletion,
+): Promise<boolean> {
   const m = manifest ?? (await getSegmentManifest(recoveryId));
-  if (m) {
-    const paths = m.segments.map((s) => s.storagePath).filter((p): p is string => !!p);
-    if (paths.length > 0) {
-      await deleteAudioPaths(paths).catch((err) =>
-        console.error('[SegmentRecorder] Segment storage cleanup failed:', err?.message));
-    }
-    m.segments.forEach((s) => clearChunkTranscripts(`${recoveryId}:seg${s.index}`));
-  }
-  await clearSegmentManifest(recoveryId);
-  await clearSegmentTranscripts(recoveryId); // Phase 3 live transcripts
+  return deleteRecordingSegments(
+    {
+      deleteAudioPaths,
+      clearManifest: clearSegmentManifest,
+      clearTranscripts: clearSegmentTranscripts,
+      clearChunkCache: clearChunkTranscripts,
+    },
+    recoveryId,
+    m,
+    deletion,
+  );
 }
 
 
@@ -456,22 +606,72 @@ export async function ingestFileAsSegments(
 export async function reuploadPendingSegments(sessionId: string): Promise<void> {
   const manifest = await getSegmentManifest(sessionId);
   if (!manifest) return;
-  let changed = false;
+  const uploaded = new Map<number, string>();
   for (const seg of manifest.segments) {
     if (seg.uploaded && seg.storagePath) continue;
     const blob = await getSegmentBlob(sessionId, seg.index);
     if (!blob) continue;
     try {
-      const path = await uploadAudioToStorage(blob, segmentStoragePath(sessionId, seg.index, seg.ext));
-      seg.uploaded = true;
-      seg.storagePath = path;
-      changed = true;
+      uploaded.set(seg.index, await uploadAudioToStorage(blob, segmentStoragePath(sessionId, seg.index, seg.ext)));
     } catch (err: any) {
       console.warn(`[SegmentRecorder] Re-upload of segment ${seg.index} failed:`, err?.message);
     }
   }
-  if (changed) {
-    manifest.updatedAt = Date.now();
-    await saveSegmentManifest(manifest);
+  if (uploaded.size === 0) return;
+  // Merge into the CURRENT manifest inside the write queue (uploads are slow;
+  // other writers may have changed it meanwhile). Never recreates a removed one.
+  await enqueueRecordingWrite(sessionId, async () => {
+    const m = await getSegmentManifest(sessionId);
+    if (!m) return;
+    for (const seg of m.segments) {
+      const path = uploaded.get(seg.index);
+      if (path) { seg.uploaded = true; seg.storagePath = path; }
+    }
+    await saveSegmentManifest(m);
+  });
+}
+
+
+/**
+ * Client retention pass over this device's segmented recordings (call once on
+ * load). Applies the SHARED retention rules (via segmentCleanupPolicy) to any
+ * recording whose local manifest hasn't changed for a day:
+ *   - Storage folder already emptied by the server sweep (retention ended) but
+ *     the recording HAD been uploaded → drop this device's local copy too.
+ *   - otherwise → an automatic deletion request anchored on the newest Storage
+ *     object, which the policy grants only for a completed recording whose
+ *     retention allows it (never processing / interrupted / error, never an
+ *     orphan — those are the server sweep's job).
+ * A recording that never reached Storage (e.g. recorded offline) is the only
+ * copy and is never touched here. Skips anything live.
+ */
+export async function applyLocalRetention(
+  isLive: (recoveryId: string) => Promise<boolean | null>,
+  describe: (recoveryId: string, manifest: SegmentManifest) => Promise<{ rowStatus: RecordingRowStatus | null; hasProblems: boolean }>,
+): Promise<void> {
+  try {
+    const settledBefore = Date.now() - 24 * 60 * 60 * 1000;
+    for (const m of await getAllSegmentManifests()) {
+      if (m.updatedAt && m.updatedAt >= settledBefore) continue;
+      if ((await isLive(m.sessionId)) === true) continue;
+      const folder = await getRecordingFolderInfo(m.sessionId);
+      if (!folder) continue; // couldn't check Storage — do nothing
+      const everUploaded = m.segments.some((s) => s.uploaded || s.storagePath);
+      if (folder.count === 0 && everUploaded) {
+        await deleteSegmentedRecording(m.sessionId, m, { kind: 'local_only', reason: 'storage_already_deleted' });
+        continue;
+      }
+      if (folder.count === 0) continue; // never uploaded: this device holds the only copy
+      const { rowStatus, hasProblems } = await describe(m.sessionId, m);
+      await deleteSegmentedRecording(m.sessionId, m, {
+        kind: 'automatic',
+        reason: 'retention_sweep',
+        rowStatus,
+        hasProblems,
+        lastUploadMs: folder.lastUploadMs,
+      });
+    }
+  } catch (err) {
+    console.warn('[SegmentRecorder] retention pass failed:', err);
   }
 }

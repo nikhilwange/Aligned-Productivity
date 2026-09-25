@@ -21,7 +21,7 @@
 // stops while the device sleeps, which is how real sleep is told apart from
 // mere timer throttling.
 
-import { SegmentRecorder, deleteSegmentedRecording } from './segmentRecorder';
+import { SegmentRecorder, deleteSegmentedRecording, manifestSavedMs } from './segmentRecorder';
 import { clearLiveSession, subscribeLiveCeiling } from './liveTranscription';
 import { getSegmentManifest } from './recordingRecovery';
 import {
@@ -334,7 +334,12 @@ class RecordingController {
       locks.push(global);
     }
 
-    const recoveryId = `rec-${Date.now()}`;
+    // Random suffix: two recorders can never share an id, even if started in
+    // the same millisecond (the old `rec-<ms>` form could collide on a double
+    // click, which let an orphaned recorder keep writing to a finished
+    // recording). Old `rec-<ms>` ids stay valid everywhere — ids are only ever
+    // matched whole or split on ":seg", never parsed for the time.
+    const recoveryId = `rec-${Date.now()}-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
     const mode = opts.inputMode;
     try {
       let micStream: MediaStream | null = null;
@@ -696,7 +701,7 @@ class RecordingController {
       }
       const manifest = await getSegmentManifest(rec.recoveryId);
       const durationMs = manifest
-        ? manifest.segments.reduce((s, x) => s + (x.durationMs || 0), 0)
+        ? manifestSavedMs(manifest) // decoded length when within ±5% of the audio clock
         : this.snapshot.capturedMs;
       this.teardownCapture(rec);
 
@@ -745,7 +750,7 @@ class RecordingController {
       this.teardownCapture(rec);
       this.releaseRecordingLock(rec);
       clearLiveSession(rec.recoveryId);
-      await deleteSegmentedRecording(rec.recoveryId).catch((err) =>
+      await deleteSegmentedRecording(rec.recoveryId, undefined, { kind: 'user_confirmed', action: 'discard_recording' }).catch((err) =>
         console.error('[Recorder] discard cleanup failed:', err));
       this.rec = null;
       this.finalizing = null;

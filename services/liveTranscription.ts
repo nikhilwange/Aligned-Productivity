@@ -19,7 +19,8 @@
 //     authority: the worker registers its controller under the recording's
 //     `recoveryId`, and the finisher aborts that key when it takes over.
 
-import { transcribeAudioWithSarvam } from './sarvamService';
+import { transcribeAudioWithSarvam, isSegmentDecodeError, UNCLEAR_PLACEHOLDER } from './sarvamService';
+import { getRecordingInitSegment, patchSegmentEntry, persistRepairedSegment } from './segmentRecorder';
 import { downloadAudioFromStorage } from './storageService';
 import {
   getSegmentBlob,
@@ -259,16 +260,40 @@ async function transcribeOneSegment(
       segController.abort(new DOMException('Segment watchdog timeout', 'AbortError'));
     }, SEGMENT_WATCHDOG_MS);
 
+    // This decode (for transcription) is also the segment's decode check —
+    // no second decode at segment close while live transcription is on.
+    let initPromise: Promise<Blob | null> | null = null;
+    const getInit = () => (initPromise ??= getRecordingInitSegment(s.sessionId));
+    const segBlob = blob;
+
     let transcript: string;
     try {
       // Reuses the Phase 1 chunk cache under the SAME key the finisher uses, so
       // partial work survives an abort and is resumed rather than repeated.
-      transcript = await transcribeAudioWithSarvam(blob, {
+      transcript = await transcribeAudioWithSarvam(segBlob, {
         recoveryId: `${s.sessionId}:seg${index}`,
         signal: segController.signal,
         knownDurationMs: entry?.durationMs,
+        getInitSegment: index > 0 ? getInit : undefined,
+        onDecoded: ({ decodedMs, repaired }) => {
+          void patchSegmentEntry(s.sessionId, index, { decodedMs, decodeFailed: false });
+          if (repaired) {
+            void getInit().then((init) => (init ? persistRepairedSegment(s.sessionId, index, init, segBlob) : undefined));
+          }
+        },
         onProgress: (done, total) => { chunksDone = done; chunksTotal = total; },
       });
+    } catch (err) {
+      // Undecodable even with the header repair: keep the audio, mark the
+      // segment failed (retryable) and record that, so the finisher doesn't
+      // decode it again — nothing was sent to Sarvam.
+      if (isSegmentDecodeError(err) && !signal.aborted) {
+        console.error(`[LiveTx] seg ${index} could not be decoded — kept and marked failed: ${(err as Error).message}`);
+        await patchSegmentEntry(s.sessionId, index, { decodeFailed: true });
+        await saveSegmentTranscript(s.sessionId, index, UNCLEAR_PLACEHOLDER, 'failed');
+        return;
+      }
+      throw err;
     } finally {
       clearTimeout(watchdog);
       signal.removeEventListener('abort', onSessionAbort);
@@ -277,7 +302,7 @@ async function transcribeOneSegment(
     if (timedOut) return; // watchdog fired without throwing — nothing to save
     if (signal.aborted) return; // superseded mid-flight — let the finisher own it
 
-    await saveSegmentTranscript(s.sessionId, index, transcript);
+    await saveSegmentTranscript(s.sessionId, index, transcript, transcript.includes(UNCLEAR_PLACEHOLDER) ? 'unclear' : 'ok');
     s.done.add(index);
     emitProgress(s);
 

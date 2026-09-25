@@ -45,3 +45,15 @@ export const CHECKPOINT_INTERVAL_SEC = 10;
 
 /** Manifests older than this, or longer than the ceiling, are never auto-processed. */
 export const LEFTOVER_MAX_AGE_HOURS = 24;
+
+// ─── Silent-chunk skip (services/sarvamService.ts) ──────────────────────────
+// A ≤25 s chunk whose RMS AND peak are both below these is not sent to Sarvam
+// (it contributes "" to the transcript). Both must be low: RMS alone would
+// skip a chunk with one short, quiet remark in an otherwise silent stretch.
+// Dev builds log every chunk's RMS / peak ([Sarvam] chunk levels) for tuning.
+export const SKIP_SILENT_CHUNKS = true;
+export const SILENT_CHUNK_RMS = 0.002;
+export const SILENT_CHUNK_PEAK = 0.02;
+
+/** A segment's decoded length is trusted for the saved duration only within this of the audio-clock length. */
+export const DECODED_DURATION_TOLERANCE = 0.05;

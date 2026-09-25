@@ -25,7 +25,13 @@ import {
   HARD_MONTHLY_TIERS,
 } from './sttLimits.js';
 
-export type SttRejectReason = 'session_ceiling' | 'monthly_limit' | 'stt_disabled' | 'missing_recovery_id';
+export type SttRejectReason =
+  | 'session_ceiling'
+  | 'monthly_limit'
+  | 'stt_disabled'
+  | 'missing_recovery_id'
+  | 'inline_too_long'
+  | 'inline_not_wav';
 
 export interface LedgerRow {
   user_id: string;
@@ -88,11 +94,122 @@ export function wavSeconds(buf: Buffer): number | null {
   return dataBytes / bytesPerSecond;
 }
 
+// ─── WebM duration scanner ──────────────────────────────────────────────────
+// Only for inline requests from OLD clients, which sent the raw MediaRecorder
+// WebM. MediaRecorder writes no Duration element, so the length is read from
+// the timestamps: the last (Simple)Block's cluster time + relative time.
+// Walks the EBML structure, treating Segment / Cluster / BlockGroup as
+// transparent containers (their size is often "unknown" in a live
+// recording). Returns null if it can't make sense of the bytes. NEVER throws.
+
+const EBML_SEGMENT = 0x18538067;
+const EBML_CLUSTER = 0x1f43b675;
+const EBML_BLOCK_GROUP = 0xa0;
+const EBML_TIMECODE_SCALE = 0x2ad7b1;
+const EBML_INFO = 0x1549a966;
+const EBML_CLUSTER_TIMECODE = 0xe7;
+const EBML_SIMPLE_BLOCK = 0xa3;
+const EBML_BLOCK = 0xa1;
+
+/** EBML variable-length integer at `pos`. `raw` keeps the length marker (element IDs). */
+function readVint(buf: Buffer, pos: number, raw: boolean): { value: number; length: number; unknown: boolean } | null {
+  if (pos >= buf.length) return null;
+  const first = buf[pos];
+  let length = 1;
+  let mask = 0x80;
+  while (length <= 8 && !(first & mask)) { length++; mask >>= 1; }
+  if (length > 8 || pos + length > buf.length) return null;
+  let value = raw ? first : first & (mask - 1);
+  let allOnes = (first & (mask - 1)) === mask - 1;
+  for (let i = 1; i < length; i++) {
+    value = value * 256 + buf[pos + i];
+    if (buf[pos + i] !== 0xff) allOnes = false;
+  }
+  return { value, length, unknown: !raw && allOnes };
+}
+
+function readUint(buf: Buffer, pos: number, size: number): number {
+  let v = 0;
+  for (let i = 0; i < size && i < 8; i++) v = v * 256 + buf[pos + i];
+  return v;
+}
+
+export function webmSeconds(buf: Buffer): number | null {
+  try {
+    if (buf.length < 4 || buf.readUInt32BE(0) !== 0x1a45dfa3) return null;
+    let timecodeScaleNs = 1_000_000;
+    let clusterTime = 0;
+    let maxTicks = -1;
+    let pos = 0;
+    let guard = 0;
+    while (pos < buf.length && guard++ < 1_000_000) {
+      const id = readVint(buf, pos, true);
+      if (!id) break;
+      const size = readVint(buf, pos + id.length, false);
+      if (!size) break;
+      const dataStart = pos + id.length + size.length;
+      const transparent =
+        id.value === EBML_SEGMENT || id.value === EBML_CLUSTER ||
+        id.value === EBML_BLOCK_GROUP || id.value === EBML_INFO;
+      if (transparent) { pos = dataStart; continue; } // descend into children
+      if (size.unknown) break; // unknown size on a leaf: can't continue safely
+      const dataEnd = dataStart + size.value;
+      if (dataEnd > buf.length) break; // truncated tail
+      if (id.value === EBML_TIMECODE_SCALE) {
+        timecodeScaleNs = readUint(buf, dataStart, size.value) || timecodeScaleNs;
+      } else if (id.value === EBML_CLUSTER_TIMECODE) {
+        clusterTime = readUint(buf, dataStart, size.value);
+      } else if (id.value === EBML_SIMPLE_BLOCK || id.value === EBML_BLOCK) {
+        const track = readVint(buf, dataStart, false);
+        if (track && dataStart + track.length + 2 <= dataEnd) {
+          const rel = buf.readInt16BE(dataStart + track.length);
+          maxTicks = Math.max(maxTicks, clusterTime + rel);
+        }
+      }
+      pos = dataEnd;
+    }
+    if (maxTicks < 0) return null;
+    // + one Opus frame (20 ms) for the last block's own length.
+    return (maxTicks * timecodeScaleNs) / 1e9 + 0.02;
+  } catch {
+    return null;
+  }
+}
+
 /** Seconds of audio to account for this request (server-computed). */
 export function audioSecondsFor(buf: Buffer): number {
-  const wav = wavSeconds(buf);
-  const secs = wav ?? nonWavGuardSeconds(buf.length);
+  const secs = wavSeconds(buf) ?? webmSeconds(buf) ?? nonWavGuardSeconds(buf.length);
   return Math.round(secs * 100) / 100; // numeric(10,2)
+}
+
+/** Sarvam's REST limit for one request. */
+export const INLINE_LIMIT_SECONDS = 30;
+
+/**
+ * Should this INLINE request be refused before it reaches Sarvam?
+ *   WAV     → exact length from the header; over 30 s is refused.
+ *   non-WAV → a current client (X-Aligned-Client) only ever sends decoded WAV
+ *             inline, so anything else is refused outright. An old client
+ *             is measured with the WebM scanner, falling back to bytes ÷ 4000.
+ * Never throws.
+ */
+export function inlineRejection(
+  buf: Buffer,
+  isCurrentClient: boolean,
+): { reason: 'inline_too_long' | 'inline_not_wav'; seconds: number | null; how: string } | null {
+  try {
+    const wav = wavSeconds(buf);
+    if (wav !== null) {
+      return wav > INLINE_LIMIT_SECONDS ? { reason: 'inline_too_long', seconds: wav, how: 'wav header' } : null;
+    }
+    if (isCurrentClient) return { reason: 'inline_not_wav', seconds: null, how: 'current client sent non-WAV inline' };
+    const webm = webmSeconds(buf);
+    const seconds = webm ?? buf.length / 4000;
+    const how = webm !== null ? 'webm timestamps' : 'bytes / 4000';
+    return seconds > INLINE_LIMIT_SECONDS ? { reason: 'inline_too_long', seconds, how } : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Current calendar year/month in Asia/Kolkata (UTC+5:30, no DST). */

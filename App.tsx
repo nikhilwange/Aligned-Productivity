@@ -22,13 +22,18 @@ import { STT_SESSION_CEILING_MIN, LEFTOVER_MAX_AGE_HOURS } from './config/sttLim
 import { recordingController, claimRecording, isRecordingLive, type FinalizeReason, type RecordingResult } from './services/recordingController';
 import RecordingIndicator from './components/RecordingIndicator';
 import LeftoverRecordingNotice from './components/LeftoverRecordingNotice';
+import RetranscribeBanner from './components/RetranscribeBanner';
+import AudioRetentionNotice from './components/AudioRetentionNotice';
+import type { SegmentDeletion } from './services/segmentCleanupPolicy';
+import { transcribeSegment, buildSegmentedTranscript, resultStatus, needsRetry, type SegmentPiece } from './services/segmentTranscript';
 import { extractTranscript, analyzeTranscript } from './services/geminiService';
 import { buildSessionTitle } from './utils/sessionTitle';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
-import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage } from './services/storageService';
+import { uploadAudioToStorage, deleteAudioPaths, downloadAudioFromStorage, getRecordingFolderInfo } from './services/storageService';
 import { supabase, fetchRecordings, saveRecording, deleteRecordingFromDb, fetchActionItems } from './services/supabaseService';
-import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery, clearChunkTranscripts, clearAllChunkTranscripts, purgeStaleChunkTranscripts, getSegmentManifest, getAllSegmentManifests, getSegmentBlob, clearSegmentManifest, purgeStaleSegmentManifests, getSegmentTranscripts, clearSegmentTranscripts, clearAllSegmentTranscripts, purgeStaleSegmentTranscripts, SegmentManifest } from './services/recordingRecovery';
-import { reuploadPendingSegments, getActiveSegmentSessionId, ingestFileAsSegments, deleteSegmentedRecording } from './services/segmentRecorder';
+import { getRecoverableRecordings, clearRecoverySession, clearAllRecovery, clearChunkTranscripts, clearAllChunkTranscripts, purgeStaleChunkTranscripts, getSegmentManifest, getAllSegmentManifests, getSegmentBlob, clearSegmentManifest, purgeStaleSegmentManifests, getSegmentTranscripts, getSegmentResults, clearSegmentTranscripts, clearAllSegmentTranscripts, purgeStaleSegmentTranscripts, SegmentManifest } from './services/recordingRecovery';
+import { reuploadPendingSegments, getActiveSegmentSessionId, ingestFileAsSegments, deleteSegmentedRecording, applyLocalRetention } from './services/segmentRecorder';
+import { UNCLEAR_MARKER, segmentedAudioRetention, retentionWarningDaysLeft } from './supabase/functions/_shared/audioRetention.ts';
 import { USE_SEGMENTED_RECORDING, BILLING_ENABLED } from './config/features';
 import { startHeartbeat, clearHeartbeat, isHeartbeatFresh, HEARTBEAT_STALE_MS } from './services/processingHeartbeat';
 import { beginPipelineRun, endPipelineRun } from './services/pipelineRuns';
@@ -365,7 +370,16 @@ const App: React.FC = () => {
         // Housekeeping: drop chunk-transcript caches + segment manifests older than 7 days.
         purgeStaleChunkTranscripts();
         if (USE_SEGMENTED_RECORDING) {
-          purgeStaleSegmentManifests();
+          // Retention (shared rules with the server's audio-retention sweep).
+          // "Unclear parts" is judged from the saved transcript, exactly as the
+          // server judges it.
+          applyLocalRetention(isRecordingLive, async (recoveryId) => {
+            const row = data.find(r => r.recoveryId === recoveryId);
+            return {
+              rowStatus: row ? row.status : null,
+              hasProblems: !!row?.analysis?.transcript?.includes(UNCLEAR_MARKER),
+            };
+          });
           purgeStaleSegmentTranscripts(); // Phase 3 live transcripts
         }
 
@@ -471,8 +485,26 @@ const App: React.FC = () => {
               // Never recover the recording in progress in THIS tab.
               if (m.sessionId === activeSegId) continue;
               const sess = data.find(r => r.recoveryId === m.sessionId);
-              // Skip if already completed or currently being processed.
-              if (sess && (sess.status === 'completed' || sess.status === 'processing')) continue;
+              // Being processed right now (here or in another tab) — leave it.
+              if (sess && sess.status === 'processing') continue;
+              // A leftover of a COMPLETED recording (completed rows keep their
+              // recoveryId): never processed again. Kept only while it still
+              // has unclear/failed segments to re-transcribe (the 7-day cleanup
+              // removes it after that); otherwise deleted now.
+              if (sess && sess.status === 'completed') {
+                if ((await isRecordingLive(m.sessionId)) === true) continue;
+                const results = await getSegmentResults(m.sessionId);
+                const retryable = m.segments.some(s => needsRetry(resultStatus(results[s.index])));
+                if (!retryable) {
+                  console.log(`[App] Deleting leftover of completed session "${sess.title}" (${m.sessionId}) — never processed`);
+                  clearLiveSession(m.sessionId);
+                  await deleteSegmentedRecording(m.sessionId, m, {
+                    kind: 'automatic', reason: 'completed_leftover', rowStatus: sess.status,
+                    hasProblems: retryable || !!sess.analysis?.transcript?.includes(UNCLEAR_MARKER),
+                  });
+                }
+                continue;
+              }
               // Still being recorded (or processed) in another tab? The
               // recorder holds a per-recording Web Lock for its whole life and
               // the browser drops it the instant that tab closes. Lock held =
@@ -798,7 +830,7 @@ const App: React.FC = () => {
           try {
             // Stop any live worker still holding this session before deleting.
             clearLiveSession(segRecoveryId);
-            await deleteSegmentedRecording(segRecoveryId);
+            await deleteSegmentedRecording(segRecoveryId, undefined, { kind: 'user_confirmed', action: 'delete_session' });
           } catch (err: any) {
             console.error('[App] Segment cleanup failed during delete:', err);
           }
@@ -1076,9 +1108,9 @@ const App: React.FC = () => {
   // `recordings/{sessionId}/` prefix deleted from Storage — leaving segments
   // behind is the known Supabase egress-overage source. We also clear the
   // IndexedDB manifest + cached blobs and the per-segment Phase 1 chunk caches.
-  const cleanupSegmentedSession = useCallback(async (recoveryId: string, manifest: SegmentManifest) => {
+  const cleanupSegmentedSession = useCallback(async (recoveryId: string, manifest: SegmentManifest, deletion: SegmentDeletion) => {
     try {
-      await deleteSegmentedRecording(recoveryId, manifest);
+      await deleteSegmentedRecording(recoveryId, manifest, deletion);
     } catch (err) {
       console.warn('[App] Segmented cleanup failed (non-critical):', err);
     }
@@ -1091,7 +1123,6 @@ const App: React.FC = () => {
   const runSegmentedProcessingForSession = useCallback(async (session: RecordingSession, manifest: SegmentManifest) => {
     if (!user) return;
     const recoveryId = session.recoveryId!;
-    const UNCLEAR = '[…audio unclear…]';
 
     // Single-pipeline gate + liveness heartbeat (see runProcessingForSession).
     const controller = beginPipelineRun(session.id);
@@ -1117,21 +1148,21 @@ const App: React.FC = () => {
       try { await saveRecording(session, user.id); } catch (e) { console.warn('Initial save failed:', e); }
 
       const segments = [...manifest.segments].sort((a, b) => a.index - b.index);
-      // One entry per segment, in order (null = not transcribed), so trailing
-      // non-speech can be trimmed below.
-      const perSeg: Array<{ seg: SegmentManifest['segments'][number]; text: string | null }> = [];
-      const put = (seg: SegmentManifest['segments'][number], text: string | null) => { perSeg.push({ seg, text }); };
-      let unclearCount = 0;
+      // One piece per segment, in order: its text and how it went (see
+      // services/segmentTranscript.ts). Stored per segment so a later
+      // "Re-transcribe unclear parts" can patch the transcript in place.
+      const pieces: SegmentPiece[] = [];
       // Set once the server refuses with `session_ceiling`: this recording has
       // used its whole STT budget, so every remaining segment is skipped (no
       // more Sarvam calls) and the session is saved with what was transcribed.
       let ceilingHit = false;
       let ceilingSkipped = 0;
 
-      // How much of the work is already done by live transcription? Drives both
-      // the instrumentation line and the banner's "Finalizing your notes…" copy.
-      const liveTranscripts = await getSegmentTranscripts(recoveryId);
-      const preDone = segments.filter(s => liveTranscripts[s.index] !== undefined).length;
+      // Results already stored for this recording — by the live worker during
+      // the meeting, or by an earlier run. Drives both the instrumentation line
+      // and the banner's "Finalizing your notes…" copy.
+      const stored = await getSegmentResults(recoveryId);
+      const preDone = segments.filter(s => stored[s.index] !== undefined).length;
       console.log(`[Pipeline] finish started: ${preDone} of ${segments.length} segments pre-transcribed`);
       setPreTranscribed(p => withProgress(p, session.id, { done: preDone, total: segments.length }));
 
@@ -1141,63 +1172,40 @@ const App: React.FC = () => {
         setSegmentProgress(p => withProgress(p, session.id, { done: i, total: segments.length }));
         updateSession({ processingStep: 'transcribing' });
 
-        // Phase 3: reuse the transcript the live worker already produced.
-        const live = liveTranscripts[seg.index];
-        if (live !== undefined) {
-          console.log(`[Pipeline] segment ${seg.index}: using live transcript`);
-          put(seg, live);
+        // Phase 3: reuse the result the live worker (or an earlier run) stored.
+        const prev = stored[seg.index];
+        if (prev !== undefined) {
+          const status = resultStatus(prev)!;
+          console.log(`[Pipeline] segment ${seg.index}: using stored result (${status})`);
+          pieces.push({ seg, text: prev.transcript, status });
           continue;
         }
 
         if (ceilingHit) {
           console.log(`[Pipeline] segment ${seg.index}: skipped (STT ceiling reached)`);
           ceilingSkipped++;
-          put(seg, null);
-          continue;
-        }
-
-        // Prefer the cached blob; fall back to the uploaded segment in Storage.
-        let blob = await getSegmentBlob(recoveryId, seg.index);
-        if (!blob && seg.storagePath) {
-          try { blob = await downloadAudioFromStorage(seg.storagePath); } catch (e: any) {
-            if (signal.aborted) return;
-            console.error(`[App] Segment ${seg.index} download failed:`, e?.message);
-          }
-        }
-        if (!blob) {
-          console.error(`[App] Segment ${seg.index} unavailable — inserting placeholder`);
-          put(seg, UNCLEAR);
-          unclearCount++;
+          pieces.push({ seg, text: null, status: 'skipped' });
           continue;
         }
 
         try {
-          const text = await transcribeAudioWithSarvam(blob, {
-            recoveryId: `${recoveryId}:seg${seg.index}`,
+          pieces.push(await transcribeSegment(recoveryId, seg, {
             signal,
-            // The manifest's duration is authoritative; without it the <audio>
-            // probe mis-reads a VBR MP3 slice (no Xing header) as much longer
-            // than it is and the truncation check drops good audio.
-            knownDurationMs: seg.durationMs,
             onProgress: (done, total) => { if (!signal.aborted) setChunkProgress(p => withProgress(p, session.id, { done, total })); },
-          });
-          put(seg, text);
+          }));
         } catch (e: any) {
-          // Superseded by a newer run → exit silently (don't degrade to UNCLEAR).
+          // Superseded by a newer run → exit silently (don't degrade anything).
           if (signal.aborted) return;
           // Recording hit the STT ceiling → keep what we have, skip the rest.
           if (isSessionCeilingError(e)) {
             console.warn(`[Pipeline] segment ${seg.index}: STT ceiling reached — skipping remaining segments`);
             ceilingHit = true;
             ceilingSkipped++;
-            put(seg, null);
+            pieces.push({ seg, text: null, status: 'skipped' });
             continue;
           }
-          // A usage-cap 402 aborts the whole session (not a partial degrade).
-          if (isUsageLimitError(e)) throw e;
-          console.error(`[App] Segment ${seg.index} transcription failed after retries:`, e?.message);
-          put(seg, UNCLEAR);
-          unclearCount++;
+          // A monthly usage-cap 402 aborts the whole session (not a partial degrade).
+          throw e;
         }
         if (signal.aborted) return;
         setChunkProgress(p => withProgress(p, session.id, null));
@@ -1207,47 +1215,19 @@ const App: React.FC = () => {
       // Superseded mid-run → stop before writing any transcript/analysis state.
       if (signal.aborted) return;
 
-      // ── Trim trailing non-speech ──
-      // A recording left running after the meeting ends (or one that died
-      // mid-segment) tails off into segments with no real speech. Drop them
-      // from the transcript and from the saved duration: a trailing segment is
-      // trimmed when it has no words (empty, not transcribed, or only the
-      // unclear placeholder), or when it has fewer than TRAIL_MIN_WORDS words
-      // over at least TRAIL_SPARSE_MIN_MS of audio (too sparse to be speech).
-      // A short final segment with a few real words ("thanks, bye") is kept.
-      // The first segment is never trimmed.
-      const TRAIL_MIN_WORDS = 30;
-      const TRAIL_SPARSE_MIN_MS = 2 * 60 * 1000;
-      const wordCount = (t: string | null) =>
-        (t ?? '').split(UNCLEAR).join(' ').trim().split(/\s+/).filter(Boolean).length;
-      let keep = perSeg.length;
-      while (keep > 1) {
-        const { seg, text } = perSeg[keep - 1];
-        const words = wordCount(text);
-        const sparse = words < TRAIL_MIN_WORDS && (seg.durationMs || 0) >= TRAIL_SPARSE_MIN_MS;
-        if (words > 0 && !sparse) break;
-        keep--;
-      }
-      const kept = perSeg.slice(0, keep);
-      const trimmedCount = perSeg.length - keep;
-      const keptDurationMs = kept.reduce((s, p) => s + (p.seg.durationMs || 0), 0);
+      // Stitch + trim trailing non-speech (see buildSegmentedTranscript).
+      const built = buildSegmentedTranscript(pieces, session.duration);
       // Duration saved = captured audio up to the last segment with real speech.
-      const sessionDuration = keptDurationMs > 0 ? Math.round(keptDurationMs / 1000) : session.duration;
-      if (trimmedCount > 0) {
+      const sessionDuration = built.durationSec;
+      if (built.trimmedCount > 0) {
         console.log(
-          `[Pipeline] trimmed ${trimmedCount} trailing segment(s) with no real speech ` +
+          `[Pipeline] trimmed ${built.trimmedCount} trailing segment(s) with no real speech ` +
           `(duration ${session.duration}s → ${sessionDuration}s)`,
         );
       }
-      unclearCount = kept.filter(p => p.text === UNCLEAR).length;
-      const transcripts = kept.map(p => p.text).filter((t): t is string => t !== null);
-
-      // Join segments with a blank line, not a space. Collapsing on /\s+/ used to
-      // eat every newline, leaving multi-hour meetings as one unbroken line.
-      const fullTranscript = transcripts
-        .map(t => t.replace(/[ \t]+/g, ' ').trim())
-        .filter(Boolean)
-        .join('\n\n');
+      // Kept segments that are unclear or failed — their audio is kept for a retry.
+      const unclearCount = built.problems;
+      const fullTranscript = built.transcript;
       const transcriptionMs = Date.now() - finishStartedAt;
 
       // Ceiling already used up before any segment could be transcribed (e.g. a
@@ -1285,14 +1265,18 @@ const App: React.FC = () => {
         status: 'completed',
         processingStep: undefined,
         errorMessage: undefined,
-        recoveryId: undefined,
+        // KEPT on completed segmented sessions (no longer cleared): it is the
+        // durable link from this row to its recording, so a leftover of a
+        // completed recording is recognised and deleted on load — never
+        // processed again — and unclear parts can be re-transcribed.
+        recoveryId,
         audioPath: undefined,
       };
-      updateSession({ ...titlePatch, duration: sessionDuration, analysis: fullAnalysis, status: 'completed', processingStep: undefined, errorMessage: undefined, recoveryId: undefined });
+      updateSession({ ...titlePatch, duration: sessionDuration, analysis: fullAnalysis, status: 'completed', processingStep: undefined, errorMessage: undefined, recoveryId });
       await saveRecording(completedSession, user.id);
 
       if (unclearCount > 0) {
-        addToast(`Processing complete — part of the audio couldn't be transcribed (${unclearCount} of ${segments.length} segments).`, 'error');
+        addToast(`Processing complete — ${unclearCount} of ${segments.length} segment${segments.length !== 1 ? 's' : ''} couldn't be transcribed. Open the session to re-transcribe ${unclearCount !== 1 ? 'them' : 'it'}.`, 'error');
       }
       if (ceilingHit) {
         console.warn(`[Pipeline] STT ceiling: ${ceilingSkipped} of ${segments.length} segments not transcribed`);
@@ -1304,8 +1288,16 @@ const App: React.FC = () => {
         ceilingNotifiedRef.current.delete(recoveryId);
       }
 
-      // Delete-on-success: remove segments from Storage + clear local state.
-      await cleanupSegmentedSession(recoveryId, manifest);
+      // Delete-on-success: remove segments from Storage + clear local state —
+      // unless some segments are unclear or failed. Then the audio is kept
+      // (7-day cleanup) so "Re-transcribe unclear parts" can re-send just those.
+      if (unclearCount > 0) {
+        console.log(`[Pipeline] keeping audio for ${unclearCount} unclear/failed segment(s) of ${recoveryId} for re-transcription`);
+      } else {
+        await cleanupSegmentedSession(recoveryId, manifest, {
+          kind: 'automatic', reason: 'completed_clean', rowStatus: completedSession.status, hasProblems: false,
+        });
+      }
     } catch (err: any) {
       // Superseded by a newer run → exit silently; the newer run owns the session.
       if (signal.aborted) return;
@@ -1416,6 +1408,8 @@ const App: React.FC = () => {
   // Web Lock first: if another tab holds it, it is live or already being
   // processed there, so this tab never touches it.
   resumeSegmentedRecordingRef.current = async (manifest: SegmentManifest, existing: RecordingSession | null) => {
+    // Completed rows keep their recoveryId — never resume one.
+    if (existing?.status === 'completed') return;
     const release = await claimRecording(manifest.sessionId);
     if (!release) {
       console.log(`[App] ${manifest.sessionId} is live in another tab — not rescuing`);
@@ -1446,9 +1440,121 @@ const App: React.FC = () => {
     }
   };
 
+  // ─── Re-transcribe unclear parts ──────────────────────────────────────────
+  // A completed session whose recording had unclear / failed segments keeps
+  // that audio for 7 days. This re-sends ONLY those segments, patches the
+  // transcript in place from the stored per-segment results, re-runs the
+  // analysis and, once nothing is left to fix, deletes the audio. The session
+  // stays 'completed' throughout, so an interruption changes nothing saved.
+  const [retranscribeInfo, setRetranscribeInfo] = useState<{ sessionId: string; problems: number; total: number; deleteInDays: number | null } | null>(null);
+  const [retranscribeProgress, setRetranscribeProgress] = useState<{ sessionId: string; done: number; total: number } | null>(null);
+
+  const refreshRetranscribeInfo = useCallback(async (session: RecordingSession | undefined) => {
+    if (!session || session.status !== 'completed' || !session.recoveryId) { setRetranscribeInfo(null); return; }
+    const manifest = await getSegmentManifest(session.recoveryId);
+    if (!manifest) { setRetranscribeInfo(null); return; } // audio not on this device
+    const results = await getSegmentResults(session.recoveryId);
+    const problems = manifest.segments.filter(s => needsRetry(resultStatus(results[s.index]))).length;
+    if (problems === 0) { setRetranscribeInfo(null); return; }
+    // Countdown from the SHARED retention rules, anchored on the newest Storage
+    // object — the same anchor the server sweep deletes on.
+    const folder = await getRecordingFolderInfo(session.recoveryId);
+    const verdict = folder?.lastUploadMs
+      ? segmentedAudioRetention({ rowStatus: 'completed', hasUnclearParts: true, lastUploadMs: folder.lastUploadMs, nowMs: Date.now() })
+      : null;
+    const deleteInDays = retentionWarningDaysLeft(verdict?.deleteAtMs, Date.now());
+    setRetranscribeInfo({ sessionId: session.id, problems, total: manifest.segments.length, deleteInDays });
+  }, []);
+
+  const activeSessionForBanner = recordings.find(r => r.id === activeRecordingId);
+  useEffect(() => {
+    void refreshRetranscribeInfo(activeSessionForBanner);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionForBanner?.id, activeSessionForBanner?.status, activeSessionForBanner?.recoveryId, refreshRetranscribeInfo]);
+
+  // Failed / interrupted sessions: the server sweep deletes their audio 30
+  // days after the last upload. Warn in the last RETENTION_WARNING_DAYS.
+  const [failedAudioNotice, setFailedAudioNotice] = useState<{ sessionId: string; daysLeft: number } | null>(null);
+  useEffect(() => {
+    const s = activeSessionForBanner;
+    setFailedAudioNotice(null);
+    if (!s || !s.recoveryId || (s.status !== 'error' && (s.status as string) !== 'interrupted')) return;
+    let cancelled = false;
+    void (async () => {
+      const folder = await getRecordingFolderInfo(s.recoveryId!);
+      if (cancelled || !folder?.lastUploadMs) return;
+      const verdict = segmentedAudioRetention({ rowStatus: s.status, hasUnclearParts: false, lastUploadMs: folder.lastUploadMs, nowMs: Date.now() });
+      const daysLeft = retentionWarningDaysLeft(verdict.deleteAtMs, Date.now());
+      if (daysLeft !== null) setFailedAudioNotice({ sessionId: s.id, daysLeft });
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionForBanner?.id, activeSessionForBanner?.status, activeSessionForBanner?.recoveryId]);
+
+  const handleRetranscribeUnclear = async (session: RecordingSession) => {
+    if (!user || !session.recoveryId || retranscribeProgress) return;
+    const recoveryId = session.recoveryId;
+    const manifest = await getSegmentManifest(recoveryId);
+    if (!manifest) { addToast('The audio for this recording is no longer on this device.', 'error'); return; }
+    const release = await claimRecording(recoveryId);
+    if (!release) { addToast('This recording is busy in another tab.', 'error'); return; }
+    try {
+      const segments = [...manifest.segments].sort((a, b) => a.index - b.index);
+      const before = await getSegmentResults(recoveryId);
+      const targets = segments.filter(s => needsRetry(resultStatus(before[s.index])));
+      console.log(`[Pipeline] re-transcribing ${targets.length} unclear/failed segment(s) of ${recoveryId}`);
+      setRetranscribeProgress({ sessionId: session.id, done: 0, total: targets.length });
+      for (let i = 0; i < targets.length; i++) {
+        try {
+          const piece = await transcribeSegment(recoveryId, targets[i]);
+          console.log(`[Pipeline] re-transcribed segment ${targets[i].index}: ${piece.status}`);
+        } catch (e: any) {
+          // Usage refusal (ceiling / monthly): stop; what's done is stored.
+          console.warn(`[Pipeline] re-transcription stopped: ${e?.message ?? e}`);
+          break;
+        }
+        setRetranscribeProgress({ sessionId: session.id, done: i + 1, total: targets.length });
+      }
+
+      // Patch the transcript in place from ALL stored per-segment results.
+      const after = await getSegmentResults(recoveryId);
+      const pieces: SegmentPiece[] = segments.map(seg => {
+        const r = after[seg.index];
+        return r ? { seg, text: r.transcript, status: resultStatus(r)! } : { seg, text: null, status: 'skipped' as const };
+      });
+      const built = buildSegmentedTranscript(pieces, session.duration);
+      const analysisResult = await analyzeTranscript(built.transcript, session.date);
+      const updated: RecordingSession = {
+        ...session,
+        duration: built.durationSec,
+        analysis: { ...analysisResult, transcript: built.transcript },
+      };
+      setRecordings(prev => prev.map(r => r.id === session.id ? updated : r));
+      await saveRecording(updated, user.id);
+
+      if (built.problems === 0) {
+        addToast('All parts of the recording are now transcribed.', 'success');
+        await cleanupSegmentedSession(recoveryId, manifest, {
+          kind: 'automatic', reason: 'retranscribed_clean', rowStatus: updated.status, hasProblems: built.problems > 0,
+        });
+      } else {
+        addToast(`${built.problems} part${built.problems !== 1 ? 's' : ''} still couldn't be transcribed. The audio is kept so you can try again later.`, 'error');
+      }
+    } catch (err: any) {
+      console.error('[App] Re-transcription failed:', err);
+      addToast(`Re-transcription failed: ${err?.message ?? 'unknown error'}`, 'error');
+    } finally {
+      release();
+      setRetranscribeProgress(null);
+      void refreshRetranscribeInfo(recordings.find(r => r.id === session.id) ?? session);
+    }
+  };
+
   const handleLeftoverSave = (manifest: SegmentManifest) => {
     setLeftoverRecordings(prev => prev.filter(m => m.sessionId !== manifest.sessionId));
     const existing = recordings.find(r => r.recoveryId === manifest.sessionId) ?? null;
+    // A completed recording is never re-processed (see loadData).
+    if (existing?.status === 'completed') return;
     void resumeSegmentedRecordingRef.current(manifest, existing);
   };
 
@@ -1462,7 +1568,7 @@ const App: React.FC = () => {
       onConfirm: async () => {
         setLeftoverRecordings(prev => prev.filter(m => m.sessionId !== manifest.sessionId));
         clearLiveSession(manifest.sessionId);
-        await deleteSegmentedRecording(manifest.sessionId, manifest);
+        await deleteSegmentedRecording(manifest.sessionId, manifest, { kind: 'user_confirmed', action: 'discard_leftover' });
       },
     });
   };
@@ -1489,6 +1595,9 @@ const App: React.FC = () => {
     if (!user) return;
     const session = recordings.find(r => r.id === sessionId);
     if (!session) return;
+    // Completed rows keep their recoveryId; they are never re-processed
+    // (unclear parts use "Re-transcribe unclear parts" instead).
+    if (session.status === 'completed') return;
 
     // Segmented retry: resume from the manifest/segments (and Phase 1's
     // sub-chunk cache per segment), not from a single blob. Re-upload any
@@ -1816,6 +1925,20 @@ const App: React.FC = () => {
               />
             ) : null;
           })}
+          {/* Failed / interrupted session whose audio the retention sweep will delete soon */}
+          {activeSession && failedAudioNotice?.sessionId === activeSession.id && (
+            <AudioRetentionNotice daysLeft={failedAudioNotice.daysLeft} />
+          )}
+          {/* Completed session with unclear / failed parts: re-send just those */}
+          {activeSession && retranscribeInfo?.sessionId === activeSession.id && (
+            <RetranscribeBanner
+              problems={retranscribeInfo.problems}
+              total={retranscribeInfo.total}
+              deleteInDays={retranscribeInfo.deleteInDays}
+              progress={retranscribeProgress?.sessionId === activeSession.id ? retranscribeProgress : null}
+              onRetranscribe={() => void handleRetranscribeUnclear(activeSession)}
+            />
+          )}
           {activeRecordingId === 'home' ? (
             <HomeView
               user={user}
