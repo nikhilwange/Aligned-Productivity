@@ -34,6 +34,10 @@ import {
   SILENCE_PROMPT_TIMEOUT_MIN,
   SILENCE_RMS_THRESHOLD,
   SHARE_ENDED_PROMPT_TIMEOUT_MIN,
+  MIC_ONLY_REPROMPT_MIN,
+  SHARE_SILENCE_RMS_THRESHOLD,
+  SHARE_SILENCE_PROMPT_MIN,
+  SHARE_SILENCE_PROMPT_TIMEOUT_MIN,
   CHECKPOINT_INTERVAL_SEC,
 } from '../config/sttLimits';
 
@@ -45,13 +49,14 @@ export type FinalizeReason =
   | 'long_sleep'
   | 'silence'
   | 'share_ended'
+  | 'share_silent'
   | 'mic_ended'
   | 'tier_cap';
 
 export type RecorderStatus = 'idle' | 'starting' | 'recording' | 'finalizing';
 
 export interface RecorderPrompt {
-  kind: 'silence' | 'share_ended';
+  kind: 'silence' | 'share_ended' | 'share_silent';
   deadline: number; // ms epoch; no answer by then → finalize and save
 }
 
@@ -236,6 +241,24 @@ function electronPowerBlocker(action: 'start' | 'stop'): void {
 
 // ─── The controller ─────────────────────────────────────────────────────────
 
+type LevelStats = { min: number; max: number; sum: number; n: number; since: number };
+const freshLevelStats = (): LevelStats => ({ min: Infinity, max: 0, sum: 0, n: 0, since: Date.now() });
+
+// A prompt left unanswered past its deadline saves the recording for this reason.
+const PROMPT_TIMEOUT_REASON: Record<RecorderPrompt['kind'], FinalizeReason> = {
+  silence: 'silence',
+  share_ended: 'share_ended',
+  share_silent: 'share_silent',
+};
+
+const rmsOf = (analyser: AnalyserNode): number => {
+  const data = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(data);
+  let sum = 0;
+  for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+  return Math.sqrt(sum / data.length);
+};
+
 interface ActiveRecording {
   recoveryId: string;
   inputMode: InputMode;
@@ -250,6 +273,8 @@ interface ActiveRecording {
   micSource: MediaStreamAudioSourceNode | null;
   displayStream: MediaStream | null;
   displaySource: MediaStreamAudioSourceNode | null;
+  // Level meter on the meeting audio ALONE: a worklet, or an analyser read per tick as fallback.
+  shareMeter: AudioWorkletNode | AnalyserNode | null;
   seg: SegmentRecorder;
   locks: Array<{ release: () => void }>; // the global single-recorder lock
   recordingLock: { release: () => void } | null; // per-recording; handed to processing
@@ -258,9 +283,12 @@ interface ActiveRecording {
   lastWall: number;
   lastAudio: number; // ctx.currentTime (s)
   lastSpeechAudio: number; // ctx.currentTime (s) of the last non-silent level
+  lastShareSoundAudio: number; // ctx.currentTime (s) of the last non-silent MEETING-audio level
+  micOnlySinceMs: number | null; // capturedMs when the user chose to carry on mic-only
   lastCheckpointWall: number;
   warned: Set<'session_ceiling' | 'tier_cap'>;
-  levelStats: { min: number; max: number; sum: number; n: number; since: number };
+  levelStats: LevelStats;
+  shareLevelStats: LevelStats;
   cleanup: Array<() => void>;
 }
 
@@ -434,6 +462,7 @@ class RecordingController {
         micSource,
         displayStream,
         displaySource,
+        shareMeter: null,
         seg,
         locks,
         recordingLock,
@@ -442,9 +471,12 @@ class RecordingController {
         lastWall: now,
         lastAudio: ctx.currentTime,
         lastSpeechAudio: ctx.currentTime,
+        lastShareSoundAudio: ctx.currentTime,
+        micOnlySinceMs: null,
         lastCheckpointWall: now,
         warned: new Set(),
-        levelStats: { min: Infinity, max: 0, sum: 0, n: 0, since: now },
+        levelStats: freshLevelStats(),
+        shareLevelStats: freshLevelStats(),
         cleanup: [],
       };
       this.rec = rec;
@@ -484,6 +516,7 @@ class RecordingController {
     // Track endings.
     this.watchMic(rec);
     this.watchShare(rec);
+    this.attachShareMeter(rec);
 
     // Tab close / hide: save the in-progress segment so at most a few seconds are lost.
     const onPageHide = () => { void rec.seg.checkpoint(); };
@@ -535,6 +568,44 @@ class RecordingController {
     rec.cleanup.push(() => tracks.forEach((t) => t.removeEventListener('ended', onEnded)));
   }
 
+  /**
+   * Put a level meter on the current meeting-audio source ONLY — not the mic,
+   * not the shared worklet — so a meeting tab gone silent after the call is
+   * seen even over office noise on the mic. A second instance of the level
+   * worklet (module already loaded in start()), so it keeps measuring in a
+   * background tab; an analyser read per tick when the worklet is unavailable.
+   * Replaces any previous meter.
+   */
+  private attachShareMeter(rec: ActiveRecording): void {
+    this.detachShareMeter(rec);
+    const source = rec.displaySource;
+    if (!source) return;
+    if (rec.worklet) {
+      try {
+        const node = new AudioWorkletNode(rec.ctx, 'aligned-level', { numberOfInputs: 1, numberOfOutputs: 1 });
+        node.port.onmessage = (e: MessageEvent) => this.onShareLevel(rec, e.data?.t ?? rec.ctx.currentTime, e.data?.rms ?? 0);
+        node.connect(rec.dest); // writes nothing; keeps it in the rendered graph
+        source.connect(node);
+        rec.shareMeter = node;
+        return;
+      } catch (err) {
+        console.warn('[Recorder] meeting-audio level worklet unavailable, using analyser fallback:', (err as Error)?.message);
+      }
+    }
+    const analyser = rec.ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    source.connect(analyser);
+    rec.shareMeter = analyser;
+  }
+
+  private detachShareMeter(rec: ActiveRecording): void {
+    const meter = rec.shareMeter;
+    if (!meter) return;
+    rec.shareMeter = null;
+    if (meter instanceof AudioWorkletNode) meter.port.onmessage = null;
+    try { meter.disconnect(); } catch { /* ignore */ }
+  }
+
   private onLevel(rec: ActiveRecording, audioT: number, rms: number): void {
     if (this.rec !== rec) return;
     if (rms >= SILENCE_RMS_THRESHOLD) rec.lastSpeechAudio = audioT;
@@ -546,7 +617,24 @@ class RecordingController {
           `[Recorder] level (30s): min ${s.min.toFixed(4)} avg ${(s.sum / s.n).toFixed(4)} ` +
           `max ${s.max.toFixed(4)} — silence threshold ${SILENCE_RMS_THRESHOLD}`,
         );
-        rec.levelStats = { min: Infinity, max: 0, sum: 0, n: 0, since: Date.now() };
+        rec.levelStats = freshLevelStats();
+      }
+    }
+  }
+
+  /** Meeting audio alone (see attachShareMeter). */
+  private onShareLevel(rec: ActiveRecording, audioT: number, rms: number): void {
+    if (this.rec !== rec) return;
+    if (rms >= SHARE_SILENCE_RMS_THRESHOLD) rec.lastShareSoundAudio = audioT;
+    if (IS_DEV) {
+      const s = rec.shareLevelStats;
+      s.min = Math.min(s.min, rms); s.max = Math.max(s.max, rms); s.sum += rms; s.n++;
+      if (Date.now() - s.since >= 30_000 && s.n > 0) {
+        console.debug(
+          `[Recorder] meeting audio level (30s): min ${s.min.toFixed(5)} avg ${(s.sum / s.n).toFixed(5)} ` +
+          `max ${s.max.toFixed(5)} — silence threshold ${SHARE_SILENCE_RMS_THRESHOLD}`,
+        );
+        rec.shareLevelStats = freshLevelStats();
       }
     }
   }
@@ -563,14 +651,9 @@ class RecordingController {
       rec.ctx.resume().catch(() => {});
     }
 
-    // Analyser fallback for the level meter (worklet unavailable).
-    if (!rec.worklet) {
-      const data = new Float32Array(rec.analyser.fftSize);
-      rec.analyser.getFloatTimeDomainData(data);
-      let sum = 0;
-      for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
-      this.onLevel(rec, audioNow, Math.sqrt(sum / data.length));
-    }
+    // Analyser fallback for the level meters (worklet unavailable).
+    if (!rec.worklet) this.onLevel(rec, audioNow, rmsOf(rec.analyser));
+    if (rec.shareMeter instanceof AnalyserNode) this.onShareLevel(rec, audioNow, rmsOf(rec.shareMeter));
 
     // ── Real sleep vs throttling ──
     // Throttled (locked / hidden) tab: wall clock jumps ~1 min per tick, but
@@ -583,6 +666,7 @@ class RecordingController {
       rec.lastWall = now;
       rec.lastAudio = audioNow;
       rec.lastSpeechAudio = audioNow; // sleep is not silence
+      rec.lastShareSoundAudio = audioNow;
       if (gapMs >= SLEEP_RESUME_MAX_MIN * 60_000) {
         void this.finalizeRecording('long_sleep');
         return;
@@ -612,7 +696,7 @@ class RecordingController {
     // ── Prompts: answer deadline passed → stop and SAVE ──
     const prompt = this.snapshot.prompt;
     if (prompt && now >= prompt.deadline) {
-      void this.finalizeRecording(prompt.kind === 'silence' ? 'silence' : 'share_ended');
+      void this.finalizeRecording(PROMPT_TIMEOUT_REASON[prompt.kind]);
       return;
     }
 
@@ -620,6 +704,24 @@ class RecordingController {
     if (!prompt && silenceMs >= SILENCE_AUTOSTOP_MIN * 60_000) {
       console.warn(`[Recorder] ${SILENCE_AUTOSTOP_MIN} min of silence — asking "Still recording?"`);
       this.set({ prompt: { kind: 'silence', deadline: now + SILENCE_PROMPT_TIMEOUT_MIN * 60_000 } });
+    }
+
+    // ── Meeting audio silent while still shared (call left, tab kept open) ──
+    // Only asks: a meeting where everyone is muted is silent too. Sharing that
+    // has ENDED is the share_ended prompt's job (shareLive is false then).
+    const shareSilentMs = Math.max(0, (audioNow - rec.lastShareSoundAudio) * 1000);
+    if (!this.snapshot.prompt && this.snapshot.shareLive && rec.shareMeter && shareSilentMs >= SHARE_SILENCE_PROMPT_MIN * 60_000) {
+      console.warn(`[Recorder] meeting audio silent for ${SHARE_SILENCE_PROMPT_MIN} min — asking "Did your meeting end?"`);
+      this.set({ prompt: { kind: 'share_silent', deadline: now + SHARE_SILENCE_PROMPT_TIMEOUT_MIN * 60_000 } });
+    }
+
+    // ── Still mic-only after "Keep recording" → ask again ──
+    if (
+      !this.snapshot.prompt && !this.snapshot.shareLive && rec.micOnlySinceMs !== null &&
+      capturedMs - rec.micOnlySinceMs >= MIC_ONLY_REPROMPT_MIN * 60_000
+    ) {
+      console.warn(`[Recorder] mic-only for ${MIC_ONLY_REPROMPT_MIN} min — asking about meeting audio again`);
+      this.set({ prompt: { kind: 'share_ended', deadline: now + SHARE_ENDED_PROMPT_TIMEOUT_MIN * 60_000 } });
     }
 
     // ── Limits (captured audio, not wall clock) ──
@@ -688,6 +790,11 @@ class RecordingController {
       return;
     }
     if (prompt.kind === 'silence') rec.lastSpeechAudio = rec.ctx.currentTime; // another full window
+    // Any "keep" restarts the meeting-silence window too, so one answer is
+    // never followed straight away by "Did your meeting end?".
+    rec.lastShareSoundAudio = rec.ctx.currentTime;
+    // Carrying on mic-only: count from now to the next re-ask.
+    if (prompt.kind === 'share_ended' && !this.snapshot.shareLive) rec.micOnlySinceMs = this.snapshot.capturedMs;
     console.log(`[Recorder] prompt "${prompt.kind}" → keep recording`);
     this.set({ prompt: null, silenceMs: 0 });
   }
@@ -730,6 +837,9 @@ class RecordingController {
     rec.displayStream = fresh;
     rec.displaySource = node;
     this.watchShare(rec);
+    this.attachShareMeter(rec); // retires the old meter
+    rec.lastShareSoundAudio = rec.ctx.currentTime;
+    rec.micOnlySinceMs = null;
     console.log('[Recorder] meeting audio reconnected');
     const prompt = this.snapshot.prompt?.kind === 'share_ended' ? null : this.snapshot.prompt;
     this.set({ shareLive: true, prompt });
@@ -827,6 +937,7 @@ class RecordingController {
     rec.cleanup.forEach((fn) => { try { fn(); } catch { /* ignore */ } });
     rec.cleanup = [];
     if (rec.worklet) rec.worklet.port.onmessage = null;
+    this.detachShareMeter(rec);
   }
 
   /** Stop every track, close the graph, release wake lock / power blocker / locks. */

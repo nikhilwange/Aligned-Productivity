@@ -176,6 +176,7 @@ const App: React.FC = () => {
       case 'long_sleep': return 'Recording was saved when your device slept for a long time.';
       case 'silence': return 'Recording stopped after a long silence and was saved.';
       case 'share_ended': return 'Screen audio sharing ended, so the recording was saved.';
+      case 'share_silent': return 'Meeting audio was silent for a while, so the recording was saved.';
       case 'mic_ended': return 'The microphone disconnected, so the recording was saved.';
       case 'tier_cap': return `Free sessions are capped at ${minutesToHoursLabel(subscriptionState.sessionCapMinutes ?? 90)} — the recording was saved.`;
       default: return null;
