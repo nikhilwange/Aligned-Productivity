@@ -38,6 +38,8 @@ import {
   SHARE_SILENCE_RMS_THRESHOLD,
   SHARE_SILENCE_PROMPT_MIN,
   SHARE_SILENCE_PROMPT_TIMEOUT_MIN,
+  MAX_PAUSE_MIN,
+  PAUSE_REMINDER_MIN,
   CHECKPOINT_INTERVAL_SEC,
 } from '../config/sttLimits';
 
@@ -51,6 +53,7 @@ export type FinalizeReason =
   | 'share_ended'
   | 'share_silent'
   | 'mic_ended'
+  | 'pause_timeout'
   | 'tier_cap';
 
 export type RecorderStatus = 'idle' | 'starting' | 'recording' | 'finalizing';
@@ -72,6 +75,14 @@ export interface RecorderSnapshot {
   prompt: RecorderPrompt | null;
   /** Meeting mode only: screen/tab audio is currently feeding the recording. */
   shareLive: boolean;
+  /** Paused by the user: nothing is captured, every clock/sound check is off. */
+  paused: boolean;
+  /** ms epoch when the current pause began (null while not paused). */
+  pausedAt: number | null;
+  /** Paused for PAUSE_REMINDER_MIN: "Recording still paused — it will be saved in …". */
+  pauseReminder: boolean;
+  /** Resume failed (microphone could not be re-acquired); still paused. */
+  resumeError: string | null;
   /** Non-blocking notice after resuming from a short sleep. */
   sleepNotice: { gapMin: number } | null;
 }
@@ -271,6 +282,7 @@ interface ActiveRecording {
   worklet: AudioWorkletNode | null;
   micStream: MediaStream | null;
   micSource: MediaStreamAudioSourceNode | null;
+  unwatchMic: (() => void) | null; // detaches the current mic 'ended' watcher
   displayStream: MediaStream | null;
   displaySource: MediaStreamAudioSourceNode | null;
   // Level meter on the meeting audio ALONE: a worklet, or an analyser read per tick as fallback.
@@ -285,6 +297,7 @@ interface ActiveRecording {
   lastSpeechAudio: number; // ctx.currentTime (s) of the last non-silent level
   lastShareSoundAudio: number; // ctx.currentTime (s) of the last non-silent MEETING-audio level
   micOnlySinceMs: number | null; // capturedMs when the user chose to carry on mic-only
+  shareEndedWhilePaused: boolean; // → the share_ended prompt on Resume, not during the pause
   lastCheckpointWall: number;
   warned: Set<'session_ceiling' | 'tier_cap'>;
   levelStats: LevelStats;
@@ -301,6 +314,10 @@ const IDLE_SNAPSHOT: RecorderSnapshot = {
   silenceMs: 0,
   prompt: null,
   shareLive: false,
+  paused: false,
+  pausedAt: null,
+  pauseReminder: false,
+  resumeError: null,
   sleepNotice: null,
 };
 
@@ -311,6 +328,7 @@ class RecordingController {
   private rec: ActiveRecording | null = null;
   private finalizing: Promise<void> | null = null;
   private reconnecting = false;
+  private resuming = false;
 
   // ── store plumbing (useSyncExternalStore) ──
   subscribe = (listener: () => void): (() => void) => {
@@ -460,6 +478,7 @@ class RecordingController {
         worklet,
         micStream,
         micSource,
+        unwatchMic: null,
         displayStream,
         displaySource,
         shareMeter: null,
@@ -473,6 +492,7 @@ class RecordingController {
         lastSpeechAudio: ctx.currentTime,
         lastShareSoundAudio: ctx.currentTime,
         micOnlySinceMs: null,
+        shareEndedWhilePaused: false,
         lastCheckpointWall: now,
         warned: new Set(),
         levelStats: freshLevelStats(),
@@ -546,13 +566,31 @@ class RecordingController {
     rec.tick = window.setInterval(() => this.onTick(rec), 1000);
   }
 
-  /** Re-attach the ended handler to the current mic track. */
+  /** Re-attach the ended handler to the current mic track (replacing any previous one). */
   private watchMic(rec: ActiveRecording): void {
+    rec.unwatchMic?.();
+    rec.unwatchMic = null;
     const track = rec.micStream?.getAudioTracks()[0];
     if (!track) return;
     const onEnded = () => { track.removeEventListener('ended', onEnded); void this.onMicEnded(rec); };
     track.addEventListener('ended', onEnded);
-    rec.cleanup.push(() => track.removeEventListener('ended', onEnded));
+    const off = () => track.removeEventListener('ended', onEnded);
+    rec.unwatchMic = off;
+    rec.cleanup.push(off);
+  }
+
+  /**
+   * Let go of the microphone (pause) so the OS "mic in use" light turns off.
+   * The watcher is detached FIRST — otherwise stopping the track would look
+   * like a disconnect and onMicEnded() would re-acquire it.
+   */
+  private releaseMic(rec: ActiveRecording): void {
+    rec.unwatchMic?.();
+    rec.unwatchMic = null;
+    try { rec.micSource?.disconnect(); } catch { /* ignore */ }
+    rec.micStream?.getTracks().forEach((t) => { try { t.stop(); } catch { /* ignore */ } });
+    rec.micStream = null;
+    rec.micSource = null;
   }
 
   /**
@@ -651,6 +689,26 @@ class RecordingController {
       rec.ctx.resume().catch(() => {});
     }
 
+    // ── Paused: nothing is captured and every clock / sound check is off ──
+    // Keep the baselines current so pause time is neither captured audio nor
+    // a sleep (a device sleeping mid-pause is not a gap). Only the pause
+    // limit runs, in every paused state (including a failed Resume).
+    if (this.snapshot.paused) {
+      rec.lastWall = now;
+      rec.lastAudio = audioNow;
+      const pausedMs = now - (this.snapshot.pausedAt ?? now);
+      if (pausedMs >= MAX_PAUSE_MIN * 60_000) {
+        console.warn(`[Recorder] paused for ${MAX_PAUSE_MIN} min — saving`);
+        void this.finalizeRecording('pause_timeout');
+        return;
+      }
+      if (!this.snapshot.pauseReminder && pausedMs >= PAUSE_REMINDER_MIN * 60_000) {
+        console.warn(`[Recorder] paused for ${PAUSE_REMINDER_MIN} min — reminding`);
+        this.set({ pauseReminder: true });
+      }
+      return;
+    }
+
     // Analyser fallback for the level meters (worklet unavailable).
     if (!rec.worklet) this.onLevel(rec, audioNow, rmsOf(rec.analyser));
     if (rec.shareMeter instanceof AnalyserNode) this.onShareLevel(rec, audioNow, rmsOf(rec.shareMeter));
@@ -743,7 +801,7 @@ class RecordingController {
   }
 
   private async onMicEnded(rec: ActiveRecording): Promise<void> {
-    if (this.rec !== rec || this.snapshot.status !== 'recording') return;
+    if (this.rec !== rec || this.snapshot.status !== 'recording' || this.snapshot.paused) return;
     console.warn('[Recorder] microphone track ended — trying to re-acquire');
     try {
       const fresh = await navigator.mediaDevices.getUserMedia({
@@ -771,6 +829,13 @@ class RecordingController {
   private onShareEnded(rec: ActiveRecording): void {
     if (this.rec !== rec || this.snapshot.status !== 'recording') return;
     if (this.snapshot.prompt?.kind === 'share_ended') return; // audio + video both fire
+    // Paused (mic deliberately released): no countdown now — Resume asks.
+    if (this.snapshot.paused) {
+      console.warn('[Recorder] screen sharing ended while paused — will ask on Resume');
+      rec.shareEndedWhilePaused = true;
+      this.set({ shareLive: false });
+      return;
+    }
     const micLive = rec.micStream?.getAudioTracks().some((t) => t.readyState === 'live');
     console.warn(`[Recorder] screen sharing ended (mic ${micLive ? 'still live' : 'gone'})`);
     if (!micLive) {
@@ -809,7 +874,7 @@ class RecordingController {
    */
   async reconnectShare(): Promise<string | null> {
     const rec = this.rec;
-    if (!rec || rec.inputMode !== 'meeting' || this.snapshot.status !== 'recording' || this.reconnecting) return null;
+    if (!rec || rec.inputMode !== 'meeting' || this.snapshot.status !== 'recording' || this.snapshot.paused || this.reconnecting) return null;
     this.reconnecting = true;
     let fresh: MediaStream;
     try {
@@ -844,6 +909,92 @@ class RecordingController {
     const prompt = this.snapshot.prompt?.kind === 'share_ended' ? null : this.snapshot.prompt;
     this.set({ shareLive: true, prompt });
     return null;
+  }
+
+  // ── pause / resume ─────────────────────────────────────────────────────
+
+  /**
+   * Pause: close the current segment (saved, uploaded, live-transcribed like
+   * any other), release the mic, capture nothing. Virtual mode keeps the
+   * screen share open so Resume needs no re-picking. Pausing is a clear
+   * answer to any prompt showing, so it is cleared.
+   */
+  pause(): void {
+    const rec = this.rec;
+    if (!rec || this.snapshot.status !== 'recording' || this.snapshot.paused) return;
+    rec.seg.pause();
+    this.releaseMic(rec);
+    this.set({ paused: true, pausedAt: Date.now(), pauseReminder: false, resumeError: null, prompt: null, silenceMs: 0 });
+    console.log(`[Recorder] paused ${rec.recoveryId}`);
+  }
+
+  /**
+   * Resume: re-acquire the mic (same constraints as start), start a new
+   * segment, note the pause for the transcript marker, and restart every
+   * check with a full window. If there is nothing to record from — no mic in
+   * person, or no mic and no meeting audio in virtual mode — it stays paused
+   * with `resumeError`; the pause limit keeps running, so it is still saved.
+   */
+  async resume(): Promise<void> {
+    const rec = this.rec;
+    if (!rec || this.snapshot.status !== 'recording' || !this.snapshot.paused || this.resuming) return;
+    this.resuming = true;
+    try {
+      let mic: MediaStream | null = null;
+      try {
+        mic = await navigator.mediaDevices.getUserMedia({ audio: rec.inputMode === 'meeting' ? true : MIC_CONSTRAINTS });
+      } catch (err) {
+        console.warn('[Recorder] could not re-acquire the microphone on resume:', (err as Error)?.message);
+      }
+      if (this.rec !== rec || this.snapshot.status !== 'recording' || !this.snapshot.paused) {
+        mic?.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      const shareLive = rec.inputMode === 'meeting' && !!rec.displayStream?.getAudioTracks().some((t) => t.readyState === 'live');
+      if (!mic && !shareLive) {
+        this.set({
+          resumeError: rec.inputMode === 'meeting'
+            ? 'Could not turn the microphone back on, and meeting audio is off. Check your microphone and try Resume again, or Stop & save.'
+            : 'Could not turn the microphone back on. Check it is connected and try Resume again, or Stop & save.',
+        });
+        return;
+      }
+      if (mic) {
+        const node = rec.ctx.createMediaStreamSource(mic);
+        node.connect(rec.dest);
+        rec.meterInputs.forEach((m) => node.connect(m));
+        rec.micStream = mic;
+        rec.micSource = node;
+        this.watchMic(rec);
+      } else {
+        console.warn('[Recorder] resuming with meeting audio only (no microphone)');
+      }
+
+      const now = Date.now();
+      const pausedAt = this.snapshot.pausedAt ?? now;
+      const nextSegment = rec.seg.resume();
+      void rec.seg.recordGap({ kind: 'pause', startedAt: pausedAt, gapMs: now - pausedAt, nextSegment: nextSegment ?? undefined });
+
+      // Every window restarts full, not from where it was before the pause.
+      const t = rec.ctx.currentTime;
+      rec.lastSpeechAudio = t;
+      rec.lastShareSoundAudio = t;
+      rec.lastAudio = t;
+      rec.lastWall = now;
+      if (rec.micOnlySinceMs !== null) rec.micOnlySinceMs = this.snapshot.capturedMs;
+      // Sharing ended during the pause: ask now, with a fresh countdown.
+      const prompt: RecorderPrompt | null = rec.shareEndedWhilePaused && !shareLive
+        ? { kind: 'share_ended', deadline: now + SHARE_ENDED_PROMPT_TIMEOUT_MIN * 60_000 }
+        : null;
+      rec.shareEndedWhilePaused = false;
+      this.set({
+        paused: false, pausedAt: null, pauseReminder: false, resumeError: null,
+        silenceMs: 0, shareLive: rec.inputMode === 'meeting' ? shareLive : false, prompt,
+      });
+      console.log(`[Recorder] resumed ${rec.recoveryId} after ${Math.round((now - pausedAt) / 1000)}s`);
+    } finally {
+      this.resuming = false;
+    }
   }
 
   dismissSleepNotice(): void {

@@ -18,7 +18,7 @@ import OAuthConsent from './components/OAuthConsent';
 import { AppState, RecordingSession, AudioRecording, User, ChatMessage, RecordingSource, TrackedActionItem, PlanTier } from './types';
 import { isUsageLimitError, isSessionCeilingError } from './services/usageLimit';
 import { minutesToHoursLabel } from './config/tiers';
-import { STT_SESSION_CEILING_MIN, LEFTOVER_MAX_AGE_HOURS } from './config/sttLimits';
+import { STT_SESSION_CEILING_MIN, LEFTOVER_MAX_AGE_HOURS, MAX_PAUSE_MIN } from './config/sttLimits';
 import { recordingController, claimRecording, isRecordingLive, type FinalizeReason, type RecordingResult } from './services/recordingController';
 import RecordingIndicator from './components/RecordingIndicator';
 import { usePromptAlert } from './hooks/usePromptAlert';
@@ -26,7 +26,7 @@ import LeftoverRecordingNotice from './components/LeftoverRecordingNotice';
 import RetranscribeBanner from './components/RetranscribeBanner';
 import AudioRetentionNotice from './components/AudioRetentionNotice';
 import type { SegmentDeletion } from './services/segmentCleanupPolicy';
-import { transcribeSegment, buildSegmentedTranscript, resultStatus, needsRetry, type SegmentPiece } from './services/segmentTranscript';
+import { transcribeSegment, buildSegmentedTranscript, pausesFromManifest, transcriptForAnalysis, resultStatus, needsRetry, type SegmentPiece } from './services/segmentTranscript';
 import { extractTranscript, analyzeTranscript } from './services/geminiService';
 import { buildSessionTitle } from './utils/sessionTitle';
 import { transcribeAudioWithSarvam } from './services/sarvamService';
@@ -177,6 +177,7 @@ const App: React.FC = () => {
       case 'silence': return 'Recording stopped after a long silence and was saved.';
       case 'share_ended': return 'Screen audio sharing ended, so the recording was saved.';
       case 'share_silent': return 'Meeting audio was silent for a while, so the recording was saved.';
+      case 'pause_timeout': return `Recording was paused for ${MAX_PAUSE_MIN} minutes, so it was saved.`;
       case 'mic_ended': return 'The microphone disconnected, so the recording was saved.';
       case 'tier_cap': return `Free sessions are capped at ${minutesToHoursLabel(subscriptionState.sessionCapMinutes ?? 90)} — the recording was saved.`;
       default: return null;
@@ -1218,7 +1219,7 @@ const App: React.FC = () => {
       if (signal.aborted) return;
 
       // Stitch + trim trailing non-speech (see buildSegmentedTranscript).
-      const built = buildSegmentedTranscript(pieces, session.duration);
+      const built = buildSegmentedTranscript(pieces, session.duration, pausesFromManifest(manifest));
       // Duration saved = captured audio up to the last segment with real speech.
       const sessionDuration = built.durationSec;
       if (built.trimmedCount > 0) {
@@ -1244,7 +1245,8 @@ const App: React.FC = () => {
       await saveRecording({ ...session, duration: sessionDuration, analysis: partialAnalysis, status: 'processing', processingStep: 'analyzing' }, user.id);
 
       const analysisStartedAt = Date.now();
-      const analysisResult = await analyzeTranscript(fullTranscript, session.date);
+      // Pause lines go to the analysis as a neutral marker without times.
+      const analysisResult = await analyzeTranscript(transcriptForAnalysis(fullTranscript), session.date);
       if (signal.aborted) return; // superseded during analysis — don't finalize
       const analysisMs = Date.now() - analysisStartedAt;
       console.log(
@@ -1524,8 +1526,8 @@ const App: React.FC = () => {
         const r = after[seg.index];
         return r ? { seg, text: r.transcript, status: resultStatus(r)! } : { seg, text: null, status: 'skipped' as const };
       });
-      const built = buildSegmentedTranscript(pieces, session.duration);
-      const analysisResult = await analyzeTranscript(built.transcript, session.date);
+      const built = buildSegmentedTranscript(pieces, session.duration, pausesFromManifest(manifest));
+      const analysisResult = await analyzeTranscript(transcriptForAnalysis(built.transcript), session.date);
       const updated: RecordingSession = {
         ...session,
         duration: built.durationSec,

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useRecording } from '../hooks/useRecording';
 import { recordingController, type RecorderPrompt } from '../services/recordingController';
+import { MAX_PAUSE_MIN } from '../config/sttLimits';
 
 // MM:SS under an hour, H:MM:SS at or above it.
 export const formatRecordingTime = (totalSeconds: number): string => {
@@ -29,6 +30,35 @@ function useCountdown(deadline: number | null): number {
   }, [deadline]);
   return deadline ? Math.max(0, Math.ceil((deadline - now) / 1000)) : 0;
 }
+
+/** Seconds since `since`, ticking locally (0 when null). */
+export function useSecondsSince(since: number | null): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!since) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [since]);
+  return since ? Math.max(0, Math.floor((now - since) / 1000)) : 0;
+}
+
+/** While paused: the pause-limit reminder and/or why Resume failed. Renders nothing otherwise. */
+export const PauseNotice: React.FC<{ compact?: boolean }> = ({ compact }) => {
+  const rec = useRecording();
+  const secondsLeft = useCountdown(rec.paused && rec.pausedAt ? rec.pausedAt + MAX_PAUSE_MIN * 60_000 : null);
+  if (!rec.paused || (!rec.pauseReminder && !rec.resumeError)) return null;
+  return (
+    <div className={`glass-card rounded-xl ${compact ? 'p-3' : 'p-4'} border border-amber-500/30 space-y-1`} role="status" aria-live="polite">
+      {rec.pauseReminder && (
+        <p className="text-xs font-semibold text-[var(--text-primary)]">
+          Recording still paused — it will be saved in {formatRecordingTime(secondsLeft)}.
+        </p>
+      )}
+      {rec.resumeError && <p className="text-xs text-amber-500">{rec.resumeError}</p>}
+    </div>
+  );
+};
 
 /**
  * Re-share the meeting tab into the SAME recording. The click calls
@@ -118,15 +148,43 @@ interface RecordingIndicatorProps {
  * Persistent "recording in progress" indicator, shown on every screen while a
  * recording runs: pulsing dot, elapsed captured time, source, Stop, and tap to
  * return to the recorder. Also surfaces any prompt so it can be answered from
- * wherever the user is.
+ * wherever the user is. While paused: a steady amber dot, how long it has been
+ * paused, Resume and Stop & save.
  */
 const RecordingIndicator: React.FC<RecordingIndicatorProps> = ({ onOpen, variant }) => {
   const rec = useRecording();
+  const pausedFor = useSecondsSince(rec.paused ? rec.pausedAt : null);
   if (rec.status !== 'recording' && rec.status !== 'finalizing') return null;
   const finalizing = rec.status === 'finalizing';
   const label = SOURCE_LABEL[rec.source ?? ''] ?? 'Recording';
 
-  const row = (
+  const row = rec.paused && !finalizing ? (
+    <div className="flex items-center gap-2">
+      <button onClick={onOpen} className="flex items-center gap-3 flex-1 min-w-0 text-left" title="Return to the recording">
+        <span className="w-2.5 h-2.5 rounded-full shrink-0 bg-amber-500" />
+        <span className="min-w-0">
+          <span className="block text-sm font-semibold font-mono tabular-nums text-[var(--text-primary)]">
+            Paused {formatRecordingTime(pausedFor)}
+          </span>
+          <span className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] truncate">
+            {label} recording
+          </span>
+        </span>
+      </button>
+      <button
+        onClick={() => void recordingController.resume()}
+        className="px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 hover:bg-amber-400 text-black transition-all active:scale-95"
+      >
+        Resume
+      </button>
+      <button
+        onClick={() => void recordingController.finalizeRecording('user_stop')}
+        className="px-3 py-1.5 rounded-lg text-xs font-semibold glass glass-hover text-[var(--text-secondary)] transition-all active:scale-95"
+      >
+        Stop &amp; save
+      </button>
+    </div>
+  ) : (
     <div className="flex items-center gap-3">
       <button onClick={onOpen} className="flex items-center gap-3 flex-1 min-w-0 text-left" title="Return to the recording">
         <span className="relative flex w-2.5 h-2.5 shrink-0">
@@ -158,6 +216,7 @@ const RecordingIndicator: React.FC<RecordingIndicatorProps> = ({ onOpen, variant
     return (
       <div className="md:hidden px-4 py-2 border-b border-[var(--border)] bg-[var(--surface-900)]/80 backdrop-blur-xl space-y-2 shrink-0">
         {row}
+        {!finalizing && <PauseNotice compact />}
         {rec.prompt && <RecordingPromptCard prompt={rec.prompt} compact />}
         {rec.sleepNotice && <SleepNotice gapMin={rec.sleepNotice.gapMin} />}
       </div>
@@ -166,6 +225,7 @@ const RecordingIndicator: React.FC<RecordingIndicatorProps> = ({ onOpen, variant
   return (
     <div className="glass-card rounded-2xl p-3 mb-5 space-y-2">
       {row}
+      {!finalizing && <PauseNotice compact />}
       {rec.prompt && <RecordingPromptCard prompt={rec.prompt} compact />}
       {rec.sleepNotice && <SleepNotice gapMin={rec.sleepNotice.gapMin} />}
     </div>

@@ -370,10 +370,14 @@ export interface SegmentEntry {
   previousStoragePaths?: string[];
 }
 
-/** A stretch of wall-clock time the device slept mid-recording (not captured). */
+/** A stretch of wall-clock time not captured mid-recording: a device sleep or a user pause. */
 export interface SegmentGap {
-  startedAt: number; // ms epoch, last tick before the sleep
+  startedAt: number; // ms epoch: last tick before the sleep, or when Pause was pressed
   gapMs: number;
+  /** Absent on older manifests = 'sleep'. */
+  kind?: 'sleep' | 'pause';
+  /** Pause only: index of the first segment recorded after it (places the transcript marker). */
+  nextSegment?: number;
 }
 
 export interface SegmentManifest {
@@ -383,7 +387,7 @@ export interface SegmentManifest {
   mimeType: string;
   segments: SegmentEntry[];
   updatedAt: number;
-  /** Sleeps the recording resumed across. Informational; durations already exclude them. */
+  /** Sleeps and pauses the recording resumed across. Durations already exclude them. */
   gaps?: SegmentGap[];
 }
 

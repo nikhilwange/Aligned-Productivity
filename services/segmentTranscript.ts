@@ -20,6 +20,8 @@ import { UNCLEAR_MARKER } from '../supabase/functions/_shared/audioRetention.ts'
 
 export {
   buildSegmentedTranscript,
+  pausesFromManifest,
+  transcriptForAnalysis,
   resultStatus,
   needsRetry,
   type SegmentPiece,
