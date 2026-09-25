@@ -65,6 +65,8 @@ export interface RecorderSnapshot {
   /** Continuous silence so far, in captured-audio time. */
   silenceMs: number;
   prompt: RecorderPrompt | null;
+  /** Meeting mode only: screen/tab audio is currently feeding the recording. */
+  shareLive: boolean;
   /** Non-blocking notice after resuming from a short sleep. */
   sleepNotice: { gapMin: number } | null;
 }
@@ -101,6 +103,13 @@ const recordingLockName = (recoveryId: string) => `aligned-recorder:${recoveryId
 
 export const sourceForMode = (mode: InputMode): string =>
   mode === 'meeting' ? 'virtual-meeting' : mode === 'call' ? 'phone-call' : 'in-person';
+
+// Used by start() and reconnectShare() alike.
+const DISPLAY_MEDIA_OPTIONS = {
+  video: true,
+  audio: { echoCancellation: true },
+  systemAudio: 'include',
+};
 
 const MIC_CONSTRAINTS: MediaTrackConstraints = {
   echoCancellation: true,
@@ -240,6 +249,7 @@ interface ActiveRecording {
   micStream: MediaStream | null;
   micSource: MediaStreamAudioSourceNode | null;
   displayStream: MediaStream | null;
+  displaySource: MediaStreamAudioSourceNode | null;
   seg: SegmentRecorder;
   locks: Array<{ release: () => void }>; // the global single-recorder lock
   recordingLock: { release: () => void } | null; // per-recording; handed to processing
@@ -262,6 +272,7 @@ const IDLE_SNAPSHOT: RecorderSnapshot = {
   capturedMs: 0,
   silenceMs: 0,
   prompt: null,
+  shareLive: false,
   sleepNotice: null,
 };
 
@@ -271,6 +282,7 @@ class RecordingController {
   private handlers: RecorderHandlers = {};
   private rec: ActiveRecording | null = null;
   private finalizing: Promise<void> | null = null;
+  private reconnecting = false;
 
   // ── store plumbing (useSyncExternalStore) ──
   subscribe = (listener: () => void): (() => void) => {
@@ -346,11 +358,7 @@ class RecordingController {
       let displayStream: MediaStream | null = null;
       if (mode === 'meeting') {
         step = 'share';
-        displayStream = await (navigator.mediaDevices as any).getDisplayMedia({
-          video: true,
-          audio: { echoCancellation: true },
-          systemAudio: 'include',
-        });
+        displayStream = await (navigator.mediaDevices as any).getDisplayMedia(DISPLAY_MEDIA_OPTIONS);
         streams.push(displayStream!);
         if (displayStream!.getAudioTracks().length === 0) {
           return fail('no_share_audio', 'Share audio was not selected.');
@@ -395,7 +403,7 @@ class RecordingController {
         meterInputs.forEach((m) => node.connect(m));
         return node;
       };
-      if (displayStream) connect(displayStream);
+      const displaySource = displayStream ? connect(displayStream) : null;
       const micSource = micStream ? connect(micStream) : null;
 
       // Per-recording lock: another tab may rescue this manifest only once it's gone.
@@ -425,6 +433,7 @@ class RecordingController {
         micStream,
         micSource,
         displayStream,
+        displaySource,
         seg,
         locks,
         recordingLock,
@@ -450,6 +459,7 @@ class RecordingController {
         capturedMs: 0,
         silenceMs: 0,
         prompt: null,
+        shareLive: !!displayStream,
         sleepNotice: null,
       });
       console.log(`[Recorder] started ${recoveryId} (${rec.source}, worklet: ${worklet ? 'yes' : 'no'})`);
@@ -473,11 +483,7 @@ class RecordingController {
 
     // Track endings.
     this.watchMic(rec);
-    if (rec.displayStream) {
-      const onShareEnded = () => this.onShareEnded(rec);
-      rec.displayStream.getTracks().forEach((t) => t.addEventListener('ended', onShareEnded));
-      rec.cleanup.push(() => rec.displayStream?.getTracks().forEach((t) => t.removeEventListener('ended', onShareEnded)));
-    }
+    this.watchShare(rec);
 
     // Tab close / hide: save the in-progress segment so at most a few seconds are lost.
     const onPageHide = () => { void rec.seg.checkpoint(); };
@@ -514,6 +520,19 @@ class RecordingController {
     const onEnded = () => { track.removeEventListener('ended', onEnded); void this.onMicEnded(rec); };
     track.addEventListener('ended', onEnded);
     rec.cleanup.push(() => track.removeEventListener('ended', onEnded));
+  }
+
+  /**
+   * Attach the ended handler to the current screen stream's tracks. Bound to
+   * THAT stream, so one replaced by reconnectShare() can never raise a prompt.
+   */
+  private watchShare(rec: ActiveRecording): void {
+    const stream = rec.displayStream;
+    if (!stream) return;
+    const tracks = stream.getTracks();
+    const onEnded = () => { if (rec.displayStream === stream) this.onShareEnded(rec); };
+    tracks.forEach((t) => t.addEventListener('ended', onEnded));
+    rec.cleanup.push(() => tracks.forEach((t) => t.removeEventListener('ended', onEnded)));
   }
 
   private onLevel(rec: ActiveRecording, audioT: number, rms: number): void {
@@ -656,7 +675,7 @@ class RecordingController {
       void this.finalizeRecording('share_ended');
       return;
     }
-    this.set({ prompt: { kind: 'share_ended', deadline: Date.now() + SHARE_ENDED_PROMPT_TIMEOUT_MIN * 60_000 } });
+    this.set({ shareLive: false, prompt: { kind: 'share_ended', deadline: Date.now() + SHARE_ENDED_PROMPT_TIMEOUT_MIN * 60_000 } });
   }
 
   /** Answer the current prompt. "keep" continues; "stop" is a normal user stop. */
@@ -671,6 +690,50 @@ class RecordingController {
     if (prompt.kind === 'silence') rec.lastSpeechAudio = rec.ctx.currentTime; // another full window
     console.log(`[Recorder] prompt "${prompt.kind}" → keep recording`);
     this.set({ prompt: null, silenceMs: 0 });
+  }
+
+  /**
+   * Re-capture meeting audio into the SAME recording (after sharing ended).
+   * Call it straight from a click handler: getDisplayMedia is its first async
+   * step, or the browser refuses it. The old share is retired first, so only
+   * one meeting-audio source ever feeds the recording; the segment recorder
+   * records `dest` and never notices. Resolves to a message for the user, or
+   * null (reconnected, cancelled, or the recording has ended).
+   */
+  async reconnectShare(): Promise<string | null> {
+    const rec = this.rec;
+    if (!rec || rec.inputMode !== 'meeting' || this.snapshot.status !== 'recording' || this.reconnecting) return null;
+    this.reconnecting = true;
+    let fresh: MediaStream;
+    try {
+      fresh = await (navigator.mediaDevices as any).getDisplayMedia(DISPLAY_MEDIA_OPTIONS);
+    } catch (err: any) {
+      if (err?.name === 'NotAllowedError') return null; // picker cancelled
+      console.warn('[Recorder] could not reconnect meeting audio:', err?.message);
+      return 'Could not reconnect meeting audio. Please try again.';
+    } finally {
+      this.reconnecting = false;
+    }
+    const stopFresh = () => fresh.getTracks().forEach((t) => { try { t.stop(); } catch { /* ignore */ } });
+    // Saved (deadline, Stop) while the picker was open.
+    if (this.rec !== rec || this.snapshot.status !== 'recording') { stopFresh(); return null; }
+    if (fresh.getAudioTracks().length === 0) {
+      stopFresh();
+      return "Share audio was not selected — tick 'Share tab audio' and try again.";
+    }
+    // Retire the old share completely: never two meeting-audio sources.
+    try { rec.displaySource?.disconnect(); } catch { /* ignore */ }
+    rec.displayStream?.getTracks().forEach((t) => { try { t.stop(); } catch { /* ignore */ } });
+    const node = rec.ctx.createMediaStreamSource(fresh);
+    node.connect(rec.dest);
+    rec.meterInputs.forEach((m) => node.connect(m));
+    rec.displayStream = fresh;
+    rec.displaySource = node;
+    this.watchShare(rec);
+    console.log('[Recorder] meeting audio reconnected');
+    const prompt = this.snapshot.prompt?.kind === 'share_ended' ? null : this.snapshot.prompt;
+    this.set({ shareLive: true, prompt });
+    return null;
   }
 
   dismissSleepNotice(): void {

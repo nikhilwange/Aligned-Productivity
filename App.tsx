@@ -21,6 +21,7 @@ import { minutesToHoursLabel } from './config/tiers';
 import { STT_SESSION_CEILING_MIN, LEFTOVER_MAX_AGE_HOURS } from './config/sttLimits';
 import { recordingController, claimRecording, isRecordingLive, type FinalizeReason, type RecordingResult } from './services/recordingController';
 import RecordingIndicator from './components/RecordingIndicator';
+import { usePromptAlert } from './hooks/usePromptAlert';
 import LeftoverRecordingNotice from './components/LeftoverRecordingNotice';
 import RetranscribeBanner from './components/RetranscribeBanner';
 import AudioRetentionNotice from './components/AudioRetentionNotice';
@@ -1579,6 +1580,8 @@ const App: React.FC = () => {
     setActiveRecordingId(null);
     setIsRecordingMode(true);
   };
+  // Recorder prompt while the user is elsewhere → notification; click returns here.
+  usePromptAlert(openRecorder);
 
   const handleDiscardRecording = () => {
     setConfirmRequest({

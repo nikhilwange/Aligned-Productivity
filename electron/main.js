@@ -16,6 +16,17 @@ ipcMain.on('power-blocker', (_event, action) => {
     }
 });
 
+// The recorder needs an answer (meeting audio stopped, "Still recording?")
+// while the user is in another app: bring the window forward. If the OS
+// refuses the focus (Windows focus-stealing rules), flash the taskbar instead.
+ipcMain.on('focus-window', () => {
+    if (!win || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    if (!win.isFocused()) win.flashFrame(true);
+});
+
 function createMainWindow() {
     win = new BrowserWindow({
         width: 1200,
@@ -38,6 +49,10 @@ function createMainWindow() {
 
     win.once('ready-to-show', () => {
         if (win) win.show();
+    });
+
+    win.on('focus', () => {
+        if (win) win.flashFrame(false);
     });
 
     win.on('close', (event) => {
