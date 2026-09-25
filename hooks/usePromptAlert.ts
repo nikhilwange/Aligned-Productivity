@@ -22,6 +22,10 @@ const ALERT_COPY: Record<RecorderPrompt['kind'], { title: string; body: (deadlin
     title: 'Meeting audio stopped',
     body: (d) => `Aligned will save your recording in ${minutesText(d)}. Click to choose.`,
   },
+  share_silent: {
+    title: 'Did your meeting end?',
+    body: (d) => `The meeting audio has been silent for a while. Aligned will save your recording in ${minutesText(d)}. Click to choose.`,
+  },
   silence: {
     title: 'Still recording?',
     body: (d) => `We haven't heard anything for a while. Aligned will save your recording in ${minutesText(d)}. Click to choose.`,

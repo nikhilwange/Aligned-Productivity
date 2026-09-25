@@ -39,6 +39,24 @@ export const SILENCE_RMS_THRESHOLD = 0.004;
 
 /** Virtual mode: screen sharing ended but the mic is live → "Continue with mic only?" timeout. */
 export const SHARE_ENDED_PROMPT_TIMEOUT_MIN = 3;
+/**
+ * Virtual mode, still mic-only after "Keep recording": ask again (the same
+ * "sharing ended" prompt) after every this many minutes of captured audio.
+ */
+export const MIC_ONLY_REPROMPT_MIN = 10;
+
+/**
+ * Virtual mode: the meeting audio is measured ON ITS OWN (the mic's room
+ * noise would mask it). A meeting tab left open after the call is digitally
+ * silent, far below any room noise, hence a much lower threshold than
+ * SILENCE_RMS_THRESHOLD. Live values are logged in dev ([Recorder] meeting
+ * audio level …) for tuning.
+ */
+export const SHARE_SILENCE_RMS_THRESHOLD = 0.0005;
+/** Silent meeting audio (captured-audio time) before "Did your meeting end?". Only ever asks. */
+export const SHARE_SILENCE_PROMPT_MIN = 5;
+/** No answer to "Did your meeting end?" within this → stop and SAVE. */
+export const SHARE_SILENCE_PROMPT_TIMEOUT_MIN = 3;
 
 /** How often the in-progress segment is saved to IndexedDB (bounds loss on tab close). */
 export const CHECKPOINT_INTERVAL_SEC = 10;

@@ -54,14 +54,17 @@ export const ReconnectShareButton: React.FC<{ compact?: boolean }> = ({ compact 
   );
 };
 
-/** "Still recording?" / "Continue with mic only?" — Keep / Stop, auto-saves on timeout. */
+const PROMPT_COPY: Record<RecorderPrompt['kind'], { title: string; body: string }> = {
+  silence: { title: 'Still recording?', body: "We haven't heard anything for a while." },
+  share_ended: { title: 'Screen audio sharing ended', body: 'Reconnect the meeting, or continue with mic only?' },
+  share_silent: { title: 'Did your meeting end?', body: 'The meeting audio has been silent for a while.' },
+};
+
+/** A recorder prompt — Keep / Stop (+ Reconnect when sharing ended), auto-saves on timeout. */
 export const RecordingPromptCard: React.FC<{ prompt: RecorderPrompt; compact?: boolean }> = ({ prompt, compact }) => {
   const secondsLeft = useCountdown(prompt.deadline);
   const shareEnded = prompt.kind === 'share_ended';
-  const title = shareEnded ? 'Screen audio sharing ended' : 'Still recording?';
-  const body = shareEnded
-    ? 'Reconnect the meeting, or continue with mic only?'
-    : "We haven't heard anything for a while.";
+  const { title, body } = PROMPT_COPY[prompt.kind];
   return (
     <div className={`glass-card rounded-xl ${compact ? 'p-3' : 'p-4'} border border-[var(--border)]`} role="alertdialog" aria-live="assertive">
       <p className="text-sm font-semibold text-[var(--text-primary)]">{title}</p>
