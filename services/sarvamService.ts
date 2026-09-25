@@ -506,12 +506,14 @@ export const transcribeAudioWithSarvam = async (
   // Inline fast path ONLY for one decoded WAV chunk of ≤ INLINE_MAX_SECONDS
   // that fits the body cap; anything else takes the Storage path below.
   if (chunks.length === 1 && chunks[0].seconds <= INLINE_MAX_SECONDS && chunks[0].blob.size <= INLINE_MAX_BYTES) {
-    return retryOperation(
+    const text = await retryOperation(
       () => transcribeChunkInline(chunks[0].blob, token, /* sessionStart */ true, signal, recoveryId),
       2,
       1000,
       "Sarvam STT",
     );
+    console.log(`[Sarvam] ✅ Transcription complete (${text.length} chars)`);
+    return text;
   }
 
   // Multi-chunk path: upload each chunk to Supabase Storage, transcribe by path,
