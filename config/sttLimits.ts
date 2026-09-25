@@ -43,7 +43,7 @@ export const SHARE_ENDED_PROMPT_TIMEOUT_MIN = 3;
  * Virtual mode, still mic-only after "Keep recording": ask again (the same
  * "sharing ended" prompt) after every this many minutes of captured audio.
  */
-export const MIC_ONLY_REPROMPT_MIN = 2; // TEST ONLY — restore to 15
+export const MIC_ONLY_REPROMPT_MIN = 10;
 
 /**
  * Virtual mode: the meeting audio is measured ON ITS OWN (the mic's room
@@ -54,7 +54,7 @@ export const MIC_ONLY_REPROMPT_MIN = 2; // TEST ONLY — restore to 15
  */
 export const SHARE_SILENCE_RMS_THRESHOLD = 0.0005;
 /** Silent meeting audio (captured-audio time) before "Did your meeting end?". Only ever asks. */
-export const SHARE_SILENCE_PROMPT_MIN = 1; // TEST ONLY — restore to 5
+export const SHARE_SILENCE_PROMPT_MIN = 5;
 /** No answer to "Did your meeting end?" within this → stop and SAVE. */
 export const SHARE_SILENCE_PROMPT_TIMEOUT_MIN = 3;
 
