@@ -30,24 +30,50 @@ function useCountdown(deadline: number | null): number {
   return deadline ? Math.max(0, Math.ceil((deadline - now) / 1000)) : 0;
 }
 
+/**
+ * Re-share the meeting tab into the SAME recording. The click calls
+ * reconnectShare() directly — no await before it — because the browser only
+ * allows getDisplayMedia straight from a click.
+ */
+export const ReconnectShareButton: React.FC<{ compact?: boolean }> = ({ compact }) => {
+  const [message, setMessage] = useState<string | null>(null);
+  const reconnect = () => {
+    setMessage(null);
+    void recordingController.reconnectShare().then(setMessage);
+  };
+  return (
+    <div className="w-full">
+      <button
+        onClick={reconnect}
+        className={`w-full px-3 ${compact ? 'py-1.5' : 'py-2'} rounded-lg text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-black transition-all active:scale-95`}
+      >
+        Reconnect meeting audio
+      </button>
+      {message && <p className="text-xs text-amber-500 mt-1.5" role="status">{message}</p>}
+    </div>
+  );
+};
+
 /** "Still recording?" / "Continue with mic only?" — Keep / Stop, auto-saves on timeout. */
 export const RecordingPromptCard: React.FC<{ prompt: RecorderPrompt; compact?: boolean }> = ({ prompt, compact }) => {
   const secondsLeft = useCountdown(prompt.deadline);
-  const title = prompt.kind === 'silence' ? 'Still recording?' : 'Screen audio sharing ended';
-  const body = prompt.kind === 'silence'
-    ? "We haven't heard anything for a while."
-    : 'Continue with mic only?';
+  const shareEnded = prompt.kind === 'share_ended';
+  const title = shareEnded ? 'Screen audio sharing ended' : 'Still recording?';
+  const body = shareEnded
+    ? 'Reconnect the meeting, or continue with mic only?'
+    : "We haven't heard anything for a while.";
   return (
     <div className={`glass-card rounded-xl ${compact ? 'p-3' : 'p-4'} border border-[var(--border)]`} role="alertdialog" aria-live="assertive">
       <p className="text-sm font-semibold text-[var(--text-primary)]">{title}</p>
       <p className="text-xs text-[var(--text-tertiary)] mt-0.5">
         {body} The recording will be saved automatically in {formatRecordingTime(secondsLeft)}.
       </p>
-      <div className="flex gap-2 mt-3">
+      {shareEnded && <div className="mt-3"><ReconnectShareButton compact={compact} /></div>}
+      <div className={`flex gap-2 ${shareEnded ? 'mt-2' : 'mt-3'}`}>
         <button
           onClick={() => recordingController.respondToPrompt('keep')}
-          className="flex-1 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-95 hover:opacity-90"
-          style={{ background: 'var(--cta-bg)', color: 'var(--cta-fg)' }}
+          className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-95 ${shareEnded ? 'glass glass-hover text-[var(--text-secondary)]' : 'hover:opacity-90'}`}
+          style={shareEnded ? undefined : { background: 'var(--cta-bg)', color: 'var(--cta-fg)' }}
         >
           Keep recording
         </button>

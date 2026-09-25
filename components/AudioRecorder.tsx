@@ -5,7 +5,8 @@ import { STT_SESSION_CEILING_MIN, SILENCE_AUTOSTOP_MIN } from '../config/sttLimi
 import { subscribeLiveProgress, type LiveProgress } from '../services/liveTranscription';
 import { recordingController, type InputMode } from '../services/recordingController';
 import { useRecording } from '../hooks/useRecording';
-import { RecordingPromptCard, SleepNotice, formatRecordingTime } from './RecordingIndicator';
+import { RecordingPromptCard, ReconnectShareButton, SleepNotice, formatRecordingTime } from './RecordingIndicator';
+import { requestPromptAlertPermission } from '../hooks/usePromptAlert';
 
 // A VIEW of the app-level recording controller (services/recordingController.ts).
 // It owns no streams, recorders or timers: mounting / unmounting it — which
@@ -128,6 +129,18 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
       {isRecording && rec.prompt && (
         <div className="mb-4 w-full max-w-sm animate-fade-in-down"><RecordingPromptCard prompt={rec.prompt} /></div>
       )}
+      {/* Virtual recording carrying on with mic only (after "Keep recording") */}
+      {isRecording && inputMode === 'meeting' && !rec.shareLive && !rec.prompt && (
+        <div className="mb-4 w-full max-w-sm animate-fade-in-down">
+          <div className="glass-card rounded-xl p-4 border border-amber-500/30">
+            <p className="text-sm font-semibold text-[var(--text-primary)]">Meeting audio is off</p>
+            <p className="text-xs text-[var(--text-tertiary)] mt-0.5 mb-3">
+              Only your microphone is being recorded. Rejoined the meeting? Share its tab again.
+            </p>
+            <ReconnectShareButton />
+          </div>
+        </div>
+      )}
       {isRecording && rec.sleepNotice && (
         <div className="mb-4 w-full max-w-sm animate-fade-in-down"><SleepNotice gapMin={rec.sleepNotice.gapMin} /></div>
       )}
@@ -218,7 +231,11 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
             (mode.id !== 'meeting' || isScreenCaptureSupported) && (
               <button
                 key={mode.id}
-                onClick={() => setSelectedMode(mode.id as InputMode)}
+                onClick={() => {
+                  setSelectedMode(mode.id as InputMode);
+                  // Ask here, not in "Begin Capture": that click must reach getDisplayMedia with no await.
+                  if (mode.id === 'meeting') requestPromptAlertPermission();
+                }}
                 disabled={isStarting}
                 className={`flex items-center gap-2.5 px-5 md:px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-300 ${
                   selectedMode === mode.id
