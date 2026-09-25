@@ -59,9 +59,9 @@ export const SHARE_SILENCE_PROMPT_MIN = 5;
 export const SHARE_SILENCE_PROMPT_TIMEOUT_MIN = 3;
 
 /** Paused this long → stop and SAVE what was captured before the pause. */
-export const MAX_PAUSE_MIN = 3; // TEST ONLY — restore to 60
+export const MAX_PAUSE_MIN = 60;
 /** Paused this long → "Recording still paused" reminder (+ pop-up when away). */
-export const PAUSE_REMINDER_MIN = 2; // TEST ONLY — restore to 45
+export const PAUSE_REMINDER_MIN = 45;
 /**
  * A segment shorter than this (Pause/Resume within a second, Pause right
  * after Start, an instant Stop) is dropped at close: never uploaded, never
