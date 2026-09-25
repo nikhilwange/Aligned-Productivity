@@ -66,6 +66,42 @@ export interface BuiltTranscript {
   problems: number;
 }
 
+// ─── Pause markers ───────────────────────────────────────────────────────────
+// A user pause shows as "[Paused 14:05–14:20]" (local time) between the
+// segments either side of it. Markers are not pieces: they never count as
+// speech in the trailing trim and are never unclear / failed.
+
+export interface PauseMark {
+  startedAt: number; // ms epoch
+  endedAt: number; // ms epoch
+  nextSegment: number; // first segment recorded after the pause
+}
+
+/** The pauses a manifest recorded (sleep gaps and older notes are ignored). */
+export function pausesFromManifest(m: SegmentManifest | null | undefined): PauseMark[] {
+  return (m?.gaps ?? [])
+    .filter((g) => g.kind === 'pause' && typeof g.nextSegment === 'number')
+    .map((g) => ({ startedAt: g.startedAt, endedAt: g.startedAt + g.gapMs, nextSegment: g.nextSegment! }));
+}
+
+const hhmm = (ms: number): string => {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+export const pauseLine = (startedAt: number, endedAt: number): string => `[Paused ${hhmm(startedAt)}–${hhmm(endedAt)}]`;
+
+const PAUSE_LINE_RE = /^\[Paused \d{2}:\d{2}–\d{2}:\d{2}\]$/gm;
+export const ANALYSIS_PAUSE_LINE = '--- Recording paused here ---';
+
+/**
+ * The copy of a transcript sent for analysis: each pause line becomes a
+ * neutral marker without times, so the times are never read as meeting
+ * content. The saved transcript keeps the full line.
+ */
+export const transcriptForAnalysis = (transcript: string): string =>
+  transcript.replace(PAUSE_LINE_RE, ANALYSIS_PAUSE_LINE);
+
 const TRAIL_MIN_WORDS = 30;
 const TRAIL_SPARSE_MIN_MS = 2 * 60 * 1000;
 const wordCount = (t: string | null) =>
@@ -85,8 +121,13 @@ const wordCount = (t: string | null) =>
  *
  * A 'failed' segment always contributes FAILED_SEGMENT_TEXT (the marker), even
  * if its stored text is empty, so the saved transcript reveals it.
+ *
+ * Pause lines go in AFTER the trim, before the first kept segment recorded
+ * after each pause — only when a kept segment precedes it too, so a pause at
+ * the very start or end adds nothing. Pauses with no kept segment between
+ * them (e.g. a skipped sub-second segment) merge into one line.
  */
-export function buildSegmentedTranscript(pieces: SegmentPiece[], fallbackDurationSec: number): BuiltTranscript {
+export function buildSegmentedTranscript(pieces: SegmentPiece[], fallbackDurationSec: number, pauses: PauseMark[] = []): BuiltTranscript {
   let keep = pieces.length;
   while (keep > 1) {
     const { seg, text, status } = pieces[keep - 1];
@@ -100,8 +141,22 @@ export function buildSegmentedTranscript(pieces: SegmentPiece[], fallbackDuratio
   const keptMs = kept.reduce((s, p) => s + segmentSavedMs(p.seg), 0);
   // Join segments with a blank line, not a space. Collapsing on /\s+/ used to
   // eat every newline, leaving multi-hour meetings as one unbroken line.
+  // Kept-piece position → the (merged) pause just before it.
+  const pauseBefore = new Map<number, { startedAt: number; endedAt: number }>();
+  for (const pz of pauses) {
+    const at = kept.findIndex((p) => p.seg.index >= pz.nextSegment);
+    if (at <= 0) continue; // nothing kept before it, or nothing kept after it
+    const prev = pauseBefore.get(at);
+    pauseBefore.set(at, prev
+      ? { startedAt: Math.min(prev.startedAt, pz.startedAt), endedAt: Math.max(prev.endedAt, pz.endedAt) }
+      : { startedAt: pz.startedAt, endedAt: pz.endedAt });
+  }
   const transcript = kept
-    .map((p) => (p.status === 'failed' && !(p.text ?? '').includes(UNCLEAR_MARKER) ? FAILED_SEGMENT_TEXT : p.text))
+    .flatMap((p, i) => {
+      const text = p.status === 'failed' && !(p.text ?? '').includes(UNCLEAR_MARKER) ? FAILED_SEGMENT_TEXT : p.text;
+      const pz = pauseBefore.get(i);
+      return pz ? [pauseLine(pz.startedAt, pz.endedAt), text] : [text];
+    })
     .filter((t): t is string => t !== null)
     .map((t) => t.replace(/[ \t]+/g, ' ').trim())
     .filter(Boolean)

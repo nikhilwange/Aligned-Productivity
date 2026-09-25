@@ -5,7 +5,7 @@ import { STT_SESSION_CEILING_MIN, SILENCE_AUTOSTOP_MIN } from '../config/sttLimi
 import { subscribeLiveProgress, type LiveProgress } from '../services/liveTranscription';
 import { recordingController, type InputMode } from '../services/recordingController';
 import { useRecording } from '../hooks/useRecording';
-import { RecordingPromptCard, ReconnectShareButton, SleepNotice, formatRecordingTime } from './RecordingIndicator';
+import { RecordingPromptCard, ReconnectShareButton, SleepNotice, PauseNotice, formatRecordingTime, useSecondsSince } from './RecordingIndicator';
 import { requestPromptAlertPermission } from '../hooks/usePromptAlert';
 
 // A VIEW of the app-level recording controller (services/recordingController.ts).
@@ -72,6 +72,27 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
   };
 
   const stopRecording = () => { void recordingController.finalizeRecording('user_stop'); };
+  const togglePause = () => {
+    if (recordingController.getSnapshot().paused) void recordingController.resume();
+    else recordingController.pause();
+  };
+  const pausedFor = useSecondsSince(rec.paused ? rec.pausedAt : null);
+
+  // Space toggles Pause / Resume on this screen only (it is unmounted
+  // elsewhere). Never while typing, and never when a control has focus — the
+  // browser already "clicks" a focused button on Space.
+  useEffect(() => {
+    if (!isRecording) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON|A)$/.test(el.tagName))) return;
+      e.preventDefault();
+      togglePause();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isRecording]);
 
   const tipDismissedForever = (() => {
     try { return localStorage.getItem(IN_PERSON_TIP_KEY) === '1'; } catch { return false; }
@@ -104,7 +125,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
   ];
 
   // Show silence warning when silence exceeds 60s
-  const showSilenceWarning = isRecording && !rec.prompt && silenceSeconds >= 60;
+  const showSilenceWarning = isRecording && !rec.paused && !rec.prompt && silenceSeconds >= 60;
   // Show long-recording heads-up after 90 minutes
   const showLongRecordingWarning = isRecording && timer >= 5400;
 
@@ -114,12 +135,16 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
       {isRecording && (
         <div className="mb-10 animate-fade-in-down">
           <div className="flex items-center gap-3 px-5 py-3 glass-card rounded-2xl">
-            <div className="relative">
-              <div className="absolute inset-0 bg-red-500 rounded-full animate-ping opacity-40"></div>
-              <div className="relative w-2.5 h-2.5 bg-red-500 rounded-full"></div>
-            </div>
+            {rec.paused ? (
+              <div className="w-2.5 h-2.5 bg-amber-500 rounded-full"></div>
+            ) : (
+              <div className="relative">
+                <div className="absolute inset-0 bg-red-500 rounded-full animate-ping opacity-40"></div>
+                <div className="relative w-2.5 h-2.5 bg-red-500 rounded-full"></div>
+              </div>
+            )}
             <span className="text-xs font-semibold text-[var(--text-secondary)] tracking-wide">
-              High-precision active session
+              {rec.paused ? 'Paused — nothing is being recorded' : 'High-precision active session'}
             </span>
           </div>
         </div>
@@ -129,8 +154,11 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
       {isRecording && rec.prompt && (
         <div className="mb-4 w-full max-w-sm animate-fade-in-down"><RecordingPromptCard prompt={rec.prompt} /></div>
       )}
+      {isRecording && rec.paused && (rec.pauseReminder || rec.resumeError) && (
+        <div className="mb-4 w-full max-w-sm animate-fade-in-down"><PauseNotice /></div>
+      )}
       {/* Virtual recording carrying on with mic only (after "Keep recording") */}
-      {isRecording && inputMode === 'meeting' && !rec.shareLive && !rec.prompt && (
+      {isRecording && inputMode === 'meeting' && !rec.shareLive && !rec.prompt && !rec.paused && (
         <div className="mb-4 w-full max-w-sm animate-fade-in-down">
           <div className="glass-card rounded-xl p-4 border border-amber-500/30">
             <p className="text-sm font-semibold text-[var(--text-primary)]">Meeting audio is off</p>
@@ -330,8 +358,8 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
                    background: 'var(--bg-elevated)',
                    border: '2px solid var(--accent-2, var(--accent))',
                  }}>
-              {/* Audio visualizer bars */}
-              <div className="absolute inset-0 flex items-center justify-center gap-1.5 opacity-40 px-10">
+              {/* Audio visualizer bars (hidden while paused — nothing is recorded) */}
+              {!rec.paused && <div className="absolute inset-0 flex items-center justify-center gap-1.5 opacity-40 px-10">
                 {[...Array(16)].map((_, i) => (
                   <div
                     key={i}
@@ -345,13 +373,19 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
                     }}
                   ></div>
                 ))}
-              </div>
+              </div>}
 
-              {/* Timer */}
+              {/* Timer (captured audio only — it does not move while paused) */}
               <h2 className="text-5xl font-mono text-[var(--text-primary)] tracking-tighter tabular-nums z-10 mb-1 font-semibold">{formatRecordingTime(timer)}</h2>
-              <div className={`text-[10px] font-bold z-10 transition-colors duration-500 ${getRemainingColor()}`}>
-                {formatRecordingTime(remainingTime)} remaining
-              </div>
+              {rec.paused ? (
+                <div className="text-[10px] font-bold z-10 text-amber-500">
+                  Paused {formatRecordingTime(pausedFor)}
+                </div>
+              ) : (
+                <div className={`text-[10px] font-bold z-10 transition-colors duration-500 ${getRemainingColor()}`}>
+                  {formatRecordingTime(remainingTime)} remaining
+                </div>
+              )}
 
               {/* Phase 3: quiet reassurance that transcription is already
                   running in the background. Deliberately understated — no
@@ -362,13 +396,26 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
                 </div>
               )}
 
-              {/* Stop button */}
-              <button
-                onClick={stopRecording}
-                className="absolute bottom-6 px-6 py-2.5 bg-purple-600 hover:bg-purple-500 text-white backdrop-blur-md rounded-xl text-xs font-bold transition-all z-10 shadow-lg shadow-purple-500/25 active:scale-95"
-              >
-                Finish
-              </button>
+              {/* Pause / Resume + Finish (Space toggles pause on this screen) */}
+              <div className="absolute bottom-6 flex gap-2 z-10">
+                <button
+                  onClick={togglePause}
+                  disabled={rec.status !== 'recording'}
+                  title={rec.paused ? 'Resume (Space)' : 'Pause (Space)'}
+                  className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all active:scale-95 disabled:opacity-50 ${
+                    rec.paused ? 'bg-amber-500 hover:bg-amber-400 text-black' : 'glass glass-hover text-[var(--text-secondary)]'
+                  }`}
+                >
+                  {rec.paused ? 'Resume' : 'Pause'}
+                </button>
+                <button
+                  onClick={stopRecording}
+                  disabled={rec.status !== 'recording'}
+                  className="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 text-white backdrop-blur-md rounded-xl text-xs font-bold transition-all shadow-lg shadow-purple-500/25 active:scale-95 disabled:opacity-50"
+                >
+                  Finish
+                </button>
+              </div>
             </div>
           )}
         </div>

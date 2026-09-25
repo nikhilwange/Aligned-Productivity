@@ -1,12 +1,14 @@
 import { useEffect, useRef } from 'react';
 import { useRecording } from './useRecording';
 import type { RecorderPrompt } from '../services/recordingController';
+import { MAX_PAUSE_MIN } from '../config/sttLimits';
 
 // Pull the user back when the recorder needs an answer. During a meeting the
 // user is usually in another tab or app, where the in-app prompt card can't be
 // seen, so a system notification is shown (and, in the desktop app, the
-// window is brought forward). Driven by snapshot.prompt, so it closes itself
-// however the prompt ends: answered, reconnected, timed out and saved.
+// window is brought forward). Driven by snapshot.prompt (and the pause
+// reminder), so it closes itself however that ends: answered, reconnected,
+// resumed, timed out and saved.
 // Without notification permission the in-app prompt works exactly as before.
 
 const PERMISSION_ASKED_KEY = 'aligned-notify-permission-asked';
@@ -53,24 +55,36 @@ function focusDesktopWindow(): void {
   try { (window as any).ipcRenderer?.send?.('focus-window'); } catch { /* not Electron */ }
 }
 
-/** Alert while a recorder prompt is open; `onOpen` shows the recorder screen. */
+/**
+ * Alert while a recorder prompt is open, or once a pause reaches its
+ * reminder; `onOpen` shows the recorder screen.
+ */
 export function usePromptAlert(onOpen: () => void): void {
-  const { prompt, recoveryId } = useRecording();
+  const { prompt, recoveryId, paused, pausedAt, pauseReminder } = useRecording();
   const onOpenRef = useRef(onOpen);
   onOpenRef.current = onOpen;
 
   useEffect(() => {
-    if (!prompt || !recoveryId) return;
-    const copy = ALERT_COPY[prompt.kind];
-    if (!copy) return;
+    if (!recoveryId) return;
+    let msg: { title: string; body: string } | null = null;
+    if (prompt) {
+      const copy = ALERT_COPY[prompt.kind];
+      if (copy) msg = { title: copy.title, body: copy.body(prompt.deadline) };
+    } else if (paused && pauseReminder && pausedAt) {
+      msg = {
+        title: 'Recording still paused',
+        body: `It will be saved in ${minutesText(pausedAt + MAX_PAUSE_MIN * 60_000)}. Click to resume or stop.`,
+      };
+    }
+    if (!msg) return;
     const away = document.visibilityState === 'hidden' || !document.hasFocus();
     focusDesktopWindow();
     if (!away || !notificationsSupported() || Notification.permission !== 'granted') return;
 
     let n: Notification | null = null;
     try {
-      n = new Notification(copy.title, {
-        body: copy.body(prompt.deadline),
+      n = new Notification(msg.title, {
+        body: msg.body,
         tag: `aligned-recorder-${recoveryId}`, // one per recording, replaced not stacked
         requireInteraction: true,
       });
@@ -83,5 +97,5 @@ export function usePromptAlert(onOpen: () => void): void {
       console.warn('[Recorder] could not show notification:', (err as Error)?.message);
     }
     return () => { n?.close(); };
-  }, [prompt, recoveryId]);
+  }, [prompt, recoveryId, paused, pausedAt, pauseReminder]);
 }

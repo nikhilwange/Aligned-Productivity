@@ -58,6 +58,17 @@ export const SHARE_SILENCE_PROMPT_MIN = 5;
 /** No answer to "Did your meeting end?" within this → stop and SAVE. */
 export const SHARE_SILENCE_PROMPT_TIMEOUT_MIN = 3;
 
+/** Paused this long → stop and SAVE what was captured before the pause. */
+export const MAX_PAUSE_MIN = 60;
+/** Paused this long → "Recording still paused" reminder (+ pop-up when away). */
+export const PAUSE_REMINDER_MIN = 45;
+/**
+ * A segment shorter than this (Pause/Resume within a second, Pause right
+ * after Start, an instant Stop) is dropped at close: never uploaded, never
+ * sent to Sarvam, never shown as unclear.
+ */
+export const MIN_SEGMENT_MS = 1000;
+
 /** How often the in-progress segment is saved to IndexedDB (bounds loss on tab close). */
 export const CHECKPOINT_INTERVAL_SEC = 10;
 

@@ -27,7 +27,15 @@ import {
   RETENTION_WARNING_DAYS,
   UNCLEAR_MARKER,
 } from '../supabase/functions/_shared/audioRetention.ts';
-import { buildSegmentedTranscript, FAILED_SEGMENT_TEXT, type SegmentPiece } from '../services/transcriptAssembly.ts';
+import {
+  buildSegmentedTranscript,
+  FAILED_SEGMENT_TEXT,
+  pausesFromManifest,
+  pauseLine,
+  transcriptForAnalysis,
+  ANALYSIS_PAUSE_LINE,
+  type SegmentPiece,
+} from '../services/transcriptAssembly.ts';
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-10-15T12:00:00Z');
@@ -257,6 +265,44 @@ test('trim: only trailing ok segments with no/sparse speech are dropped', () => 
   assert.equal(kept([{ seg: seg(0), text: words(200), status: 'ok' }, { seg: seg(1), text: words(10), status: 'ok' }]), 1);
   assert.equal(kept([{ seg: seg(0), text: words(200), status: 'ok' }, { seg: seg(1, 1), text: words(5), status: 'ok' }]), 2, 'short real ending kept');
   assert.equal(kept([{ seg: seg(0), text: words(200), status: 'ok' }, { seg: seg(1), text: null, status: 'skipped' }]), 2);
+});
+
+test('pause lines: between the segments either side, merged, never at the ends, not speech', () => {
+  // 1-min segments: a few words is a real (kept) ending under the sparse-trim rule.
+  const seg = (index: number) => ({ index, ext: 'webm', uploaded: true, durationMs: 60_000 });
+  const words = (n: number) => Array.from({ length: n }, (_, i) => `w${i}`).join(' ');
+  const T = Date.parse('2026-10-15T09:00:00Z');
+  const pz = (next: number, startMin: number, endMin: number) =>
+    ({ startedAt: T + startMin * 60_000, endedAt: T + endMin * 60_000, nextSegment: next });
+  const p = (index: number, text: string | null, status: SegmentPiece['status'] = 'ok'): SegmentPiece => ({ seg: seg(index), text, status });
+
+  // Between seg 0 and seg 1 (seg 1 = first after the pause).
+  const one = buildSegmentedTranscript([p(0, 'before'), p(1, 'after')], 0, [pz(1, 5, 20)]);
+  assert.equal(one.transcript, ['before', pauseLine(T + 5 * 60_000, T + 20 * 60_000), 'after'].join('\n\n'));
+  assert.match(pauseLine(T, T + 60_000), /^\[Paused \d{2}:\d{2}–\d{2}:\d{2}\]$/);
+
+  // The segment right after the pause was a skipped sub-second one (index 2
+  // never reached the manifest): the line goes before the next kept one.
+  // Two pauses with nothing kept between them merge into one line.
+  const merged = buildSegmentedTranscript([p(0, 'a'), p(3, 'b')], 0, [pz(2, 5, 6), pz(3, 6, 10)]);
+  assert.equal(merged.transcript, ['a', pauseLine(T + 5 * 60_000, T + 10 * 60_000), 'b'].join('\n\n'));
+
+  // Pause at the very start, or before trimmed trailing silence → no line.
+  assert.equal(buildSegmentedTranscript([p(0, 'a')], 0, [pz(0, 0, 1)]).transcript, 'a');
+  const trailing = buildSegmentedTranscript([p(0, words(200)), p(1, '')], 0, [pz(1, 5, 9)]);
+  assert.equal(trailing.trimmedCount, 1, 'the pause line does not count as speech');
+  assert.ok(!trailing.transcript.includes('[Paused'));
+  // Not a problem part, and the unclear marker is untouched.
+  assert.equal(one.problems, 0);
+
+  // Sleep gaps and older notes without the new fields make no lines.
+  assert.deepEqual(pausesFromManifest({ ...manifest, gaps: [{ startedAt: T, gapMs: 1 }, { startedAt: T, gapMs: 1, kind: 'sleep' }] } as any), []);
+  assert.deepEqual(pausesFromManifest({ ...manifest, gaps: [{ startedAt: T, gapMs: 60_000, kind: 'pause', nextSegment: 4 }] } as any),
+    [{ startedAt: T, endedAt: T + 60_000, nextSegment: 4 }]);
+
+  // The analysis copy has a neutral marker without times; the saved one keeps them.
+  assert.equal(transcriptForAnalysis(one.transcript), ['before', ANALYSIS_PAUSE_LINE, 'after'].join('\n\n'));
+  assert.equal(transcriptForAnalysis('no pauses here'), 'no pauses here');
 });
 
 // ─── The rules can't drift between client and server ────────────────────────

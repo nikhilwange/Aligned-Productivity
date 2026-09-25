@@ -27,6 +27,7 @@ import {
   getAllSegmentManifests,
 } from './recordingRecovery';
 import { LIVE_TRANSCRIPTION } from '../config/features';
+import { MIN_SEGMENT_MS } from '../config/sttLimits';
 import { startLiveTranscription, enqueueSegment } from './liveTranscription';
 import { splitAudioFile } from './audioSplitter';
 import { deleteRecordingSegments, type SegmentDeletion, type RecordingRowStatus } from './segmentCleanupPolicy';
@@ -225,6 +226,11 @@ export class SegmentRecorder {
   private nextIndex = 0;
   private rotationTimer: number | null = null;
   private stopped = false;
+  // Between pause() and resume(): no recorder runs, nothing is captured.
+  private paused = false;
+  // Resolves once the segment closed by pause() has handed its blob to
+  // finalizeSegment, so a stop() right after a pause never misses it.
+  private pauseFlush: Promise<void> = Promise.resolve();
   // Set once stop() has fully resolved: nothing may be recorded or uploaded
   // for this recording again (guards against a zombie producing segments).
   private tornDown = false;
@@ -320,7 +326,7 @@ export class SegmentRecorder {
 
   /** Cut the current segment and immediately continue on a new recorder. */
   private rotate(): void {
-    if (this.stopped) return;
+    if (this.stopped || this.paused) return;
     if (this.rotationTimer !== null) {
       clearTimeout(this.rotationTimer);
       this.rotationTimer = null;
@@ -339,7 +345,46 @@ export class SegmentRecorder {
     this.rotate();
   }
 
-  /** Record a sleep the recording resumed across, in the manifest. */
+  /**
+   * Close the current segment through the normal path (cached, added to the
+   * manifest, live-transcribed, uploaded) and record NOTHING until resume().
+   * Unlike cutSegment(), no next segment starts — in virtual mode the meeting
+   * audio still flows into the stream during a pause.
+   */
+  pause(): void {
+    if (this.stopped || this.paused) return;
+    this.paused = true;
+    if (this.rotationTimer !== null) {
+      clearTimeout(this.rotationTimer);
+      this.rotationTimer = null;
+    }
+    const finishing = this.recorder;
+    this.recorder = null;
+    this.current = null;
+    if (finishing && finishing.state !== 'inactive') {
+      this.pauseFlush = new Promise<void>((resolve) => {
+        const prev = finishing.onstop;
+        finishing.onstop = (ev) => {
+          if (prev) (prev as any).call(finishing, ev);
+          resolve();
+        };
+        try { finishing.stop(); } catch { resolve(); }
+      });
+    }
+    console.log(`[SegmentRecorder] paused ${this.sessionId}`);
+  }
+
+  /** Start a new segment after pause(). Returns its index, or null if none started. */
+  resume(): number | null {
+    if (this.stopped || this.tornDown || !this.paused) return null;
+    this.paused = false;
+    const index = this.nextIndex;
+    this.beginSegment();
+    console.log(`[SegmentRecorder] resumed ${this.sessionId} (seg ${index})`);
+    return this.recorder ? index : null;
+  }
+
+  /** Record a sleep or pause the recording resumed across, in the manifest. */
   recordGap(gap: SegmentGap): Promise<void> {
     return this.enqueueWrite(async () => {
       const manifest = await this.readOrCreateManifest();
@@ -379,6 +424,24 @@ export class SegmentRecorder {
     const blob = new Blob(chunks, { type: mime || this.mimeType });
     if (blob.size === 0) return; // nothing captured (e.g. instant stop) — skip.
     const ext = extFromMime(mime || this.mimeType);
+
+    // Too short to be worth anything (Pause/Resume within a second, an
+    // instant Stop): drop it cleanly — never uploaded, never sent to Sarvam,
+    // never an "unclear" part. Segment 0's blob is still cached (not in the
+    // manifest) because header repair of later segments reads it.
+    if (durationMs < MIN_SEGMENT_MS) {
+      console.log(`[SegmentRecorder] seg ${index} is only ${durationMs}ms — skipped`);
+      await this.enqueueWrite(async () => {
+        if (index === 0) await saveSegmentBlob(this.sessionId, index, blob);
+        // A checkpoint may already have written a partial entry for it.
+        const m = await getSegmentManifest(this.sessionId);
+        if (m?.segments.some((s) => s.index === index)) {
+          m.segments = m.segments.filter((s) => s.index !== index);
+          await saveSegmentManifest(m);
+        }
+      });
+      return;
+    }
 
     // Cache first (crash safety), then record in the manifest.
     await this.enqueueWrite(async () => {
@@ -497,6 +560,7 @@ export class SegmentRecorder {
     }
     this.recorder = null;
     this.current = null;
+    await this.pauseFlush; // stopped while paused: the pause's segment is queued first
 
     // Wait for all segment finalizes (cache + manifest) and background uploads.
     await Promise.allSettled(this.finalizePromises);
