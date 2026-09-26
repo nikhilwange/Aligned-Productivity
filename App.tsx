@@ -1891,12 +1891,6 @@ const App: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Badge */}
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg glass text-xs font-semibold text-[var(--text-tertiary)]">
-                <span className={`w-1.5 h-1.5 rounded-full ${transcriptionEngine === 'sarvam' ? 'bg-amber-400' : 'bg-teal-400'}`}></span>
-                <span className="hidden sm:inline">{transcriptionEngine === 'sarvam' ? 'Sarvam + Gemini' : 'Gemini 2.5'}</span>
-                <span className="sm:hidden">{transcriptionEngine === 'sarvam' ? 'Sarvam' : 'AI'}</span>
-              </div>
               {/* Mobile hamburger menu */}
               <button
                 onClick={() => setSidebarOpen(prev => !prev)}
@@ -2033,9 +2027,6 @@ const App: React.FC = () => {
                 <div className="absolute bottom-1/4 right-1/3 w-[300px] h-[300px] rounded-full bg-teal-500/5 blur-[120px]"></div>
               </div>
               <AudioRecorder
-                transcriptionEngine={transcriptionEngine}
-                onEngineChange={handleEngineChange}
-                hasSarvamKey={hasSarvamKey}
                 sessionCapMinutes={BILLING_ENABLED ? subscriptionState.sessionCapMinutes : null}
                 backgroundProcessing={recordings.some(r => r.status === 'processing')}
                 onNotice={(message, type) => addToast(message, type ?? 'info')}

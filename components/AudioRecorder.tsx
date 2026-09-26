@@ -13,9 +13,6 @@ import { requestPromptAlertPermission } from '../hooks/usePromptAlert';
 // happens on every navigation — never affects a recording in progress.
 
 interface AudioRecorderProps {
-  transcriptionEngine: 'gemini' | 'sarvam';
-  onEngineChange: (engine: 'gemini' | 'sarvam') => void;
-  hasSarvamKey: boolean;
   // Per-session recording cap in minutes (Free tier = 90; null = no cap).
   // At the cap the recording stops and is saved; a warning fires 5 min before.
   sessionCapMinutes?: number | null;
@@ -40,7 +37,7 @@ const WAVE_BARS = Array.from({ length: 36 }, (_, i) =>
   Math.round(6 + 30 * Math.abs(Math.sin(i * 1.9) * 0.6 + Math.sin(i * 0.37 + 1) * 0.4)),
 );
 
-const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEngineChange, hasSarvamKey, sessionCapMinutes, backgroundProcessing, onNotice, onRequestDiscard }) => {
+const AudioRecorder: React.FC<AudioRecorderProps> = ({ sessionCapMinutes, backgroundProcessing, onNotice, onRequestDiscard }) => {
   const rec = useRecording();
   const [selectedMode, setSelectedMode] = useState<InputMode>('mic');
   const [isScreenCaptureSupported, setIsScreenCaptureSupported] = useState<boolean>(true);
@@ -129,9 +126,9 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
   };
 
   const inputModes = [
-    { id: 'mic', label: 'In Person', icon: 'M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z', color: 'purple' },
-    { id: 'meeting', label: 'Virtual', icon: 'M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z', color: 'teal' },
-    { id: 'call', label: 'Call', icon: 'M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z', color: 'amber' }
+    { id: 'mic', label: 'In Person', hint: 'Records the room through your microphone', icon: 'M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z', color: 'purple' },
+    { id: 'meeting', label: 'Virtual', hint: 'Captures a meeting tab plus your microphone', icon: 'M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z', color: 'teal' },
+    { id: 'call', label: 'Call', hint: 'Records a call on speaker through your microphone', icon: 'M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z', color: 'amber' }
   ];
 
   // Show silence warning when silence exceeds 60s
@@ -231,108 +228,90 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
         </div>
       )}
 
-      {/* Engine Selector */}
-      {!isRecording && !isProcessing && hasSarvamKey && (
-        <div className="flex justify-center gap-1.5 glass-card p-1.5 rounded-xl mb-4 md:mb-6">
-          <button
-            onClick={() => onEngineChange('gemini')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all duration-300 ${
-              transcriptionEngine === 'gemini'
-                ? 'bg-teal-500/20 text-teal-600 shadow-lg shadow-teal-500/10'
-                : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-black/5'
-            }`}
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-teal-400"></span>
-            Gemini
-          </button>
-          <button
-            onClick={() => onEngineChange('sarvam')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all duration-300 ${
-              transcriptionEngine === 'sarvam'
-                ? 'bg-amber-500/20 text-amber-600 shadow-lg shadow-amber-500/10'
-                : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-black/5'
-            }`}
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-            Sarvam
-          </button>
-        </div>
-      )}
-
-      {/* Engine label */}
-      {!isRecording && !isProcessing && transcriptionEngine === 'sarvam' && hasSarvamKey && (
-        <p className="text-[10px] font-semibold text-amber-500/60 uppercase tracking-wider mb-4 md:mb-6">
-          Hindi / Marathi optimized transcription
-        </p>
-      )}
-
       {/* Input Mode Selector */}
       {!isRecording && !isProcessing && (
-        <div className="flex flex-wrap justify-center gap-2 glass-card p-2 rounded-2xl mb-12 md:mb-16 max-w-full">
-          {inputModes.map(mode => (
-            (mode.id !== 'meeting' || isScreenCaptureSupported) && (
-              <button
-                key={mode.id}
-                onClick={() => {
-                  setSelectedMode(mode.id as InputMode);
-                  // Ask here, not in "Begin Capture": that click must reach getDisplayMedia with no await.
-                  if (mode.id === 'meeting') requestPromptAlertPermission();
-                }}
-                disabled={isStarting}
-                className={`flex items-center gap-2.5 px-5 md:px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-300 ${
-                  selectedMode === mode.id
-                    ? mode.color === 'purple'
-                      ? 'bg-purple-500/20 text-purple-600 shadow-lg shadow-purple-500/10'
-                      : mode.color === 'teal'
-                        ? 'bg-teal-500/20 text-teal-600 shadow-lg shadow-teal-500/10'
-                        : 'bg-amber-500/20 text-amber-600 shadow-lg shadow-amber-500/10'
-                    : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-black/5'
+        <div className="flex flex-col items-center gap-2.5 mb-8 max-w-full">
+          <div role="tablist" aria-label="Recording source" className="flex flex-wrap justify-center gap-1 p-1 rounded-2xl border border-[var(--border)] bg-[var(--bg-sunken)]">
+            {inputModes.map(mode => (
+              (mode.id !== 'meeting' || isScreenCaptureSupported) && (
+                <button
+                  key={mode.id}
+                  role="tab"
+                  aria-selected={selectedMode === mode.id}
+                  onClick={() => {
+                    setSelectedMode(mode.id as InputMode);
+                    // Ask here, not in "Start recording": that click must reach getDisplayMedia with no await.
+                    if (mode.id === 'meeting') requestPromptAlertPermission();
+                  }}
+                  disabled={isStarting}
+                  className={`flex items-center gap-2 h-10 px-4 rounded-xl text-sm transition-all duration-200 ${
+                    selectedMode === mode.id
+                      ? 'font-semibold text-[var(--text-primary)]'
+                      : 'font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
                   }`}
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={mode.icon} />
-                </svg>
-                {mode.label}
-              </button>
-            )
-          ))}
+                  style={selectedMode === mode.id ? { background: 'var(--rec-seg-on)', boxShadow: 'var(--rec-seg-shadow)' } : undefined}
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d={mode.icon} />
+                  </svg>
+                  {mode.label}
+                </button>
+              )
+            ))}
+          </div>
+          <span className="text-xs text-[var(--text-muted)]">
+            {inputModes.find(m => m.id === selectedMode)?.hint}
+          </span>
         </div>
       )}
 
-      {/* Begin Capture / Starting / Saving */}
+      {/* Start recording / Starting / Saving — same dial as the recording screen */}
       {!isRecording && (
-        <div className="relative mb-16 group">
-          <div className="relative z-10">
+        <div className="flex flex-col items-center gap-6 mb-10">
+          <div className="relative w-[272px] h-[272px] flex items-center justify-center">
+            <svg viewBox="0 0 100 100" className="absolute inset-0 w-full h-full pointer-events-none" aria-hidden="true">
+              <circle cx="50" cy="50" r={RING_R} fill="none" stroke="var(--rec-track)" strokeWidth="0.9" />
+            </svg>
             <button
               onClick={startRecording}
               disabled={isProcessing || isStarting}
-              className={`w-56 h-56 rounded-full flex flex-col items-center justify-center transition-all duration-500 group ${
-                isProcessing || isStarting
-                  ? 'glass cursor-wait'
-                  : 'glass-card hover:scale-105 active:scale-95 cursor-pointer'
+              aria-label={isStarting ? 'Starting' : isProcessing ? 'Saving' : 'Start recording'}
+              className={`group w-[232px] h-[232px] rounded-full flex flex-col items-center justify-center gap-4 transition-transform duration-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--accent)] ${
+                isProcessing || isStarting ? 'cursor-wait' : 'hover:scale-[1.02] active:scale-[0.98] cursor-pointer'
               }`}
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', boxShadow: 'var(--rec-dial-shadow)' }}
             >
               {isProcessing || isStarting ? (
-                <div className="flex flex-col items-center">
-                  <div className="flex gap-2 mb-4">
+                <>
+                  <div className="flex gap-2">
                     {[0, 0.2, 0.4].map(d => (
                       <div key={d} className="w-2.5 h-2.5 rounded-full animate-bounce"
-                           style={{ animationDelay: `${d}s`, background: 'var(--accent)' }} />
+                           style={{ animationDelay: `${d}s`, background: 'var(--rec-signal)' }} />
                     ))}
                   </div>
-                  <span className="text-xs font-semibold text-[var(--text-muted)]">{isStarting ? 'Starting' : 'Saving'}</span>
-                </div>
+                  <span className="text-sm font-semibold text-[var(--text-muted)]">{isStarting ? 'Starting' : 'Saving'}</span>
+                </>
               ) : (
                 <>
-                  <div className="w-16 h-16 rounded-2xl bg-amber-500/15 flex items-center justify-center mb-4 text-amber-400 group-hover:scale-110 transition-transform duration-300">
-                    <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                  <span
+                    className="w-20 h-20 rounded-full flex items-center justify-center text-white transition-transform duration-300 group-hover:scale-105"
+                    style={{ background: 'var(--rec-signal)', boxShadow: '0 0 0 8px var(--rec-signal-soft)' }}
+                  >
+                    <svg className="w-[30px] h-[30px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM19 11a7 7 0 0 1-14 0M12 18v3" />
                     </svg>
-                  </div>
-                  <span className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider">Begin Capture</span>
+                  </span>
+                  <span className="text-sm font-semibold text-[var(--text-primary)]">Start recording</span>
                 </>
               )}
             </button>
+          </div>
+
+          {/* Resting waveform — where the live one appears once recording starts */}
+          <div className="flex items-center gap-[3px] h-10" aria-hidden="true">
+            {WAVE_BARS.map((_, i) => (
+              <span key={i} className="block w-[3px] h-1 rounded-full" style={{ background: 'var(--rec-wave-dim)' }} />
+            ))}
           </div>
         </div>
       )}
