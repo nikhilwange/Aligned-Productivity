@@ -30,6 +30,16 @@ interface AudioRecorderProps {
 
 const IN_PERSON_TIP_KEY = 'aligned-tip-in-person-dismissed';
 
+// Capacity ring geometry, in the SVG's 100×100 viewBox.
+const RING_R = 48;
+const RING_C = 2 * Math.PI * RING_R;
+
+// Fixed waveform shape so the bars don't jump on every re-render; the CSS
+// `wave` animation supplies the motion.
+const WAVE_BARS = Array.from({ length: 36 }, (_, i) =>
+  Math.round(6 + 30 * Math.abs(Math.sin(i * 1.9) * 0.6 + Math.sin(i * 0.37 + 1) * 0.4)),
+);
+
 const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEngineChange, hasSarvamKey, sessionCapMinutes, backgroundProcessing, onNotice, onRequestDiscard }) => {
   const rec = useRecording();
   const [selectedMode, setSelectedMode] = useState<InputMode>('mic');
@@ -133,18 +143,17 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
     <div className="flex flex-col items-center justify-center w-full max-w-xl mx-auto p-4 animate-fade-in-up h-full md:h-auto">
       {/* Recording Status Badge */}
       {isRecording && (
-        <div className="mb-10 animate-fade-in-down">
-          <div className="flex items-center gap-3 px-5 py-3 glass-card rounded-2xl">
+        <div className="mb-6 animate-fade-in-down">
+          <div className="flex items-center gap-2.5 px-3.5 py-2 rounded-full border border-[var(--border)] bg-[var(--bg-sunken)]">
             {rec.paused ? (
-              <div className="w-2.5 h-2.5 bg-amber-500 rounded-full"></div>
+              <div className="w-2 h-2 bg-amber-500 rounded-full"></div>
             ) : (
-              <div className="relative">
-                <div className="absolute inset-0 bg-red-500 rounded-full animate-ping opacity-40"></div>
-                <div className="relative w-2.5 h-2.5 bg-red-500 rounded-full"></div>
-              </div>
+              <div className="w-2 h-2 rounded-full" style={{ background: 'var(--rec-signal)', boxShadow: '0 0 0 4px var(--rec-signal-soft)' }}></div>
             )}
-            <span className="text-xs font-semibold text-[var(--text-secondary)] tracking-wide">
-              {rec.paused ? 'Paused — nothing is being recorded' : 'High-precision active session'}
+            <span className="text-[13px] font-medium text-[var(--text-secondary)]">
+              {rec.paused
+                ? 'Paused — nothing is being recorded'
+                : `Recording · ${inputModes.find(m => m.id === inputMode)?.label ?? 'In Person'}`}
             </span>
           </div>
         </div>
@@ -176,13 +185,18 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
       {/* First in-person recording tip */}
       {showInPersonTip && (
         <div className="mb-4 w-full max-w-sm animate-fade-in-down">
-          <div className="glass-card rounded-xl px-4 py-3 border border-[var(--border)]">
-            <p className="text-xs font-medium text-[var(--text-secondary)]">
-              Keep your laptop plugged in and the lid open. Recording pauses if your laptop sleeps.
-            </p>
-            <div className="flex gap-3 mt-2">
-              <button onClick={() => setTipHidden(true)} className="text-xs font-semibold text-[var(--text-primary)] hover:opacity-80">Got it</button>
-              <button onClick={dismissTipForever} className="text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">Don't show again</button>
+          <div className="flex items-start gap-3 rounded-2xl px-3.5 py-3 border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-muted)]">
+            <svg className="w-4 h-4 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" />
+            </svg>
+            <div className="flex-1">
+              <p className="text-[13px] leading-snug text-[var(--text-secondary)]">
+                Keep your laptop plugged in and the lid open. Recording pauses if your laptop sleeps.
+              </p>
+              <div className="flex gap-4 mt-2">
+                <button onClick={() => setTipHidden(true)} className="text-[13px] font-semibold text-[var(--text-primary)] hover:opacity-80">Got it</button>
+                <button onClick={dismissTipForever} className="text-[13px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Don't show again</button>
+              </div>
             </div>
           </div>
         </div>
@@ -285,43 +299,10 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
         </div>
       )}
 
-      {/* Main Recording Button */}
-      <div className="relative mb-16 group">
-        {/* Progress Ring for Recording */}
-        {isRecording && (
-          <svg className="absolute -inset-6 w-[calc(100%+3rem)] h-[calc(100%+3rem)] -rotate-90 pointer-events-none z-0">
-            <circle cx="50%" cy="50%" r="48%" fill="none" stroke="currentColor" strokeWidth="3" className="text-white/10" />
-            <circle
-              cx="50%" cy="50%" r="48%"
-              fill="none"
-              stroke="url(#progressGradient)"
-              strokeWidth="3"
-              strokeDasharray="301.59"
-              strokeDashoffset={301.59 - (301.59 * progressPercent) / 100}
-              strokeLinecap="round"
-              className="transition-all duration-1000"
-            />
-            <defs>
-              <linearGradient id="progressGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="#a855f7" />
-                <stop offset="50%" stopColor="#14b8a6" />
-                <stop offset="100%" stopColor="#f59e0b" />
-              </linearGradient>
-            </defs>
-          </svg>
-        )}
-
-        {/* Glow effects for recording — dark mode only; granola uses a quiet terra ring */}
-        {isRecording && (
-          <>
-            <div className="absolute inset-0 bg-purple-500 rounded-full opacity-20 blur-[60px] animate-pulse-glow scale-150 dark-only"></div>
-            <div className="absolute inset-4 bg-teal-400 rounded-full opacity-15 blur-[40px] animate-pulse-glow dark-only" style={{ animationDelay: '0.5s' }}></div>
-            <div className="absolute -inset-12 border border-purple-500/10 rounded-full animate-rotate-slow dark-only"></div>
-          </>
-        )}
-
-        <div className="relative z-10">
-          {!isRecording ? (
+      {/* Begin Capture / Starting / Saving */}
+      {!isRecording && (
+        <div className="relative mb-16 group">
+          <div className="relative z-10">
             <button
               onClick={startRecording}
               disabled={isProcessing || isStarting}
@@ -352,83 +333,114 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
                 </>
               )}
             </button>
-          ) : (
-            <div className="w-56 h-56 rounded-full shadow-2xl flex flex-col items-center justify-center relative overflow-hidden"
-                 style={{
-                   background: 'var(--bg-elevated)',
-                   border: '2px solid var(--accent-2, var(--accent))',
-                 }}>
-              {/* Audio visualizer bars (hidden while paused — nothing is recorded) */}
-              {!rec.paused && <div className="absolute inset-0 flex items-center justify-center gap-1.5 opacity-40 px-10">
-                {[...Array(16)].map((_, i) => (
-                  <div
-                    key={i}
-                    className="w-1.5 rounded-full transition-all"
-                    style={{
-                      height: `${20 + Math.random() * 60}%`,
-                      background: `linear-gradient(180deg, #a855f7 0%, #14b8a6 50%, #f59e0b 100%)`,
-                      animationDuration: `${0.3 + Math.random() * 0.5}s`,
-                      animation: 'wave ease-in-out infinite',
-                      animationDelay: `${i * 0.05}s`
-                    }}
-                  ></div>
-                ))}
-              </div>}
+          </div>
+        </div>
+      )}
 
+      {/* Recording — "Studio": dial with timer, waveform, labelled controls */}
+      {isRecording && (
+        <div className="flex flex-col items-center gap-6 mb-10">
+          {/* Dial: capacity ring around the timer */}
+          <div className="relative w-[272px] h-[272px] flex items-center justify-center">
+            <svg viewBox="0 0 100 100" className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none" aria-hidden="true">
+              <circle cx="50" cy="50" r={RING_R} fill="none" stroke="var(--rec-track)" strokeWidth="0.9" />
+              <circle
+                cx="50" cy="50" r={RING_R}
+                fill="none"
+                stroke="var(--rec-signal)"
+                strokeWidth="1.3"
+                strokeLinecap="round"
+                strokeDasharray={RING_C}
+                strokeDashoffset={RING_C * (1 - progressPercent / 100)}
+                className="transition-[stroke-dashoffset] duration-1000"
+              />
+            </svg>
+            <div
+              className="w-[232px] h-[232px] rounded-full flex flex-col items-center justify-center gap-1.5"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', boxShadow: 'var(--rec-dial-shadow)' }}
+            >
               {/* Timer (captured audio only — it does not move while paused) */}
-              <h2 className="text-5xl font-mono text-[var(--text-primary)] tracking-tighter tabular-nums z-10 mb-1 font-semibold">{formatRecordingTime(timer)}</h2>
+              <h2 className="text-[54px] leading-none font-mono font-medium tracking-tighter tabular-nums text-[var(--text-primary)]">
+                {formatRecordingTime(timer)}
+              </h2>
               {rec.paused ? (
-                <div className="text-[10px] font-bold z-10 text-amber-500">
+                <div className="text-xs font-semibold text-amber-500">
                   Paused {formatRecordingTime(pausedFor)}
                 </div>
               ) : (
-                <div className={`text-[10px] font-bold z-10 transition-colors duration-500 ${getRemainingColor()}`}>
+                <div className={`text-xs font-medium transition-colors duration-500 ${getRemainingColor()}`}>
                   {formatRecordingTime(remainingTime)} remaining
                 </div>
               )}
-
-              {/* Phase 3: quiet reassurance that transcription is already
-                  running in the background. Deliberately understated — no
-                  spinner, no prominence. */}
-              {liveProgress && liveProgress.total > 0 && (
-                <div className="text-[10px] font-medium text-[var(--text-tertiary)] z-10 mt-1.5">
-                  Transcribed {liveProgress.done} of {liveProgress.total} segments
-                </div>
-              )}
-
-              {/* Pause / Resume + Finish (Space toggles pause on this screen) */}
-              <div className="absolute bottom-6 flex gap-2 z-10">
-                <button
-                  onClick={togglePause}
-                  disabled={rec.status !== 'recording'}
-                  title={rec.paused ? 'Resume (Space)' : 'Pause (Space)'}
-                  className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all active:scale-95 disabled:opacity-50 ${
-                    rec.paused ? 'bg-amber-500 hover:bg-amber-400 text-black' : 'glass glass-hover text-[var(--text-secondary)]'
-                  }`}
-                >
-                  {rec.paused ? 'Resume' : 'Pause'}
-                </button>
-                <button
-                  onClick={stopRecording}
-                  disabled={rec.status !== 'recording'}
-                  className="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 text-white backdrop-blur-md rounded-xl text-xs font-bold transition-all shadow-lg shadow-purple-500/25 active:scale-95 disabled:opacity-50"
-                >
-                  Finish
-                </button>
-              </div>
             </div>
-          )}
-        </div>
-      </div>
+          </div>
 
-      {/* Discard — the only way to drop a recording; App confirms first. */}
-      {isRecording && (
-        <button
-          onClick={onRequestDiscard}
-          className="-mt-10 mb-8 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--accent-signal)] transition-colors"
-        >
-          Discard recording
-        </button>
+          {/* Waveform (flat while paused — nothing is recorded) */}
+          <div className="flex items-center gap-[3px] h-10" aria-hidden="true">
+            {WAVE_BARS.map((h, i) => (
+              <span
+                key={i}
+                className="block w-[3px] rounded-full"
+                style={{
+                  height: rec.paused ? 4 : h,
+                  background: i < WAVE_BARS.length * 0.45 ? 'var(--rec-wave-dim)' : 'var(--rec-wave)',
+                  animation: rec.paused ? 'none' : `wave ${0.6 + (i % 5) * 0.12}s ease-in-out ${i * 0.05}s infinite`,
+                  transition: 'height 300ms ease',
+                }}
+              />
+            ))}
+          </div>
+
+          {/* Pause / Resume · Finish · Discard (Space toggles pause on this screen) */}
+          <div className="flex items-start gap-8">
+            <div className="flex flex-col items-center gap-2 pt-2">
+              <button
+                onClick={togglePause}
+                disabled={rec.status !== 'recording'}
+                aria-label={rec.paused ? 'Resume (Space)' : 'Pause (Space)'}
+                title={rec.paused ? 'Resume (Space)' : 'Pause (Space)'}
+                className="w-14 h-14 rounded-full flex items-center justify-center transition-all hover:brightness-95 active:scale-95 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                style={rec.paused
+                  ? { background: 'var(--accent)', color: 'var(--accent-fg)' }
+                  : { background: 'var(--rec-btn)', border: '1px solid var(--rec-btn-border)', color: 'var(--text-primary)' }}
+              >
+                {rec.paused ? (
+                  <svg className="w-5 h-5 ml-0.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5.5v13a1 1 0 001.5.86l11-6.5a1 1 0 000-1.72l-11-6.5A1 1 0 007 5.5z" /></svg>
+                ) : (
+                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1.2" /><rect x="14" y="5" width="4" height="14" rx="1.2" /></svg>
+                )}
+              </button>
+              <span className="text-xs font-medium text-[var(--text-secondary)]">{rec.paused ? 'Resume' : 'Pause'}</span>
+            </div>
+
+            <div className="flex flex-col items-center gap-2">
+              <button
+                onClick={stopRecording}
+                disabled={rec.status !== 'recording'}
+                aria-label="Finish recording"
+                className="w-[72px] h-[72px] rounded-full flex items-center justify-center transition-all hover:brightness-110 active:scale-95 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--accent)]"
+                style={{ background: 'var(--rec-signal)', boxShadow: '0 0 0 6px var(--rec-signal-soft)' }}
+              >
+                <span className="block w-[22px] h-[22px] rounded-md bg-white" />
+              </button>
+              <span className="text-xs font-semibold text-[var(--text-primary)]">Finish</span>
+            </div>
+
+            {/* Discard — the only way to drop a recording; App confirms first. */}
+            <div className="flex flex-col items-center gap-2 pt-2">
+              <button
+                onClick={onRequestDiscard}
+                aria-label="Discard recording"
+                className="w-14 h-14 rounded-full flex items-center justify-center border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent-signal)] hover:border-[var(--border-strong)] transition-colors active:scale-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 002 2h6a2 2 0 002-2l1-12M9 7V4h6v3" />
+                </svg>
+              </button>
+              <span className="text-xs font-medium text-[var(--text-muted)]">Discard</span>
+            </div>
+          </div>
+        </div>
       )}
 
       <div className="text-center max-w-sm">
@@ -437,7 +449,9 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ transcriptionEngine, onEn
         </h3>
         <p className="text-[var(--text-tertiary)] font-medium text-sm leading-relaxed">
           {isRecording
-            ? "Your conversation is being analyzed by Gemini 2.5 for real-time extraction."
+            ? (liveProgress && liveProgress.total > 0
+                ? `Transcribing live · ${liveProgress.done} of ${liveProgress.total} segments done`
+                : 'Transcribing live')
             : "Transform any multilingual dialogue into structured documentation with zero effort."
           }
         </p>
