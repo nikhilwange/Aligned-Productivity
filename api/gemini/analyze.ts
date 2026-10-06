@@ -91,6 +91,16 @@ Write a comprehensive meeting notes document in this exact format. The notes val
 **Participants' Views:**
 - **[Name]:** their view
 
+RULES FOR 💬 Discussion Points (CRITICAL — complete coverage):
+- Cover EVERY distinct topic discussed, from the start to the end of the transcript. Before writing, scan the whole transcript in order and list every topic; each becomes its own theme. Topics in the second half of the meeting are just as important as the opening.
+- One theme = one specific topic. Do NOT merge unrelated topics under a broad umbrella heading (e.g. "Planning and Process Improvement", "Other Discussions"). If a topic is about a specific supplier, component, product, customer, plant, metric or project, name it in the theme title (e.g. "Evaporator Capacity Risk for Chiller Business", "PCB Supply Constraints for DC Power").
+- A topic discussed only briefly still gets its own theme if it raised a distinct issue, risk, decision or viewpoint.
+- Rough guide (do not pad to reach it): about 4-6 themes for a 30-minute meeting, 6-10 for 1 hour, 10-15 for 2+ hours.
+- Key Points: 3-6 bullets per theme. Keep specifics — names, numbers, percentages, supplier names, part/product names, dates. No generic statements.
+- Participants' Views is MANDATORY for every theme. Give one line per named speaker who contributed to that topic, stating their position, concern or commitment. Use speaker names exactly as they appear in the transcript. Only if no speaker can be identified, write "- Not attributable to a specific speaker."
+- Every decision in the 🔲 Decisions Made table must relate to one of the themes.
+- Self-check before finishing: re-scan the final third of the transcript and confirm every topic there has a theme.
+
 ✅ Action Items
 Group action items by the person responsible. For each owner:
 - Write the owner's name as a bold line on its own: **Name**

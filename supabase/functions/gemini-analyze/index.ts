@@ -57,12 +57,14 @@ Deno.serve(async (req) => {
   let recordingDate: unknown;
   let body_pass: unknown;
   let body_actionPoints: unknown;
+  let body_topics: unknown;
   try {
     const body = await req.json();
     transcript = body?.transcript;
     recordingDate = body?.recordingDate;
     body_pass = body?.pass;
     body_actionPoints = body?.actionPoints;
+    body_topics = body?.topics;
   } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
       status: 400,
@@ -113,6 +115,15 @@ Deno.serve(async (req) => {
   const pass = typeof (body_pass) === 'string' ? body_pass : null;
   const providedActions = Array.isArray(body_actionPoints)
     ? body_actionPoints.filter((a): a is string => typeof a === 'string')
+    : [];
+  // Topic checklist the client merged from the 'actions' chunks. Internal to
+  // the two passes only — never stored or returned. Missing (older client) →
+  // empty, and the notes prompt is built exactly as before.
+  const providedTopics = Array.isArray(body_topics)
+    ? body_topics
+        .filter((t): t is string => typeof t === 'string')
+        .map((t) => t.trim())
+        .filter(Boolean)
     : [];
 
   // ──────────────────────────────────────────────────────────────────────
@@ -183,6 +194,16 @@ Write a comprehensive meeting notes document in this exact format. The notes val
 - point 2
 **Participants' Views:**
 - **[Name]:** their view
+
+RULES FOR 💬 Discussion Points (CRITICAL — complete coverage):
+- Cover EVERY distinct topic discussed, from the start to the end of the transcript. Before writing, scan the whole transcript in order and list every topic; each becomes its own theme. Topics in the second half of the meeting are just as important as the opening.
+- One theme = one specific topic. Do NOT merge unrelated topics under a broad umbrella heading (e.g. "Planning and Process Improvement", "Other Discussions"). If a topic is about a specific supplier, component, product, customer, plant, metric or project, name it in the theme title (e.g. "Evaporator Capacity Risk for Chiller Business", "PCB Supply Constraints for DC Power").
+- A topic discussed only briefly still gets its own theme if it raised a distinct issue, risk, decision or viewpoint.
+- Rough guide (do not pad to reach it): about 4-6 themes for a 30-minute meeting, 6-10 for 1 hour, 10-15 for 2+ hours.
+- Key Points: 3-6 bullets per theme. Keep specifics — names, numbers, percentages, supplier names, part/product names, dates. No generic statements.
+- Participants' Views is MANDATORY for every theme. Give one line per named speaker who contributed to that topic, stating their position, concern or commitment. Use speaker names exactly as they appear in the transcript. Only if no speaker can be identified, write "- Not attributable to a specific speaker."
+- Every decision in the 🔲 Decisions Made table must relate to one of the themes.
+- Self-check before finishing: re-scan the final third of the transcript and confirm every topic there has a theme.
 
 ✅ Action Items
 Group action items by the person responsible. For each owner:
@@ -268,7 +289,8 @@ The JSON must match this exact shape:
 {
   "meetingType": "<inferred type: standup | planning | brainstorm | review | 1on1 | all-hands | other>",
   "detectedLanguages": ["<language1>", "<language2>"],
-  "actionPoints": ["<plain text action item>", "..."]
+  "actionPoints": ["<plain text action item>", "..."],
+  "topics": ["<Specific topic title> — <one line on what was discussed> (speakers: <names>)", "..."]
 }
 
 Do NOT include a "notes" field — it is produced by a separate call.
@@ -280,6 +302,12 @@ BUDGET (overrides the "be exhaustive" guidance above where they conflict):
 - If there are more candidates than that, keep the ${maxActions} most concrete and consequential — prefer items with a named owner, a specific deliverable, or a date attached.
 - Drop vague intentions, restatements of the same commitment, and anything that is really just discussion rather than a commitment.
 - Fewer, sharper items are BETTER than a long list. Do not pad to reach the limit.
+
+RULES FOR topics (a checklist for the notes, which are written by a separate call):
+- List every distinct topic discussed in this chunk, in the order it was discussed. Maximum 12.
+- Each item is one short string: "<Specific topic title> — <one line on what was discussed> (speakers: <names>)".
+- Use specific titles that name the supplier, component, product, customer, plant, metric or project involved. No umbrella headings ("Planning and Process Improvement", "Other Discussions").
+- Write topics in English.
 
 IMPORTANT:
 - Write ALL action points entirely in English — translate any Hindi, Marathi, or other non-English content
@@ -296,6 +324,17 @@ ${transcript}`;
       ? providedActions.map((a) => `- ${a}`).join('\n')
       : '(none were identified)';
 
+    // Chunk-by-chunk topic checklist, so topics from the middle and end of a
+    // long transcript aren't dropped. Omitted entirely when the client sent
+    // none, which keeps an older client's prompt unchanged.
+    const topicsBlock = providedTopics.length > 0
+      ? `
+
+TOPICS DISCUSSED (extracted chunk-by-chunk from this transcript, in order — treat as a checklist):
+${providedTopics.map((t) => `- ${t}`).join('\n')}
+Every topic above MUST appear in 💬 Discussion Points, either as its own theme or merged with another entry ONLY if they are genuinely the same subject. Do not drop any.`
+      : '';
+
     analysisPrompt = `${PREAMBLE}
 
 The JSON must match this exact shape:
@@ -305,7 +344,7 @@ The JSON must match this exact shape:
 }
 
 ACTION POINTS (already extracted from this transcript — treat as authoritative):
-${actionsList}
+${actionsList}${topicsBlock}
 
 ${TITLE_RULES}
 
@@ -316,7 +355,8 @@ ${IMPORTANT_TAIL}
 TRANSCRIPT:
 ${transcript}`;
   } else {
-    // Combined pass — the original single-call prompt, byte-for-byte.
+    // Combined pass — the original single-call prompt (same shape and fields;
+    // shares notesRules, including the Discussion Points coverage rules).
     analysisPrompt = `${PREAMBLE}
 
 The JSON must match this exact shape:
