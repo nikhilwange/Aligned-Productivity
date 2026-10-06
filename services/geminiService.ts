@@ -110,6 +110,9 @@ interface GeminiAnalysisJSON {
   detectedLanguages?: string[];
   actionPoints?: string[];
   notes?: string;
+  // Only from the chunked 'actions' pass: a per-chunk topic checklist that is
+  // handed to the 'notes' pass. Internal — never stored or shown.
+  topics?: string[];
 }
 
 /** Try multiple strategies to parse JSON from Gemini */
@@ -525,7 +528,11 @@ export const analyzeTranscript = async (
         `Pass 2a: Action extraction (${i + 1}/${chunks.length})`,
       );
       if (!data.responseText) throw new Error('Empty analysis response from Gemini.');
-      return { parsed: parseJsonResponse(data.responseText), isTruncated: !!data.isTruncated };
+      const rawTopics = tryParseJSON(data.responseText)?.topics;
+      const topics = Array.isArray(rawTopics)
+        ? rawTopics.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+        : [];
+      return { parsed: parseJsonResponse(data.responseText), topics, isTruncated: !!data.isTruncated };
     },
   );
 
@@ -541,6 +548,18 @@ export const analyzeTranscript = async (
       if (key && !seen.has(key)) { seen.add(key); actionPoints.push(a); }
     }
   }
+  // Topics are merged the same way, keyed on the title (the part before " — ")
+  // so a topic that straddles a chunk boundary is listed once. They become a
+  // checklist for the notes pass, which otherwise tends to drop topics from
+  // the middle and end of a long transcript.
+  const seenTopics = new Set<string>();
+  const topics: string[] = [];
+  for (const r of chunkResults) {
+    for (const t of r.topics) {
+      const key = actionKey(t.split(/\s+[—–-]\s+/)[0]);
+      if (key && !seenTopics.has(key)) { seenTopics.add(key); topics.push(t.trim()); }
+    }
+  }
   const detectedLanguages = [
     ...new Set(chunkResults.flatMap(r => r.parsed.detectedLanguages ?? [])),
   ];
@@ -551,7 +570,7 @@ export const analyzeTranscript = async (
   // needs chunking — and keeping the whole transcript here is what lets the
   // notes stay a single coherent document rather than stitched fragments.
   const notesData = await callPass(
-    { transcript, pass: 'notes', actionPoints },
+    { transcript, pass: 'notes', actionPoints, topics },
     'Pass 2b: Notes generation',
   );
   if (!notesData.responseText) throw new Error('Empty notes response from Gemini.');
