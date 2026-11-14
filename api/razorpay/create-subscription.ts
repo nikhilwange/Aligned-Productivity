@@ -1,8 +1,13 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { requireUser } from '../_lib/jwt.js';
 import { getSupabaseAdmin } from '../_lib/supabaseAdmin.js';
-import { createCustomer, createSubscription } from '../_lib/razorpay.js';
+import { createCustomer, createSubscription, fetchSubscription, cancelSubscription } from '../_lib/razorpay.js';
 import { planConfigFor, CHECKOUT_PLANS, type CheckoutPlan } from '../_lib/tiers.js';
+
+// Stored statuses that count as "a subscription is already in progress".
+const BLOCKING_STATUSES = ['created', 'authenticated', 'active', 'pending'];
+// Razorpay statuses after which a subscription can never charge again.
+const ENDED_STATUSES = ['cancelled', 'completed', 'expired'];
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -62,15 +67,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Refuse if the user already has a live subscription. Upgrades / downgrades
   // are out of scope for v1 — user must cancel and re-subscribe.
-  if (
-    existingSub?.razorpay_subscription_id &&
-    existingSub.status &&
-    ['created', 'authenticated', 'active', 'pending'].includes(existingSub.status)
-  ) {
-    return res.status(409).json({
-      error: 'A subscription is already in progress for this account. Cancel it before starting a new one.',
-      existing_subscription_id: existingSub.razorpay_subscription_id,
-    });
+  //
+  // The stored status can be stale: a checkout closed without paying stays
+  // 'created' forever (Razorpay sends no webhook for it), which used to lock
+  // the user out of ever subscribing. So ask Razorpay for the live status:
+  //   - still 'created' (never authorised) → abandoned checkout: cancel it
+  //     and carry on. If the cancel fails, refuse — the old payment link
+  //     must not stay payable next to a new subscription.
+  //   - already ended (cancelled / completed / expired) → stale row, carry on.
+  //   - anything else, or Razorpay unreachable → refuse, as before.
+  const existingId = existingSub?.razorpay_subscription_id ?? null;
+  if (existingId && existingSub?.status && BLOCKING_STATUSES.includes(existingSub.status)) {
+    let liveStatus: string | null = null;
+    try {
+      liveStatus = (await fetchSubscription(existingId)).status;
+    } catch (err: any) {
+      console.warn('[create-subscription] could not fetch existing subscription:', err?.message ?? err);
+    }
+
+    let clear = false;
+    if (liveStatus === 'created') {
+      try {
+        await cancelSubscription(existingId, /* cancelAtCycleEnd */ false);
+        console.log(`[create-subscription] cancelled abandoned checkout ${existingId} for user ${userId}`);
+        clear = true;
+      } catch (err: any) {
+        console.warn('[create-subscription] could not cancel abandoned checkout:', err?.message ?? err);
+      }
+    } else if (liveStatus && ENDED_STATUSES.includes(liveStatus)) {
+      clear = true;
+    }
+
+    if (!clear) {
+      return res.status(409).json({
+        error: 'A subscription is already in progress for this account. Cancel it before starting a new one.',
+        existing_subscription_id: existingId,
+      });
+    }
   }
 
   // Get or create the Razorpay customer.
