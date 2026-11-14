@@ -183,6 +183,25 @@ async function applyEvent(
     return;
   }
 
+  // Ignore events about a subscription the user has since replaced (e.g. the
+  // 'subscription.cancelled' for an abandoned checkout that create-subscription
+  // cancelled before starting a new one) — applying them would overwrite the
+  // current subscription. Activation always applies: it is how a new
+  // subscription takes over the row.
+  if (event.event !== 'subscription.activated') {
+    const { data: current } = await admin
+      .from('subscriptions')
+      .select('razorpay_subscription_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (current?.razorpay_subscription_id && current.razorpay_subscription_id !== sub.id) {
+      console.log(
+        `[razorpay-webhook] skipping ${event.event} for ${sub.id}: user ${userId} is now on ${current.razorpay_subscription_id}`,
+      );
+      return;
+    }
+  }
+
   const baseUpdate: Record<string, unknown> = {
     razorpay_subscription_id: sub.id,
     razorpay_customer_id: sub.customer_id,
