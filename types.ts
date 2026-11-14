@@ -133,7 +133,7 @@ export interface StrategicAnalysis {
 
 // ─── Subscriptions / billing ─────────────────────────────────────────────────
 
-export type PlanTier = 'free' | 'pro' | 'max';
+export type PlanTier = 'free' | 'lite' | 'plus' | 'pro' | 'max';
 export type PlanCycle = 'monthly' | 'annual';
 
 // Mirrors Razorpay's subscription lifecycle. We don't try to enumerate every

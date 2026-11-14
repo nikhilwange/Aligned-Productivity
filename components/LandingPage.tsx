@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { BILLING_ENABLED } from '../config/features';
+import { TIERS } from '../config/tiers';
+import { TIER_CARDS } from '../config/plans';
 
 interface LandingPageProps {
   onGetStarted: () => void;
@@ -24,6 +26,45 @@ const C = {
 
 const DISPLAY = '"DM Sans", "Inter", system-ui, -apple-system, sans-serif';
 const MONO    = '"JetBrains Mono", "IBM Plex Mono", "SF Mono", Menlo, monospace';
+
+// ─── Pricing cards — numbers come from config/tiers + config/plans ─────
+const hoursCount = (minutes: number) => String(Math.round((minutes / 60) * 10) / 10);
+const inr = (n: number) => `₹${n.toLocaleString('en-IN')}`;
+
+interface PricingPlan {
+  name: string;
+  price: string;
+  annual?: string;   // Pro only: annual price shown as a small line
+  hours: string;
+  line: string;
+  cta: string;
+  popular?: boolean;
+}
+
+const PRICING_PLANS: PricingPlan[] = [
+  {
+    name: 'Free',
+    price: inr(0),
+    hours: `${hoursCount(TIERS.free.monthlyMinutes)} hours / month`,
+    line: `${hoursCount(TIERS.free.monthlyMinutes)} hours every month, free`,
+    cta: 'Start free',
+  },
+  ...(['lite', 'plus', 'pro', 'max'] as const).map((t): PricingPlan => {
+    const card = TIER_CARDS[t];
+    return {
+      name: card.name,
+      price: inr(card.monthlyPriceInr),
+      annual: card.annualPriceInr != null ? inr(card.annualPriceInr) : undefined,
+      hours: `${hoursCount(TIERS[t].monthlyMinutes)} hours / month`,
+      // Lite/Plus: their one-line description; Pro/Max: existing copy.
+      line: card.tagline ?? (t === 'pro'
+        ? 'Unlimited meetings · Strategist & Intelligence chat'
+        : 'Best for daily, back-to-back recording'),
+      cta: 'Sign up to subscribe',
+      popular: card.mostPopular,
+    };
+  }),
+];
 
 const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
   const [email, setEmail]         = useState('');
@@ -359,7 +400,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
 
         {/* ══════ Pricing (hidden while billing is disabled) ══════ */}
         {BILLING_ENABLED && (
-        <section id="pricing" style={{ margin: '80px auto 0', maxWidth: 720, scrollMarginTop: 80 }}>
+        <section id="pricing" style={{ margin: '80px auto 0', maxWidth: 1040, scrollMarginTop: 80 }}>
           <h2 style={{
             fontFamily: DISPLAY, fontSize: 'clamp(26px, 4vw, 36px)',
             fontWeight: 600, letterSpacing: '-0.03em', lineHeight: 1.1,
@@ -368,74 +409,73 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             Start free. <em style={{ fontStyle: 'italic', color: C.accent, fontWeight: 500 }}>Upgrade anytime.</em>
           </h2>
           <p style={{ fontSize: 13.5, color: C.textMuted, marginBottom: 28 }}>
-            Free includes 10 meetings or 20 hours of audio per month — enough to put Aligned through its paces. Pro removes every limit.
+            Free includes {hoursCount(TIERS.free.monthlyMinutes)} hours of audio every month — enough to put Aligned through its paces. Upgrade when you need more.
           </p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14 }}>
-            {[
-              {
-                tag: 'Monthly',
-                price: '₹799',
-                cadence: 'per month',
-                pill: undefined as string | undefined,
-              },
-              {
-                tag: 'Annual',
-                price: '₹7,999',
-                cadence: 'per year',
-                pill: 'Save 17%',
-              },
-            ].map((p) => (
-              <div key={p.tag} style={{
-                position: 'relative',
-                padding: '24px 26px', borderRadius: 16,
-                background: C.surface, border: `1px solid ${C.rule}`,
-              }}>
-                {p.pill && (
-                  <span style={{
-                    position: 'absolute', top: -10, right: 18,
-                    padding: '3px 10px', borderRadius: 999,
-                    background: 'rgba(245, 158, 11, 0.16)',
-                    border: '1px solid rgba(245, 158, 11, 0.36)',
-                    color: '#fbbf24',
-                    fontSize: 10.5, fontFamily: MONO,
-                    letterSpacing: '0.12em', textTransform: 'uppercase',
-                    fontWeight: 600,
-                  }}>{p.pill}</span>
-                )}
-                <div style={{
-                  fontSize: 11, fontFamily: MONO, letterSpacing: '0.14em',
-                  textTransform: 'uppercase', color: C.accent, marginBottom: 10,
+          {/* 3 + 2 on desktop (Free/Lite/Plus, then Pro/Max); stacks on mobile. */}
+          {[PRICING_PLANS.slice(0, 3), PRICING_PLANS.slice(3)].map((row, i) => (
+            <div key={i} style={{
+              display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14,
+              ...(i === 1 ? { maxWidth: 694, margin: '14px auto 0' } : {}),
+            }}>
+              {row.map((p) => (
+                <div key={p.name} style={{
+                  position: 'relative', display: 'flex', flexDirection: 'column',
+                  padding: '24px 26px', borderRadius: 16,
+                  background: p.popular ? C.accentSoft : C.surface,
+                  border: p.popular ? `1.5px solid ${C.accent}` : `1px solid ${C.rule}`,
                 }}>
-                  Aligned Pro · {p.tag}
+                  {p.popular && (
+                    <span style={{
+                      position: 'absolute', top: -10, right: 18,
+                      padding: '3px 10px', borderRadius: 999,
+                      background: C.accent, color: C.bg,
+                      fontSize: 10.5, fontFamily: MONO,
+                      letterSpacing: '0.12em', textTransform: 'uppercase',
+                      fontWeight: 600,
+                    }}>Most popular</span>
+                  )}
+                  <div style={{
+                    fontSize: 11, fontFamily: MONO, letterSpacing: '0.14em',
+                    textTransform: 'uppercase', color: C.accent, marginBottom: 10,
+                  }}>
+                    {p.name}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+                    <span style={{
+                      fontFamily: DISPLAY, fontSize: 36, fontWeight: 600,
+                      letterSpacing: '-0.03em', color: C.text,
+                    }}>{p.price}</span>
+                    <span style={{ fontSize: 13, color: C.textMuted }}>per month</span>
+                  </div>
+                  {p.annual && (
+                    <div style={{ fontSize: 12.5, color: C.textMuted, marginBottom: 6 }}>
+                      or {p.annual}/year — <span style={{ color: C.accent, fontWeight: 600 }}>2 months free</span>
+                    </div>
+                  )}
+                  <div style={{
+                    fontFamily: DISPLAY, fontSize: 15, fontWeight: 600,
+                    color: C.text, margin: '8px 0 4px',
+                  }}>
+                    {p.hours}
+                  </div>
+                  <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6, flex: 1 }}>
+                    {p.line}
+                  </div>
+                  <button onClick={onGetStarted} style={{
+                    marginTop: 20, width: '100%', padding: '10px 14px',
+                    borderRadius: 12, cursor: 'pointer',
+                    border: p.popular ? 'none' : `1px solid ${C.ruleStrong}`,
+                    background: p.popular ? C.accent : C.surface,
+                    color: p.popular ? C.bg : C.text,
+                    fontSize: 13.5, fontWeight: 600,
+                    fontFamily: DISPLAY,
+                  }}>{p.cta}</button>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 18 }}>
-                  <span style={{
-                    fontFamily: DISPLAY, fontSize: 36, fontWeight: 600,
-                    letterSpacing: '-0.03em', color: C.text,
-                  }}>{p.price}</span>
-                  <span style={{ fontSize: 13, color: C.textMuted }}>{p.cadence}</span>
-                </div>
-                <ul style={{
-                  margin: 0, padding: 0, listStyle: 'none',
-                  fontSize: 13, color: C.textMuted, lineHeight: 1.7,
-                }}>
-                  <li>Unlimited meetings every month</li>
-                  <li>Unlimited audio minutes</li>
-                  <li>Strategist & Intelligence chat</li>
-                  <li>Cancel anytime — keep access until period ends</li>
-                </ul>
-                <button onClick={onGetStarted} style={{
-                  marginTop: 20, width: '100%', padding: '10px 14px',
-                  borderRadius: 12, border: 'none', cursor: 'pointer',
-                  background: C.accent, color: '#000',
-                  fontSize: 13.5, fontWeight: 600,
-                  fontFamily: DISPLAY,
-                }}>Sign up to subscribe</button>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ))}
           <p style={{ fontSize: 12, color: C.textMuted, marginTop: 16, textAlign: 'center' }}>
-            Payments processed by Razorpay
+            Payments processed by Razorpay · Cancel anytime — keep access until period ends
           </p>
         </section>
         )}

@@ -10,21 +10,14 @@ import { TIERS, minutesToHoursLabel } from './tiers';
 
 // Legacy exports kept for any older imports. Gating is now minutes-only and
 // tier-driven (config/tiers.ts); the meetings cap is no longer enforced.
-export const FREE_CAP_MINUTES = TIERS.free.monthlyMinutes; // 300 (5 hrs)
+export const FREE_CAP_MINUTES = TIERS.free.monthlyMinutes; // 120 (2 hrs)
 export const FREE_CAP_MEETINGS = 10;
 
-// A checkout "plan" the user can pick. Pro has two billing cycles; Max is
-// monthly-only. All three are passed to /api/razorpay/create-subscription.
-export type CheckoutPlan = 'monthly' | 'annual' | 'max';
-
-// Razorpay plan IDs, pulled from env so test-mode vs live-mode are swappable
-// without code changes. Not secret — the frontend needs them for the pricing
-// display + the create-subscription POST body.
-export const PLAN_IDS: Record<CheckoutPlan, string> = {
-  monthly: import.meta.env.VITE_RAZORPAY_PLAN_ID_MONTHLY ?? '',
-  annual:  import.meta.env.VITE_RAZORPAY_PLAN_ID_ANNUAL  ?? '',
-  max:     import.meta.env.VITE_RAZORPAY_PLAN_ID_MAX      ?? '',
-};
+// A checkout "plan" the user can pick. Pro has two billing cycles ('monthly'
+// and 'annual'); Lite, Plus and Max are monthly-only. All are passed to
+// /api/razorpay/create-subscription, which maps the name to the Razorpay plan
+// ID from server env (RAZORPAY_PLAN_ID_*) — the client never needs the IDs.
+export type CheckoutPlan = 'lite' | 'plus' | 'monthly' | 'annual' | 'max';
 
 export interface PlanDisplay {
   cycle: PlanCycle;
@@ -60,13 +53,47 @@ export interface TierCard {
   annualPriceInr: number | null; // null = no annual option (Max)
   checkoutPlan: CheckoutPlan;  // which plan the primary CTA subscribes to
   mostPopular?: boolean;
+  tagline?: string;            // one short line under the price
   bullets: string[];
 }
 
+export type PaidTier = Exclude<PlanTier, 'free'>;
+
+/** Paid tiers in display order (cheapest first). */
+export const PAID_TIERS: PaidTier[] = ['lite', 'plus', 'pro', 'max'];
+
+const liteHours = minutesToHoursLabel(TIERS.lite.monthlyMinutes); // 4 hrs
+const plusHours = minutesToHoursLabel(TIERS.plus.monthlyMinutes); // 8 hrs
 const proHours = minutesToHoursLabel(TIERS.pro.monthlyMinutes); // 20 hrs
 const maxHours = minutesToHoursLabel(TIERS.max.monthlyMinutes); // 60 hrs
 
-export const TIER_CARDS: Record<'pro' | 'max', TierCard> = {
+export const TIER_CARDS: Record<PaidTier, TierCard> = {
+  lite: {
+    tier: 'lite',
+    name: 'Lite',
+    hoursLabel: `${liteHours} / month`,
+    monthlyPriceInr: 199,
+    annualPriceInr: null,
+    checkoutPlan: 'lite',
+    tagline: 'For a few meetings a month',
+    bullets: [
+      `${liteHours} of audio every month`,
+      'Cancel anytime — keep access until period ends',
+    ],
+  },
+  plus: {
+    tier: 'plus',
+    name: 'Plus',
+    hoursLabel: `${plusHours} / month`,
+    monthlyPriceInr: 399,
+    annualPriceInr: null,
+    checkoutPlan: 'plus',
+    tagline: 'For weekly meetings',
+    bullets: [
+      `${plusHours} of audio every month`,
+      'Cancel anytime — keep access until period ends',
+    ],
+  },
   pro: {
     tier: 'pro',
     name: 'Pro',

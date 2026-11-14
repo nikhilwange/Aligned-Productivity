@@ -14,8 +14,6 @@ function fmtDate(ms: number | null): string {
   return new Date(ms).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-const TIER_LABEL: Record<string, string> = { free: 'Free', pro: 'Pro', max: 'Max' };
-
 const BillingSection: React.FC<BillingSectionProps> = ({ state, onUpgradeClick, onCancelled }) => {
   const [cancelling, setCancelling] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
@@ -37,7 +35,7 @@ const BillingSection: React.FC<BillingSectionProps> = ({ state, onUpgradeClick, 
 
   const sub = state.subscription;
   const isPro = state.isPro;
-  const tierLabel = TIER_LABEL[state.tier] ?? 'Free';
+  const tierLabel = TIERS[state.tier]?.label ?? 'Free';
   const limitMinutes = TIERS[state.tier].monthlyMinutes;
   const usedHours = (state.usage.minutes / 60).toFixed(1);
 
@@ -50,7 +48,7 @@ const BillingSection: React.FC<BillingSectionProps> = ({ state, onUpgradeClick, 
             {isPro ? `${tierLabel} · ${sub?.planCycle === 'annual' ? 'Annual' : 'Monthly'}` : 'Free'}
           </div>
         </div>
-        {/* Free → Upgrade; Pro → Upgrade to Max; Max → nothing to sell. */}
+        {/* Free / Lite / Plus → Upgrade; Pro → Upgrade to Max; Max → nothing to sell. */}
         {state.tier !== 'max' && (
           <button
             onClick={onUpgradeClick}

@@ -5,7 +5,9 @@
 // proxy checks two server-side limits against that ledger:
 //   - per-recording ceiling  (STT_SESSION_CEILING_MIN, all tiers)
 //   - per-user monthly limit (TIER_MONTHLY_MINUTES, IST calendar month) —
-//     every request for Free; only a recording's first request for Pro/Max
+//     every request for Free and Lite/Plus (the latter with a grace margin
+//     once a recording has started); only a recording's first request for Pro/Max
+//   - Free's per-recording cap (TIER_SESSION_CAP_MINUTES), as a backstop
 // Audio length is always computed here from the bytes — never trusted from the
 // client. See supabase/sql/stt_ledger.sql for the table and functions.
 //
@@ -15,6 +17,7 @@
 import { getSupabaseAdmin } from './supabaseAdmin.js';
 import {
   TIER_MONTHLY_MINUTES,
+  TIER_SESSION_CAP_MINUTES,
   resolveTierFromSubscription,
   hasUnlimitedAccess,
   type ServerTier,
@@ -23,6 +26,9 @@ import {
   sessionCeilingSeconds,
   nonWavGuardSeconds,
   HARD_MONTHLY_TIERS,
+  GRACE_MONTHLY_TIERS,
+  GRACE_MINUTES,
+  SESSION_CAP_SLACK_MIN,
 } from './sttLimits.js';
 
 export type SttRejectReason =
@@ -288,18 +294,31 @@ export async function checkSttGuards(opts: {
             limitMinutes: Math.round(ceiling / 60),
           };
         }
+        // Free's per-recording cap (backstop for the recorder's own stop).
+        // Skipped for unlimited-access accounts and when the tier is unknown.
+        const capMin = checkMonthly && !subFailed ? TIER_SESSION_CAP_MINUTES[tier] : null;
+        if (capMin != null && used + audioSeconds > (capMin + SESSION_CAP_SLACK_MIN) * 60) {
+          return {
+            reason: 'session_ceiling',
+            tier,
+            usedMinutes: Math.round(used / 60),
+            limitMinutes: capMin,
+          };
+        }
       }
     }
 
-    // Paid tiers are soft-capped (config/tiers.ts): a recording that has
+    // Pro/Max are soft-capped (config/tiers.ts): a recording that has
     // already started is always allowed to finish, so the monthly limit only
     // blocks the START of a new recording for them. Free is hard-capped and is
-    // checked on every request. A failed recovery lookup counts as "started"
-    // (fail open).
+    // checked on every request. Lite/Plus are checked on every request too,
+    // but a recording already in progress gets GRACE_MINUTES past the limit.
+    // A failed recovery lookup counts as "started" (fail open).
     const recordingStarted = recoveryId
       ? !recoveryRes || !!recoveryRes.error || Number(recoveryRes.data ?? 0) > 0
       : !sessionStart;
-    const monthlyApplies = HARD_MONTHLY_TIERS.includes(tier) || !recordingStarted;
+    const grace = GRACE_MONTHLY_TIERS.includes(tier);
+    const monthlyApplies = HARD_MONTHLY_TIERS.includes(tier) || grace || !recordingStarted;
 
     if (checkMonthly && monthlyApplies && monthRes && !subFailed) {
       if (monthRes.error) {
@@ -307,7 +326,8 @@ export async function checkSttGuards(opts: {
       } else {
         const used = Number(monthRes.data ?? 0);
         const limitMinutes = TIER_MONTHLY_MINUTES[tier];
-        if (used + audioSeconds > limitMinutes * 60) {
+        const allowedMinutes = grace && recordingStarted ? limitMinutes + GRACE_MINUTES : limitMinutes;
+        if (used + audioSeconds > allowedMinutes * 60) {
           return {
             reason: 'monthly_limit',
             tier,

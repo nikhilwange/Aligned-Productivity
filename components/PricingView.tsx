@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { TIER_CARDS, type CheckoutPlan, type TierCard } from '../config/plans';
+import { PAID_TIERS, TIER_CARDS, type CheckoutPlan, type TierCard } from '../config/plans';
+import { TIERS, minutesToHoursLabel } from '../config/tiers';
 import { createRazorpaySubscription } from '../services/subscriptionService';
 import type { PlanTier, User } from '../types';
 
@@ -97,23 +98,27 @@ const PricingView: React.FC<PricingViewProps> = ({
   };
 
   const isModal = variant === 'modal';
-  const cards: TierCard[] = (['pro', 'max'] as const)
+  const cards: TierCard[] = PAID_TIERS
     .map((t) => TIER_CARDS[t])
     .filter((c) => !onlyTiers || onlyTiers.includes(c.tier));
 
-  const heading = onlyTiers?.length === 1 && onlyTiers[0] === 'max'
-    ? 'Upgrade to Max'
+  const heading = cards.length === 1
+    ? `Upgrade to ${cards[0].name}`
     : isModal ? 'Upgrade your plan' : 'Pricing';
 
+  // 1 card: single column; 2: side by side; 3–4: 2×2 on tablets, one row on wide screens.
+  const gridCols =
+    cards.length >= 3 ? 'md:grid-cols-2 xl:grid-cols-4' : cards.length === 2 ? 'md:grid-cols-2' : '';
+
   return (
-    <div className={isModal ? 'p-6 md:p-8' : 'p-6 md:p-12 max-w-4xl mx-auto'}>
+    <div className={isModal ? 'p-6 md:p-8' : 'p-6 md:p-12 max-w-6xl mx-auto'}>
       <div className="flex items-start justify-between mb-2">
         <div>
           <h1 className="text-2xl md:text-3xl font-semibold text-[var(--text-primary)] tracking-tight">
             {heading}
           </h1>
           <p className="text-sm text-[var(--text-muted)] mt-1.5">
-            Free includes 5 hours of audio per month. Paid plans give you far more headroom.
+            Free includes {minutesToHoursLabel(TIERS.free.monthlyMinutes)} of audio per month. Paid plans give you far more headroom.
           </p>
         </div>
         {isModal && onClose && (
@@ -135,7 +140,7 @@ const PricingView: React.FC<PricingViewProps> = ({
         </div>
       )}
 
-      <div className={`grid grid-cols-1 ${cards.length > 1 ? 'md:grid-cols-2' : ''} gap-4 mt-6`}>
+      <div className={`grid grid-cols-1 ${gridCols} gap-4 mt-6`}>
         {cards.map((card) => {
           const monthlyBusy = busy === card.checkoutPlan;
           const annualBusy = busy === 'annual';
@@ -164,6 +169,9 @@ const PricingView: React.FC<PricingViewProps> = ({
                 </span>
                 <span className="text-sm text-[var(--text-muted)]">per month</span>
               </div>
+              {card.tagline && (
+                <p className="mt-2 text-sm text-[var(--text-muted)]">{card.tagline}</p>
+              )}
 
               <ul className="mt-5 space-y-2.5 text-sm text-[var(--text-primary)]/85">
                 {card.bullets.map((b) => (

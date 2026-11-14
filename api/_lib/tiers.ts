@@ -6,12 +6,25 @@
 // update it here, in config/tiers.ts, and in the gemini-transcribe-audio Edge
 // Function (which can't import either).
 
-export type ServerTier = 'free' | 'pro' | 'max';
+export type ServerTier = 'free' | 'lite' | 'plus' | 'pro' | 'max';
+
+const PAID_TIERS: ReadonlyArray<ServerTier> = ['lite', 'plus', 'pro', 'max'];
 
 export const TIER_MONTHLY_MINUTES: Record<ServerTier, number> = {
-  free: 300,
+  free: 120,
+  lite: 240,
+  plus: 480,
   pro: 1200,
   max: 3600,
+};
+
+// Per-recording cap in minutes (mirrors sessionCapMinutes); null = none.
+export const TIER_SESSION_CAP_MINUTES: Record<ServerTier, number | null> = {
+  free: 60,
+  lite: null,
+  plus: null,
+  pro: null,
+  max: null,
 };
 
 // ─── Admin / unlimited-access allowlist ──────────────────────────────────────
@@ -28,9 +41,11 @@ export function hasUnlimitedAccess(email: string | null | undefined): boolean {
 }
 
 // Razorpay plan IDs come from (non-VITE) server env. Monthly + Annual Pro map
-// to the same `pro` tier; Max is its own. Unknown/empty → free.
+// to the same `pro` tier; Lite, Plus and Max are their own. Unknown/empty → free.
 export function tierFromPlanId(planId: string | null | undefined): ServerTier {
   if (!planId) return 'free';
+  if (planId === process.env.RAZORPAY_PLAN_ID_LITE) return 'lite';
+  if (planId === process.env.RAZORPAY_PLAN_ID_PLUS) return 'plus';
   if (planId === process.env.RAZORPAY_PLAN_ID_MAX) return 'max';
   if (
     planId === process.env.RAZORPAY_PLAN_ID_MONTHLY ||
@@ -42,12 +57,18 @@ export function tierFromPlanId(planId: string | null | undefined): ServerTier {
 }
 
 // Which checkout plan the client asked for → { planId, cycle }.
-export type CheckoutPlan = 'monthly' | 'annual' | 'max';
+export type CheckoutPlan = 'lite' | 'plus' | 'monthly' | 'annual' | 'max';
+
+export const CHECKOUT_PLANS: ReadonlyArray<CheckoutPlan> = ['lite', 'plus', 'monthly', 'annual', 'max'];
 
 export function planConfigFor(
   plan: CheckoutPlan,
 ): { planId: string | undefined; cycle: 'monthly' | 'annual'; envKey: string } {
   switch (plan) {
+    case 'lite':
+      return { planId: process.env.RAZORPAY_PLAN_ID_LITE, cycle: 'monthly', envKey: 'RAZORPAY_PLAN_ID_LITE' };
+    case 'plus':
+      return { planId: process.env.RAZORPAY_PLAN_ID_PLUS, cycle: 'monthly', envKey: 'RAZORPAY_PLAN_ID_PLUS' };
     case 'annual':
       return { planId: process.env.RAZORPAY_PLAN_ID_ANNUAL, cycle: 'annual', envKey: 'RAZORPAY_PLAN_ID_ANNUAL' };
     case 'max':
@@ -77,5 +98,6 @@ export function resolveTierFromSubscription(sub: {
       sub.current_period_end != null &&
       Date.parse(sub.current_period_end) > Date.now());
   if (!live) return 'free';
-  return (sub.plan_tier === 'max' ? 'max' : 'pro');
+  // Unknown paid values keep the old behaviour (treated as Pro).
+  return PAID_TIERS.includes(sub.plan_tier as ServerTier) ? (sub.plan_tier as ServerTier) : 'pro';
 }

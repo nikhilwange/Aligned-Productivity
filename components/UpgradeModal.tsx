@@ -5,8 +5,8 @@ import type { PlanTier, User } from '../types';
 interface UpgradeModalProps {
   user: User;
   reason?: string;
-  // Which paid tiers to offer. Free hitting the cap → [pro, max]; a Pro user
-  // hitting the soft cap → [max]. Undefined shows all paid tiers.
+  // Which paid tiers to offer (see upgradeTiersFor): Free hitting the cap →
+  // all paid tiers; Lite → [plus, pro, max]; Pro → [max]. Undefined shows all.
   offerTiers?: PlanTier[];
   open: boolean;
   onClose: () => void;
@@ -23,7 +23,7 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({ user, reason, offerTiers, o
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-3xl rounded-2xl bg-[var(--surface-950)] border border-white/[0.08] shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto"
+        className={`relative w-full ${(offerTiers?.length ?? 4) >= 3 ? 'max-w-6xl' : 'max-w-3xl'} rounded-2xl bg-[var(--surface-950)] border border-white/[0.08] shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto`}
         onClick={(e) => e.stopPropagation()}
       >
         {reason && (
