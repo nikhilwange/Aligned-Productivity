@@ -27,7 +27,7 @@ export const LIVE_TRANSCRIPTION = true;
 // Billing / paywall (Razorpay subscriptions + usage caps). When FALSE, the app
 // ships the billing code but keeps it fully dormant: no usage cap or paywall
 // gate on recording, no upgrade modal, no Billing/Pricing views or nav entry.
-// Flip to TRUE only once Razorpay is configured in production (RAZORPAY_* env,
-// VITE_RAZORPAY_PLAN_ID_*, and the dashboard webhook). Kept off so Phase 1/2
+// Flip to TRUE only once Razorpay is configured in production (RAZORPAY_* env
+// on Vercel, and the dashboard webhook). Kept off so Phase 1/2
 // recording can ship to production without turning on billing.
 export const BILLING_ENABLED = true;

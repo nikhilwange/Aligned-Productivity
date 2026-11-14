@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { requireUser } from '../_lib/jwt.js';
 import { getSupabaseAdmin } from '../_lib/supabaseAdmin.js';
 import { createCustomer, createSubscription } from '../_lib/razorpay.js';
-import { planConfigFor, type CheckoutPlan } from '../_lib/tiers.js';
+import { planConfigFor, CHECKOUT_PLANS, type CheckoutPlan } from '../_lib/tiers.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -17,11 +17,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const userId = user.id;
   const email = user.email;
 
-  // Prefer the new `plan` selector (monthly | annual | max); fall back to the
-  // legacy `cycle` field for older clients.
+  // Prefer the new `plan` selector (lite | plus | monthly | annual | max); fall
+  // back to the legacy `cycle` field for older clients.
   const plan = (req.body?.plan ?? req.body?.cycle) as CheckoutPlan | undefined;
-  if (plan !== 'monthly' && plan !== 'annual' && plan !== 'max') {
-    return res.status(400).json({ error: 'plan must be "monthly", "annual", or "max"' });
+  if (!plan || !CHECKOUT_PLANS.includes(plan)) {
+    return res.status(400).json({ error: `plan must be one of: ${CHECKOUT_PLANS.join(', ')}` });
   }
   const { planId, cycle, envKey } = planConfigFor(plan);
 

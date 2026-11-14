@@ -1,6 +1,8 @@
 // Server-side mirror of config/sttLimits.ts (the API layer can't import client
 // config). ⚠️ SOURCE OF TRUTH IS config/sttLimits.ts — change both together.
 
+import type { ServerTier } from './tiers.js';
+
 /** Hard ceiling of Sarvam audio per recording, all tiers — admin included. */
 export const STT_SESSION_CEILING_MIN = 240;
 
@@ -19,9 +21,20 @@ export function sessionCeilingSeconds(): number {
 }
 
 // Tiers whose monthly limit is a HARD stop, enforced even mid-recording.
-// Mirrors `enforcement: 'hard'` in config/tiers.ts — paid tiers are 'soft'
+// Mirrors `enforcement: 'hard'` in config/tiers.ts — Pro/Max are 'soft'
 // (a recording in progress always finishes; only new recordings are blocked).
-export const HARD_MONTHLY_TIERS: ReadonlyArray<'free' | 'pro' | 'max'> = ['free'];
+export const HARD_MONTHLY_TIERS: ReadonlyArray<ServerTier> = ['free'];
+
+// Lite/Plus ('grace' in config/tiers.ts): new recordings are blocked at the
+// monthly limit, but one already in progress may run until the month's total
+// reaches limit + GRACE_MINUTES. Checked on every request, like Free.
+export const GRACE_MONTHLY_TIERS: ReadonlyArray<ServerTier> = ['lite', 'plus'];
+export const GRACE_MINUTES = 30;
+
+// The Free per-recording cap is stopped by the app's recorder; the server
+// check is a backstop with this much slack so normal rounding in the
+// per-chunk audio measurement never refuses the last chunk of a session.
+export const SESSION_CAP_SLACK_MIN = 2;
 
 // Guard value for audio that isn't a parseable WAV (inline webm/mp4 blobs).
 // The client sends a whole blob inline when it is < 500 KB, which at the

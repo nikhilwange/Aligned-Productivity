@@ -1,6 +1,6 @@
 // ─── Usage tiers — single source of truth ────────────────────────────────────
 //
-// This file defines the metered tiers (Free / Pro / Max) and the mapping from
+// This file defines the metered tiers (Free / Lite / Plus / Pro / Max) and the mapping from
 // Razorpay plan IDs to a tier. Unit economics: transcription + analysis costs
 // ~₹35 per audio-hour (Sarvam ₹30/hr + Gemini ~₹5/hr), so every tier is a
 // monthly audio-minutes budget.
@@ -12,7 +12,7 @@
 // ⚠️ The server side (Sarvam Vercel route + gemini-transcribe-audio Edge
 // Function) cannot import this file. It DUPLICATES the same numbers with a
 // comment pointing back here. If you change a limit, change it in all three
-// places: here, api/sarvam/transcribe.ts, and the Edge Function.
+// places: here, api/_lib/tiers.ts, and the Edge Function.
 
 import type { PlanTier, PlanCycle } from '../types';
 
@@ -21,18 +21,28 @@ export interface TierConfig {
   monthlyMinutes: number;
   /** Per-session cap in minutes; null = no per-session limit. */
   sessionCapMinutes: number | null;
-  /** Hard block (Free) vs soft cap (Pro/Max — finish the current session). */
-  enforcement: 'hard' | 'soft';
+  /**
+   * hard  — Free: blocked even mid-recording once the budget is used.
+   * grace — Lite/Plus: new recordings blocked at the budget; one in progress
+   *         may run up to GRACE_MINUTES past it (enforced server-side).
+   * soft  — Pro/Max: new recordings blocked; one in progress always finishes.
+   */
+  enforcement: 'hard' | 'grace' | 'soft';
   label: string;
 }
 
 export const TIERS: Record<PlanTier, TierConfig> = {
-  free: { monthlyMinutes: 300,  sessionCapMinutes: 90,   enforcement: 'hard', label: 'Free' },
-  pro:  { monthlyMinutes: 1200, sessionCapMinutes: null, enforcement: 'soft', label: 'Pro'  },
-  max:  { monthlyMinutes: 3600, sessionCapMinutes: null, enforcement: 'soft', label: 'Max'  },
+  free: { monthlyMinutes: 120,  sessionCapMinutes: 60,   enforcement: 'hard',  label: 'Free' },
+  lite: { monthlyMinutes: 240,  sessionCapMinutes: null, enforcement: 'grace', label: 'Lite' },
+  plus: { monthlyMinutes: 480,  sessionCapMinutes: null, enforcement: 'grace', label: 'Plus' },
+  pro:  { monthlyMinutes: 1200, sessionCapMinutes: null, enforcement: 'soft',  label: 'Pro'  },
+  max:  { monthlyMinutes: 3600, sessionCapMinutes: null, enforcement: 'soft',  label: 'Max'  },
 } as const;
 
-export const ALL_TIERS: PlanTier[] = ['free', 'pro', 'max'];
+/** Lite/Plus: how far past the monthly budget an in-progress recording may run. */
+export const GRACE_MINUTES = 30;
+
+export const ALL_TIERS: PlanTier[] = ['free', 'lite', 'plus', 'pro', 'max'];
 
 // ─── Admin / unlimited-access allowlist ──────────────────────────────────────
 //
@@ -53,25 +63,9 @@ export function hasUnlimitedAccess(email: string | null | undefined): boolean {
 // Warn the user once they cross this fraction of their monthly budget.
 export const USAGE_WARN_THRESHOLD = 0.8;
 
-// ─── Razorpay plan-ID → tier mapping ─────────────────────────────────────────
-//
-// Plan IDs are mode-specific (test vs live) and come from env so they can be
-// swapped without a code change. Monthly and Annual Pro map to the SAME `pro`
-// tier. Max is its own tier. An empty string means "not configured" and is
-// simply never matched.
-const RAZORPAY_PLAN_TIER_MAP: Record<string, PlanTier> = {
-  [import.meta.env.VITE_RAZORPAY_PLAN_ID_MONTHLY ?? '']: 'pro',
-  [import.meta.env.VITE_RAZORPAY_PLAN_ID_ANNUAL  ?? '']: 'pro',
-  [import.meta.env.VITE_RAZORPAY_PLAN_ID_MAX     ?? '']: 'max',
-};
-// Never let an empty env var accidentally map '' → a paid tier.
-delete RAZORPAY_PLAN_TIER_MAP[''];
-
-/** Resolve a Razorpay plan ID to a tier. Unknown IDs fall back to 'free'. */
-export function tierFromPlanId(planId: string | null | undefined): PlanTier {
-  if (!planId) return 'free';
-  return RAZORPAY_PLAN_TIER_MAP[planId] ?? 'free';
-}
+// Razorpay plan-ID → tier mapping lives server-side only (api/_lib/tiers.ts,
+// RAZORPAY_PLAN_ID_* env on Vercel). The client sends a plan name ('lite',
+// 'monthly', …) to checkout and reads the resulting tier from `subscriptions`.
 
 // ─── Access / tier resolution from a stored subscription ─────────────────────
 //

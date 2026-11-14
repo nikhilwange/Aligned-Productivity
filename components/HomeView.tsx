@@ -5,6 +5,7 @@ import EmptyState from './EmptyState';
 import { formatDateShort, formatDateFull, formatDuration } from '../utils/formatters';
 import { initialsOf, colorFor } from '../utils/avatar';
 import { TIERS, minutesToHoursLabel } from '../config/tiers';
+import { upgradeTiersFor } from '../hooks/usePaywall';
 
 interface HomeViewProps {
   user: { name: string; email: string };
@@ -54,7 +55,9 @@ const HomeView: React.FC<HomeViewProps> = ({
     !!usage && !usage.loading && usage.tier !== 'max' && usage.capPercent >= 0.8 && !bannerDismissed;
   const usageLimitLabel = usage ? minutesToHoursLabel(TIERS[usage.tier].monthlyMinutes) : '';
   const usedHoursLabel = usage ? (usage.usage.minutes / 60).toFixed(1) : '0';
-  const nextTierLabel = usage?.tier === 'pro' ? 'Max' : 'Pro';
+  // Next plan up: Free → Lite → Plus → Pro → Max.
+  const nextTier = usage ? upgradeTiersFor(usage.tier)[0] : undefined;
+  const nextTierLabel = nextTier ? TIERS[nextTier].label : 'Pro';
 
   const completedRecordings = useMemo(() =>
     recordings.filter(r => r.status === 'completed'),

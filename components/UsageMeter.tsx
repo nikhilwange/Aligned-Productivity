@@ -7,8 +7,6 @@ interface UsageMeterProps {
   onUpgrade?: () => void;
 }
 
-const TIER_LABEL: Record<string, string> = { free: 'Free', pro: 'Pro', max: 'Max' };
-
 // Compact monthly audio-usage bar for the sidebar. Amber normally, red at
 // ≥90%. Uses CSS variables + theme-neutral utility classes only.
 const UsageMeter: React.FC<UsageMeterProps> = ({ state, onUpgrade }) => {
@@ -42,7 +40,7 @@ const UsageMeter: React.FC<UsageMeterProps> = ({ state, onUpgrade }) => {
     <div className="px-3 py-2 rounded-xl bg-white/[0.03] border border-white/[0.06]">
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-[var(--text-muted)]">
-          {TIER_LABEL[state.tier]} · usage
+          {TIERS[state.tier].label} · usage
         </span>
         <span className={`text-[11px] font-medium ${danger ? 'text-red-300' : 'text-[var(--text-secondary)]'}`}>
           {usedHours} / {limitHrs}

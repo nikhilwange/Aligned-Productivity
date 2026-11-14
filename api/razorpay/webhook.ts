@@ -195,8 +195,8 @@ async function applyEvent(
     case 'subscription.activated':
     case 'subscription.charged':
     case 'subscription.resumed':
-      // Map the Razorpay plan → our tier (pro OR max) rather than hardcoding
-      // 'pro', so Max subscriptions activate at the right tier.
+      // Map the Razorpay plan → our tier (lite / plus / pro / max) rather
+      // than hardcoding 'pro', so every plan activates at the right tier.
       baseUpdate.plan_tier = tierFromPlanId(sub.plan_id);
       // A fresh charge/activate implies the user is NOT cancelling — unless
       // a later subscription.cancelled overrides it.

@@ -44,10 +44,13 @@ const GEMINI_MODEL = 'gemini-2.5-flash';
 // api/_lib/tiers.ts (Vercel). This function can't import either, so the
 // numbers are DUPLICATED here — keep all three in sync.
 const TIER_MONTHLY_MINUTES: Record<string, number> = {
-  free: 300,
+  free: 120,
+  lite: 240,
+  plus: 480,
   pro: 1200,
   max: 3600,
 };
+const PAID_TIERS = ["lite", "plus", "pro", "max"];
 
 // Resolve the tier a stored subscription row grants right now. Keeps paid
 // access through payment trouble (halted/pending) and until period-end after
@@ -67,7 +70,8 @@ function resolveTier(sub: {
       sub.current_period_end != null &&
       Date.parse(sub.current_period_end) > Date.now());
   if (!live) return 'free';
-  return sub.plan_tier === 'max' ? 'max' : 'pro';
+  // Unknown paid values keep the old behaviour (treated as Pro).
+  return PAID_TIERS.includes(sub.plan_tier) ? sub.plan_tier : 'pro';
 }
 
 interface GateVerdict {

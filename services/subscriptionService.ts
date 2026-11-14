@@ -1,12 +1,13 @@
 import { supabase } from './supabaseService';
-import type { Subscription, UsageMeter } from '../types';
+import type { PlanTier, Subscription, UsageMeter } from '../types';
+import type { CheckoutPlan } from '../config/plans';
 
 // Row shapes mirror the snake_case in Supabase. We convert to camelCase in
 // the mappers below so the rest of the app stays in TS-idiomatic camelCase.
 
 interface SubscriptionRow {
   user_id: string;
-  plan_tier: 'free' | 'pro' | 'max';
+  plan_tier: PlanTier;
   plan_cycle: 'monthly' | 'annual' | null;
   razorpay_customer_id: string | null;
   razorpay_subscription_id: string | null;
@@ -150,13 +151,14 @@ export interface CreateSubscriptionResponse {
   short_url: string | null;
 }
 
-// A checkout "plan": Pro monthly, Pro annual, or Max (monthly-only). The
-// server maps this to the right Razorpay plan ID and tier.
+// A checkout "plan": Lite, Plus, Pro monthly, Pro annual, or Max (all but Pro
+// annual are monthly-only). The server maps this to the right Razorpay plan
+// ID and tier.
 export const createRazorpaySubscription = async (
-  plan: 'monthly' | 'annual' | 'max',
+  plan: CheckoutPlan,
 ): Promise<CreateSubscriptionResponse> => {
   // `cycle` is kept for backward compatibility with the previous API shape.
-  const cycle = plan === 'max' ? 'monthly' : plan;
+  const cycle = plan === 'annual' ? 'annual' : 'monthly';
   const res = await authedFetch('/api/razorpay/create-subscription', { plan, cycle });
   // Parse defensively: a 404/5xx (or a missing /api layer in local dev) can
   // return an empty or non-JSON body, which would otherwise surface as the

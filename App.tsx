@@ -17,7 +17,7 @@ import LandingPage from './components/LandingPage';
 import OAuthConsent from './components/OAuthConsent';
 import { AppState, RecordingSession, AudioRecording, User, ChatMessage, RecordingSource, TrackedActionItem, PlanTier } from './types';
 import { isUsageLimitError, isSessionCeilingError } from './services/usageLimit';
-import { minutesToHoursLabel } from './config/tiers';
+import { minutesToHoursLabel, TIERS } from './config/tiers';
 import { STT_SESSION_CEILING_MIN, LEFTOVER_MAX_AGE_HOURS, MAX_PAUSE_MIN } from './config/sttLimits';
 import { recordingController, claimRecording, isRecordingLive, type FinalizeReason, type RecordingResult } from './services/recordingController';
 import RecordingIndicator from './components/RecordingIndicator';
@@ -49,7 +49,7 @@ import PricingView from './components/PricingView';
 import UpgradeModal from './components/UpgradeModal';
 import BillingSection from './components/BillingSection';
 import { useSubscription } from './hooks/useSubscription';
-import { canStartNewRecording } from './hooks/usePaywall';
+import { canStartNewRecording, upgradeTiersFor, usageCapMessage } from './hooks/usePaywall';
 
 declare global {
   interface Window {
@@ -179,7 +179,7 @@ const App: React.FC = () => {
       case 'share_silent': return 'Meeting audio was silent for a while, so the recording was saved.';
       case 'pause_timeout': return `Recording was paused for ${MAX_PAUSE_MIN} minutes, so it was saved.`;
       case 'mic_ended': return 'The microphone disconnected, so the recording was saved.';
-      case 'tier_cap': return `Free sessions are capped at ${minutesToHoursLabel(subscriptionState.sessionCapMinutes ?? 90)} — the recording was saved.`;
+      case 'tier_cap': return `Free sessions are capped at ${minutesToHoursLabel(subscriptionState.sessionCapMinutes ?? TIERS.free.sessionCapMinutes ?? 60)} — the recording was saved.`;
       default: return null;
     }
   };
@@ -1089,11 +1089,10 @@ const App: React.FC = () => {
       }
       if (usage) {
         const t = err.tier as PlanTier;
-        const offer: PlanTier[] = t === 'free' ? ['pro', 'max'] : t === 'pro' ? ['max'] : [];
         setUpgradeModal({
           open: true,
-          reason: `You've reached your ${minutesToHoursLabel(err.limitMinutes || 0)} of audio this month. Upgrade to keep recording.`,
-          offerTiers: offer,
+          reason: usageCapMessage(t) ?? `You've reached your ${minutesToHoursLabel(err.limitMinutes || 0)} of audio this month. Upgrade to keep recording.`,
+          offerTiers: upgradeTiersFor(t),
         });
       }
     } finally {
@@ -1316,11 +1315,10 @@ const App: React.FC = () => {
       }
       if (usage) {
         const t = err.tier as PlanTier;
-        const offer: PlanTier[] = t === 'free' ? ['pro', 'max'] : t === 'pro' ? ['max'] : [];
         setUpgradeModal({
           open: true,
-          reason: `You've reached your ${minutesToHoursLabel(err.limitMinutes || 0)} of audio this month. Upgrade to keep recording.`,
-          offerTiers: offer,
+          reason: usageCapMessage(t) ?? `You've reached your ${minutesToHoursLabel(err.limitMinutes || 0)} of audio this month. Upgrade to keep recording.`,
+          offerTiers: upgradeTiersFor(t),
         });
       }
     } finally {
@@ -1397,7 +1395,8 @@ const App: React.FC = () => {
   recordingWarningRef.current = (kind, minsLeft) => {
     const mins = `${minsLeft} minute${minsLeft !== 1 ? 's' : ''}`;
     if (kind === 'tier_cap') {
-      addToast(`Free sessions are capped at 90 minutes — ${mins} left. Recording will stop and be saved.`, 'error');
+      const capMin = subscriptionState.sessionCapMinutes ?? TIERS.free.sessionCapMinutes ?? 60;
+      addToast(`Free sessions are capped at ${capMin} minutes — ${mins} left. Recording will stop and be saved.`, 'error');
     } else {
       addToast(`Recordings are limited to ${sttCeilingLabel.replace('-', ' ')}s — ${mins} left. It will stop and be saved.`, 'info');
     }
