@@ -6,8 +6,8 @@
 // the user still sees success, the row keeps email_sent = false, and the
 // error is logged.
 //
-// Email goes through the Titan mailbox's SMTP (SMTP_* env on Vercel — the
-// same details Supabase Auth uses for its own emails). Server-only: never
+// Email goes through the GoDaddy mailbox's SMTP (smtpout.secureserver.net;
+// SMTP_* env on Vercel — the same details Supabase Auth uses for its own emails). Server-only: never
 // put these behind a VITE_ prefix.
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
