@@ -1,10 +1,18 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { BILLING_ENABLED } from '../config/features';
 import { TIERS } from '../config/tiers';
 import { TIER_CARDS } from '../config/plans';
+import { LANGUAGES } from '../config/languages';
+import { FAQ } from '../config/faq';
+import {
+  SUPPORT_EMAIL, SUPPORT_MAILTO, SUPPORT_REPLY_PROMISE, SUPPORT_WHATSAPP_URL, splitOnSupportEmail,
+} from '../config/support';
 
 interface LandingPageProps {
+  /** New visitor — opens the auth screen on Sign up. */
   onGetStarted: () => void;
+  /** Returning user — opens the auth screen on Sign in. */
+  onSignIn: () => void;
 }
 
 // ─── Olive-editorial tokens (true white, mirrors index.html .light) ─────
@@ -58,7 +66,7 @@ const PRICING_PLANS: PricingPlan[] = [
       hours: `${hoursCount(TIERS[t].monthlyMinutes)} hours / month`,
       // Lite/Plus: their one-line description; Pro/Max: existing copy.
       line: card.tagline ?? (t === 'pro'
-        ? 'Unlimited meetings · Strategist & Intelligence chat'
+        ? 'For heavy weekly use · Strategist & Intelligence chat'
         : 'Best for daily, back-to-back recording'),
       cta: 'Sign up to subscribe',
       popular: card.mostPopular,
@@ -66,23 +74,14 @@ const PRICING_PLANS: PricingPlan[] = [
   }),
 ];
 
-const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
-  const [email, setEmail]         = useState('');
-  const [submitted, setSubmitted] = useState(false);
-  const [busy, setBusy]           = useState(false);
+// Renders text with the support email turned into a mailto link.
+const withEmailLink = (text: string) => splitOnSupportEmail(text).map((part, i) =>
+  i % 2 === 1
+    ? <a key={i} href={SUPPORT_MAILTO} style={{ color: C.accent, fontWeight: 500 }}>{part}</a>
+    : <React.Fragment key={i}>{part}</React.Fragment>,
+);
 
-  const handleJoin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email.trim()) return;
-    setBusy(true);
-    setTimeout(() => { setSubmitted(true); setBusy(false); }, 600);
-    try {
-      const list = JSON.parse(localStorage.getItem('aligned-waitlist') || '[]');
-      list.push({ email: email.trim(), ts: Date.now() });
-      localStorage.setItem('aligned-waitlist', JSON.stringify(list));
-    } catch (_) {}
-  };
-
+const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted, onSignIn }) => {
   // Reusable bits
   const pill = (extra?: React.CSSProperties): React.CSSProperties => ({
     borderRadius: 100,
@@ -111,7 +110,13 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
       background: C.bg, color: C.text,
       fontFamily: DISPLAY,
     }}>
-      <div style={{ maxWidth: 1180, margin: '0 auto', padding: '18px 22px 80px' }}>
+      <style>{`
+        @media (max-width: 640px) { .lp-navlinks { display: none !important; } }
+        .lp-faq summary { list-style: none; }
+        .lp-faq summary::-webkit-details-marker { display: none; }
+        .lp-faq[open] .lp-faq-sign { transform: rotate(45deg); }
+      `}</style>
+      <div style={{ maxWidth: 1180, margin: '0 auto', padding: '18px 16px 80px' }}>
 
         {/* ══════ Pill nav ══════ */}
         <nav style={{
@@ -133,18 +138,17 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             </span>
             <span>Aligned</span>
           </div>
-          {/* Center links */}
-          <div style={{ display: 'flex', gap: 26, color: C.textMuted }}>
-            <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Product</a>
+          {/* Center links (hidden on phones — see the <style> above) */}
+          <div className="lp-navlinks" style={{ display: 'flex', gap: 26, color: C.textMuted }}>
+            <a href="#languages" style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Languages</a>
             {BILLING_ENABLED && (
               <a href="#pricing" style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Pricing</a>
             )}
-            <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Customers</a>
-            <a style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>Changelog</a>
+            <a href="#faq" style={{ cursor: 'pointer', textDecoration: 'none', color: 'inherit' }}>FAQ</a>
           </div>
           {/* Right CTAs */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <a onClick={onGetStarted} style={{ color: C.textMuted, cursor: 'pointer' }}>Sign in</a>
+            <a onClick={onSignIn} style={{ color: C.textMuted, cursor: 'pointer' }}>Sign in</a>
             <button onClick={onGetStarted} style={{
               ...pill({ padding: '9px 18px', background: C.text, color: 'white',
                        fontWeight: 500, fontSize: 14, border: 'none', cursor: 'pointer',
@@ -165,7 +169,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             fontSize: 12.5, fontWeight: 500, marginBottom: 28,
           }}>
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.accent }} />
-            <span>Workspace intelligence · Now in 10 Indian languages</span>
+            <span>Workspace intelligence · Built for Indian languages</span>
           </div>
 
           <h1 style={{
@@ -191,7 +195,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
           {/* CTA row */}
           <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
             <button onClick={onGetStarted} style={ctaPrimary}>Start for free</button>
-            <a href="#demo" style={ctaSecondary}>Watch a 90-sec demo →</a>
+            <a href="#faq" style={ctaSecondary}>Questions? Read the FAQ →</a>
           </div>
 
           {/* Meta */}
@@ -201,9 +205,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
           }}>
             <span>No install · Works in your browser</span>
             <span>·</span>
-            <span>Free for personal use</span>
-            <span>·</span>
-            <span>SOC 2 Type II</span>
+            <span>Free plan, no credit card</span>
           </div>
         </div>
 
@@ -329,22 +331,11 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             <em style={{ fontStyle: 'italic', color: C.accent, fontWeight: 500 }}>Aligned understands.</em>
           </h2>
           <p style={{ fontSize: 16, color: C.textMuted, lineHeight: 1.65, maxWidth: 620, margin: '0 0 28px' }}>
-            Powered by Sarvam AI's Saaras v3 — India's most accurate multilingual speech engine.
-            Hindi, Marathi, Tamil or Gujarati meetings are captured with the same precision as English.
+            Powered by Sarvam AI's Saaras v3, a speech engine built for Indian languages.
+            Speak Hindi, Marathi, Tamil, Gujarati, English, or a mix — Aligned detects the language on its own.
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 }}>
-            {[
-              { lang: 'Hindi',     script: 'हिन्दी'   },
-              { lang: 'Marathi',   script: 'मराठी'    },
-              { lang: 'Tamil',     script: 'தமிழ்'    },
-              { lang: 'Telugu',    script: 'తెలుగు'   },
-              { lang: 'Gujarati',  script: 'ગુજરાતી'  },
-              { lang: 'Kannada',   script: 'ಕನ್ನಡ'    },
-              { lang: 'Bengali',   script: 'বাংলা'    },
-              { lang: 'Malayalam', script: 'മലയാളം'   },
-              { lang: 'Punjabi',   script: 'ਪੰਜਾਬੀ'   },
-              { lang: 'English',   script: 'English'  },
-            ].map(l => (
+            {LANGUAGES.map(l => (
               <div key={l.lang} style={{
                 padding: '10px 12px', borderRadius: 12,
                 background: C.surface, border: `1px solid ${C.rule}`,
@@ -497,12 +488,12 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
               {
                 tag: 'On success',
                 title: 'Deleted the moment your notes are ready',
-                desc: 'Once Aligned has extracted notes, action items, and decisions, the audio file is removed from our servers right away. The transcript and notes stay — the raw audio goes.',
+                desc: 'Once Aligned has extracted notes, action items, and decisions, the audio file is removed from our servers. The transcript and notes stay — the raw audio goes.',
               },
               {
                 tag: 'On failure',
-                title: 'Kept for 7 days so Retry just works',
-                desc: 'If processing fails, the audio is held briefly so you can tap Retry from any device, not just the one you recorded on. After 7 days it auto-deletes — even if you forget about it.',
+                title: 'Kept for 30 days so Retry just works',
+                desc: 'If processing fails, or parts of the audio were unclear, it is held so you can tap Retry from any device, not just the one you recorded on. After 30 days it auto-deletes — even if you forget about it.',
               },
               {
                 tag: 'On delete',
@@ -534,67 +525,86 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
           </div>
         </section>
 
-        {/* ══════ Waitlist ══════ */}
-        <section id="waitlist" style={{ margin: '96px auto 0', maxWidth: 580 }}>
+        {/* ══════ FAQ ══════ */}
+        <section id="faq" style={{ margin: '80px auto 0', maxWidth: 880, scrollMarginTop: 80 }}>
+          <h2 style={{
+            fontFamily: DISPLAY, fontSize: 'clamp(26px, 4vw, 36px)',
+            fontWeight: 600, letterSpacing: '-0.03em', lineHeight: 1.1,
+            margin: '0 0 8px', color: C.text,
+          }}>
+            Questions, <em style={{ fontStyle: 'italic', color: C.accent, fontWeight: 500 }}>answered</em>.
+          </h2>
+          <p style={{ fontSize: 13.5, color: C.textMuted, marginBottom: 28 }}>
+            The things people ask us most.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {FAQ.map(item => (
+              <details key={item.q} className="lp-faq" style={{
+                borderRadius: 14, background: C.surface, border: `1px solid ${C.rule}`,
+              }}>
+                <summary style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+                  padding: '16px 20px', cursor: 'pointer',
+                  fontFamily: DISPLAY, fontSize: 15, fontWeight: 600, color: C.text,
+                }}>
+                  <span>{item.q}</span>
+                  <span className="lp-faq-sign" style={{
+                    flexShrink: 0, fontSize: 20, lineHeight: 1, color: C.accent,
+                    transition: 'transform 0.15s ease',
+                  }}>+</span>
+                </summary>
+                <div style={{ padding: '0 20px 18px', fontSize: 13.5, color: C.textMuted, lineHeight: 1.65 }}>
+                  {withEmailLink(item.a)}
+                </div>
+              </details>
+            ))}
+          </div>
+        </section>
+
+        {/* ══════ Support ══════ */}
+        <section id="support" style={{ margin: '56px auto 0', maxWidth: 880 }}>
+          <div style={{
+            padding: '24px 26px', borderRadius: 16,
+            background: C.bgAlt,
+            display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+          }}>
+            <div>
+              <div style={{
+                fontFamily: DISPLAY, fontSize: 17, fontWeight: 600,
+                letterSpacing: '-0.02em', color: C.text, marginBottom: 4,
+              }}>
+                Still have a question?
+              </div>
+              <div style={{ fontSize: 13, color: C.textMuted }}>
+                Write to us at{' '}
+                <a href={SUPPORT_MAILTO} style={{ color: C.accent, fontWeight: 500 }}>{SUPPORT_EMAIL}</a>.{' '}
+                {SUPPORT_REPLY_PROMISE}
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+              <a href={SUPPORT_MAILTO} style={ctaSecondary}>Email us</a>
+              {SUPPORT_WHATSAPP_URL && (
+                <a href={SUPPORT_WHATSAPP_URL} target="_blank" rel="noopener noreferrer" style={ctaSecondary}>
+                  WhatsApp us
+                </a>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {/* ══════ Start free ══════ */}
+        <section style={{ margin: '96px auto 0', maxWidth: 580, textAlign: 'center' }}>
           <h2 style={{
             fontFamily: DISPLAY, fontSize: 'clamp(28px, 4.5vw, 42px)',
             fontWeight: 600, letterSpacing: '-0.035em', lineHeight: 1.05,
             margin: '0 0 14px', color: C.text,
           }}>
-            Be among the first to use{' '}
-            <em style={{ fontStyle: 'italic', color: C.accent, fontWeight: 500 }}>Aligned</em>.
+            Try <em style={{ fontStyle: 'italic', color: C.accent, fontWeight: 500 }}>Aligned</em> free today.
           </h2>
           <p style={{ fontSize: 14.5, color: C.textMuted, lineHeight: 1.65, marginBottom: 24 }}>
-            Join 200+ professionals on the waitlist. Every early-access member gets{' '}
-            <strong style={{ color: C.text }}>1 month of free Pro access</strong>.
+            {hoursCount(TIERS.free.monthlyMinutes)} hours of meetings every month on the Free plan. No credit card needed.
           </p>
-
-          {submitted ? (
-            <div style={{
-              padding: '24px 28px', borderRadius: 16,
-              background: C.surface, border: `1px solid ${C.rule}`,
-            }}>
-              <div style={{
-                fontFamily: MONO, fontSize: 11, letterSpacing: '0.14em',
-                textTransform: 'uppercase', color: C.accent, marginBottom: 8,
-              }}>You're on the list</div>
-              <div style={{
-                fontFamily: DISPLAY, fontSize: 22, fontWeight: 600,
-                letterSpacing: '-0.02em', color: C.text, marginBottom: 6,
-              }}>
-                Thanks for signing up.
-              </div>
-              <div style={{ fontSize: 13, color: C.textMuted, marginBottom: 18 }}>
-                We'll reach out with early-access details soon.
-              </div>
-              <button onClick={onGetStarted} style={ctaPrimary}>Try it now →</button>
-            </div>
-          ) : (
-            <form onSubmit={handleJoin} style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="your@email.com"
-                style={{
-                  flex: 1, minWidth: 220, padding: '13px 18px', borderRadius: 100,
-                  background: C.surface, border: `1px solid ${C.ruleStrong}`,
-                  color: C.text, fontSize: 14, fontFamily: DISPLAY, outline: 'none',
-                }}
-              />
-              <button type="submit" disabled={busy} style={{
-                ...ctaPrimary,
-                opacity: busy ? 0.6 : 1, cursor: busy ? 'not-allowed' : 'pointer',
-              }}>
-                {busy ? 'Joining…' : 'Get early access'}
-              </button>
-            </form>
-          )}
-
-          <p style={{ fontSize: 12, color: C.textFaint, marginTop: 14 }}>
-            No spam. No credit card. Unsubscribe anytime.
-          </p>
+          <button onClick={onGetStarted} style={ctaPrimary}>Start free →</button>
         </section>
 
         {/* ══════ Footer ══════ */}
@@ -626,8 +636,10 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGetStarted }) => {
             <span>·</span>
             <span>Supabase</span>
           </div>
-          <div style={{ fontSize: 12, color: C.textFaint }}>
-            © 2026 Aligned · Made in India
+          <div style={{ fontSize: 12, color: C.textFaint, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            <a href={SUPPORT_MAILTO} style={{ color: C.textMuted }}>{SUPPORT_EMAIL}</a>
+            <span>·</span>
+            <span>© 2026 Aligned · Made in India</span>
           </div>
         </footer>
       </div>

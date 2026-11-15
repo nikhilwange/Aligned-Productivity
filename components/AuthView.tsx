@@ -6,10 +6,12 @@ import ForgotPassword from './ForgotPassword';
 
 interface AuthViewProps {
   onLogin: (user: User) => void;
+  /** Which tab to open on. Defaults to Sign in. */
+  initialMode?: 'signin' | 'signup';
 }
 
-const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
-  const [isLogin, setIsLogin] = useState(true);
+const AuthView: React.FC<AuthViewProps> = ({ onLogin, initialMode = 'signin' }) => {
+  const [isLogin, setIsLogin] = useState(initialMode !== 'signup');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');

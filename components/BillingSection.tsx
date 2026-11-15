@@ -2,11 +2,14 @@ import React, { useState } from 'react';
 import { cancelRazorpaySubscription } from '../services/subscriptionService';
 import { TIERS, minutesToHoursLabel } from '../config/tiers';
 import type { SubscriptionState } from '../types';
+import { SUPPORT_EMAIL, SUPPORT_MAILTO } from '../config/support';
 
 interface BillingSectionProps {
   state: SubscriptionState;
   onUpgradeClick: () => void;
   onCancelled?: () => void;
+  /** Opens Help & Support with the topic set to "Payment or plan". */
+  onNeedHelp?: () => void;
 }
 
 function fmtDate(ms: number | null): string {
@@ -14,7 +17,7 @@ function fmtDate(ms: number | null): string {
   return new Date(ms).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-const BillingSection: React.FC<BillingSectionProps> = ({ state, onUpgradeClick, onCancelled }) => {
+const BillingSection: React.FC<BillingSectionProps> = ({ state, onUpgradeClick, onCancelled, onNeedHelp }) => {
   const [cancelling, setCancelling] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -121,6 +124,20 @@ const BillingSection: React.FC<BillingSectionProps> = ({ state, onUpgradeClick, 
           </div>
         </div>
       )}
+
+      <div className="mt-4 pt-3 border-t border-white/[0.06] text-xs text-[var(--text-muted)]">
+        Payment problem? Write to{' '}
+        <a href={SUPPORT_MAILTO} className="underline underline-offset-2 text-[var(--text-primary)]">{SUPPORT_EMAIL}</a>
+        {onNeedHelp && (
+          <>
+            {' '}or{' '}
+            <button onClick={onNeedHelp} className="font-semibold underline underline-offset-2 text-[var(--text-primary)]">
+              send us a message
+            </button>
+          </>
+        )}
+        .
+      </div>
     </div>
   );
 };

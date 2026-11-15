@@ -5,11 +5,13 @@ import type { SubscriptionState } from '../types';
 interface UsageMeterProps {
   state: SubscriptionState;
   onUpgrade?: () => void;
+  /** Shown as "Need help?" once the limit is reached. */
+  onNeedHelp?: () => void;
 }
 
 // Compact monthly audio-usage bar for the sidebar. Amber normally, red at
 // ≥90%. Uses CSS variables + theme-neutral utility classes only.
-const UsageMeter: React.FC<UsageMeterProps> = ({ state, onUpgrade }) => {
+const UsageMeter: React.FC<UsageMeterProps> = ({ state, onUpgrade, onNeedHelp }) => {
   if (state.loading) return null;
 
   // Unlimited-access (admin allowlist) accounts have an Infinity cap — show a
@@ -55,6 +57,14 @@ const UsageMeter: React.FC<UsageMeterProps> = ({ state, onUpgrade }) => {
           className="mt-2 w-full text-[11px] font-semibold text-amber-300 hover:text-amber-200 text-left"
         >
           {state.isOverCap ? 'Limit reached — upgrade →' : 'Running low — upgrade →'}
+        </button>
+      )}
+      {state.isOverCap && onNeedHelp && (
+        <button
+          onClick={onNeedHelp}
+          className="mt-1 w-full text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] text-left underline underline-offset-2"
+        >
+          Need help?
         </button>
       )}
     </div>

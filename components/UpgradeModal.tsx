@@ -11,11 +11,13 @@ interface UpgradeModalProps {
   open: boolean;
   onClose: () => void;
   onSubscribed?: () => void;
+  /** Opens Help & Support (topic: Payment or plan). Hidden when not set. */
+  onNeedHelp?: () => void;
 }
 
 // Slim wrapper around PricingView for the blocking in-app upgrade flow.
 // Reason copy explains *why* the modal opened (usually cap-hit context).
-const UpgradeModal: React.FC<UpgradeModalProps> = ({ user, reason, offerTiers, open, onClose, onSubscribed }) => {
+const UpgradeModal: React.FC<UpgradeModalProps> = ({ user, reason, offerTiers, open, onClose, onSubscribed, onNeedHelp }) => {
   if (!open) return null;
   return (
     <div
@@ -40,6 +42,14 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({ user, reason, offerTiers, o
           onClose={onClose}
           onSubscribed={onSubscribed}
         />
+        {onNeedHelp && (
+          <div className="px-6 md:px-8 pb-6 -mt-2 text-xs text-[var(--text-muted)]">
+            Payment problem or a question?{' '}
+            <button onClick={onNeedHelp} className="font-semibold underline underline-offset-2 text-[var(--text-primary)]">
+              Need help?
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

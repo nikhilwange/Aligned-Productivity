@@ -11,6 +11,8 @@ import HomeView from './components/HomeView';
 import IntelligenceView from './components/IntelligenceView';
 import ManualEntryView from './components/ManualEntryView';
 import SettingsView from './components/SettingsView';
+import HelpSupportView from './components/HelpSupportView';
+import type { SupportTopic } from './config/support';
 import AuthView from './components/AuthView';
 import ResetPassword from './components/ResetPassword';
 import LandingPage from './components/LandingPage';
@@ -84,6 +86,7 @@ const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [showAuthView, setShowAuthView] = useState(false);
+  const [authStartOnSignup, setAuthStartOnSignup] = useState(true);
   const [showResetPassword, setShowResetPassword] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     return (localStorage.getItem('aligned-theme') as 'light' | 'dark') || 'light';
@@ -102,6 +105,8 @@ const App: React.FC = () => {
   // inside the hook so the webhook-driven tier flip lands without refresh.
   const subscriptionState = useSubscription(user?.id ?? null, user?.email ?? null);
   const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; reason?: string; offerTiers?: PlanTier[] }>({ open: false });
+  // Topic pre-selected when Help & Support is opened from Billing / a limit message.
+  const [helpTopic, setHelpTopic] = useState<SupportTopic | undefined>(undefined);
 
   // ─── Processing UX State ──────────────────────────────────────────────────
   // Every session whose pipeline we're watching for a "ready"/"failed" toast.
@@ -763,8 +768,17 @@ const App: React.FC = () => {
       handleGoHome();
       return;
     }
+    if (id === 'help') setHelpTopic(undefined);
     setIsRecordingMode(false);
     setActiveRecordingId(id);
+  };
+
+  const openHelp = (topic?: SupportTopic) => {
+    setUpgradeModal({ open: false });
+    setSidebarOpen(false);
+    setIsRecordingMode(false);
+    setHelpTopic(topic);
+    setActiveRecordingId('help');
   };
 
   const handleUpdateTitle = async (id: string, newTitle: string) => {
@@ -1810,9 +1824,14 @@ const App: React.FC = () => {
   // Show Landing Page or Auth View if not logged in
   if (!user) {
     if (!showAuthView) {
-      return <LandingPage onGetStarted={() => setShowAuthView(true)} />;
+      return (
+        <LandingPage
+          onGetStarted={() => { setAuthStartOnSignup(true); setShowAuthView(true); }}
+          onSignIn={() => { setAuthStartOnSignup(false); setShowAuthView(true); }}
+        />
+      );
     }
-    return <AuthView onLogin={() => { }} />;
+    return <AuthView onLogin={() => { }} initialMode={authStartOnSignup ? 'signup' : 'signin'} />;
   }
 
   const activeSession = recordings.find(r => r.id === activeRecordingId);
@@ -1993,6 +2012,8 @@ const App: React.FC = () => {
               hasSarvamKey={hasSarvamKey}
               onLogout={handleLogout}
             />
+          ) : activeRecordingId === 'help' ? (
+            <HelpSupportView key={helpTopic ?? 'none'} user={user} initialTopic={helpTopic} />
           ) : BILLING_ENABLED && (activeRecordingId === 'billing' || activeRecordingId === 'pricing') ? (
             <div className="h-full overflow-y-auto">
               <div className="max-w-3xl mx-auto px-6 md:px-12 pt-8">
@@ -2000,6 +2021,7 @@ const App: React.FC = () => {
                   state={subscriptionState}
                   onUpgradeClick={() => setUpgradeModal({ open: true })}
                   onCancelled={() => addToast('Subscription will end at the close of your billing period.', 'success')}
+                  onNeedHelp={() => openHelp('payment_plan')}
                 />
               </div>
               <PricingView user={user} variant="page" />
@@ -2151,6 +2173,7 @@ const App: React.FC = () => {
           reason={upgradeModal.reason}
           offerTiers={upgradeModal.offerTiers}
           onClose={() => setUpgradeModal({ open: false })}
+          onNeedHelp={() => openHelp('payment_plan')}
           onSubscribed={() => {
             addToast('Payment received — activating your Pro account…', 'success');
             // Realtime subscription will flip tier when the webhook lands.
